@@ -1,0 +1,17 @@
+// Godot addons configuration file for use with the GodotEnv tool.
+// See https://github.com/chickensoft-games/GodotEnv for more info.
+// -------------------------------------------------------------------- //
+// Note: this is a JSONC file, so you can use comments!
+// -------------------------------------------------------------------- //
+{
+  "$schema": "https://chickensoft.games/schemas/addons.schema.json",
+  // "path": "addons", // default
+  // "cache": ".addons", // default
+  "addons": {
+    "gut": {
+      "url": "https://github.com/bitwes/Gut",
+      "checkout": "v9.6.0",
+      "subfolder": "addons/gut"
+    }
+  }
+}

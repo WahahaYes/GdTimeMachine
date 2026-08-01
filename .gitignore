@@ -22,6 +22,10 @@ mono_crash.*.json
 # IDE ignores
 .vscode/
 
+# Third-party addons managed by godot-env (dev dependency, not shipped)
+addons/gut/
+.addons/
+
 # Logs and generated output
 *.log
 

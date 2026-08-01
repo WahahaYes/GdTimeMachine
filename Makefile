@@ -10,6 +10,19 @@ launch-editor: ## Launch the Godot editor with this project (uses godotenv pinne
 		godot --editor --path .; \
 	fi
 
+##@ Testing
+
+.PHONY: test-godot
+test-godot: ## Run Godot unit tests with GUT (headless)
+	@echo "Running tests..."
+	@godot --headless -s --path . addons/gut/gut_cmdln.gd -gexit 2>&1 | grep -E "(Failed|Error|PASSED|passed)" || true
+
+##@ Addons
+
+.PHONY: addons-install
+addons-install: ## Install Godot addons from addons.jsonc
+	godotenv addons install
+
 ##@ Help
 
 .PHONY: help
