@@ -23,6 +23,22 @@ test-godot: ## Run Godot unit tests with GUT (headless)
 addons-install: ## Install Godot addons from addons.jsonc
 	godotenv addons install
 
+##@ Documentation
+
+.PHONY: check-docs
+check-docs: ## Check consistency of README and LICENSE between root and addon directory
+	@echo "Checking documentation consistency..."
+	@diff -u README.md addons/gd-time-machine/README.md || (echo "ERROR: README.md differs between root and addon directory (see diff above). Run 'make sync-docs' to sync." && exit 1)
+	@diff -u LICENSE.txt addons/gd-time-machine/LICENSE.txt || (echo "ERROR: LICENSE.txt differs between root and addon directory (see diff above). Run 'make sync-docs' to sync." && exit 1)
+	@echo "Documentation is consistent"
+
+.PHONY: sync-docs
+sync-docs: ## Copy README and LICENSE from root to addon directory
+	@echo "Syncing documentation to addon directory..."
+	@cp README.md addons/gd-time-machine/README.md
+	@cp LICENSE.txt addons/gd-time-machine/LICENSE.txt
+	@echo "Documentation synced successfully"
+
 ##@ Help
 
 .PHONY: help

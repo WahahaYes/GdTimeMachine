@@ -40,6 +40,17 @@ repos:
         args: ["--wrap=80"]
         types: [markdown]
 
+  # Documentation drift check (README/LICENSE between root and addon)
+  - repo: local
+    hooks:
+      - id: check-docs
+        name: Check README/LICENSE drift (via make)
+        entry: make check-docs
+        language: system
+        files: ^(README\.md|LICENSE\.txt|addons/gd-time-machine/(README\.md|LICENSE\.txt))$
+        require_serial: true
+        pass_filenames: false
+
 # Configuration
 default_install_hook_types: [pre-commit, pre-push]
 fail_fast: false
