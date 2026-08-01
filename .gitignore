@@ -1,0 +1,32 @@
+# Godot 4+ specific ignores
+.godot/
+.nomedia
+
+# Godot-specific ignores
+.import/
+export.cfg
+export_credentials.cfg
+
+# Imported translations (automatically generated from CSV files)
+*.translation
+
+# Mono-specific ignores
+.mono/
+data_*/
+mono_crash.*.json
+
+# General ignores
+.DS_Store
+.omo/
+
+# IDE ignores
+.vscode/
+
+# Logs and generated output
+*.log
+
+# Python
+__pycache__/
+
+# Git worktrees for showcase recording
+.worktrees/

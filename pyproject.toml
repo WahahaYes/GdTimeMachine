@@ -1,0 +1,8 @@
+[project]
+name = "gdtimemachine-scripts"
+version = "0.1.0"
+description = "Development helper scripts for GdTimeMachine."
+requires-python = ">=3.13"
+dependencies = [
+    "pre-commit>=4.6.1",
+]
