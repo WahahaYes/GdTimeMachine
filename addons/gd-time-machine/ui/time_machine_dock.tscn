@@ -78,7 +78,7 @@ theme_override_constants/separation = 4
 [node name="OutputLabel" type="Label" parent="SettingsGroup/OutputRow"]
 custom_minimum_size = Vector2(110, 0)
 text = "Output Directory:"
-tooltip_text = "Directory where recordings are saved. File name is auto-generated from scene + timestamp." + " Extension is .avi today (Op 4 adds OGV/PNG/MOV choice)."
+tooltip_text = "Directory where recordings are saved. File names are auto-generated from scene name + timestamp."
 
 [node name="OutputEdit" type="LineEdit" parent="SettingsGroup/OutputRow" unique_name_in_owner = true]
 size_flags_horizontal = 3

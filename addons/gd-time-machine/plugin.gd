@@ -1,38 +1,65 @@
 @tool
 extends EditorPlugin
 
-const ICON_RECORD_PATH := "res://addons/gd-time-machine/ui/icons/icon_record.svg"
-const ICON_STOP_PATH := "res://addons/gd-time-machine/ui/icons/icon_stop.svg"
-const TOOLTIP_DEFAULT := "GdTimeMachine — Start/stop recording (uses the dock settings)"
-const TOOLTIP_RESTART_DISABLED := "Recording with this backend restarts the scene — disabled here to protect the running game.\nStart from the dock or run bar instead, or switch to an in-place backend in the dock."
+## GdTimeMachine EditorPlugin lifecycle.
+##
+## On enter: registers the debugger plugin, the graceful-stop autoload
+## singleton, builds the RecorderController with its Movie Maker backend,
+## adds the dock as a bottom panel, and (best-effort) inserts record
+## buttons into the editor run bar and game view toolbar via UI traversal.
+## Every traversal failure degrades to "no button" without affecting
+## recording — the bottom-panel tab is the supported surface. On exit the
+## same pieces are torn down in reverse order.
 
-# Graceful-stop wiring. The autoload is what the running game uses to receive
-# the editor's graceful-stop debugger message and quit cleanly (so Movie Maker
-# finalizes the AVI instead of being SIGKILLed). add_autoload_singleton()
-# writes the entry into project.godot's [autoload] section; _exit_tree removes
-# it, but a crash while the plugin is enabled leaves residue there (accepted —
-# see notes/SESSION_PLAN_engine_native_recording.md Op 2).
+## Icon shown on the record buttons while idle.
+const ICON_RECORD_PATH := "res://addons/gd-time-machine/ui/icons/icon_record.svg"
+
+## Icon shown on the record buttons while recording.
+const ICON_STOP_PATH := "res://addons/gd-time-machine/ui/icons/icon_stop.svg"
+
+## Default tooltip for the record buttons.
+const TOOLTIP_DEFAULT := "GdTimeMachine — Start/stop recording (uses the dock settings)"
+
+## Tooltip for the game-view record button when the active backend
+## restarts the scene on Record (which would destroy the running game).
+const TOOLTIP_RESTART_DISABLED := "This backend restarts the scene to record. Use the dock or run bar, or switch to an in-place backend."
+
+## Autoload singleton through which the running game receives the editor's
+## graceful-stop message and quits cleanly, so Movie Maker finalizes the
+## AVI instead of the process being killed. Registered alongside the
+## debugger plugin and removed on exit.
 const AUTOLOAD_NAME := "GdTimeMachineGracefulStop"
+
+## Script backing the graceful-stop autoload singleton.
 const AUTOLOAD_PATH := "res://addons/gd-time-machine/autoload/graceful_stop.gd"
 
+## Owns backends and exposes the recording API used by the dock and buttons.
 var _recorder_controller: RecorderController
+
+## Movie Maker backend registered with the controller.
 var _movie_maker_backend: BackendMovieMaker
-var _debugger_plugin: EditorDebuggerPlugin = null  # injected into the backend for graceful stop
+
+## Registered debugger plugin; injected into the backend for graceful stop.
+var _debugger_plugin: EditorDebuggerPlugin = null
+
+## Bottom-panel dock instance.
 var _dock: TimeMachineDock
+
+## Record button inserted into the editor run bar.
 var _run_bar_button: Button
+
+## Record button inserted into the game view toolbar.
 var _game_view_button: Button
+
+## Container holding the game view button and its separator.
 var _game_view_section: HBoxContainer
 
 
+## Registers the debugger plugin and autoload, builds the controller and
+## backend, adds the dock to the bottom panel, and schedules run-bar /
+## game-view button setup for the first process frame (those UI bars are
+## constructed after plugin _enter_tree).
 func _enter_tree() -> void:
-	# Graceful-stop wiring. The debugger plugin is registered first so the
-	# backend can be handed a live reference to it; the autoload singleton is
-	# registered alongside so the running game receives the graceful-stop
-	# message and quits cleanly (finalizing the AVI) instead of being SIGKILLed.
-	#
-	# NOTE: docs recommend _enable_plugin()/_disable_plugin() for symmetric
-	# autoload registration, but we stay with _enter_tree()/_exit_tree() for
-	# consistency with the rest of this plugin and with wild addons in the wild.
 	_debugger_plugin = preload("res://addons/gd-time-machine/editor/debugger_plugin.gd").new()
 	add_debugger_plugin(_debugger_plugin)
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
@@ -51,13 +78,15 @@ func _enter_tree() -> void:
 	get_tree().process_frame.connect(_setup_game_view_button, CONNECT_ONE_SHOT)
 
 
+## Stops any active recording and tears down everything _enter_tree set up:
+## debugger plugin, autoload singleton, run-bar/game-view buttons, dock,
+## and controller.
 func _exit_tree() -> void:
 	if _recorder_controller:
 		_recorder_controller.stop_recording_if_active()
-	# Tear down graceful-stop wiring (reverse of _enter_tree) before the
-	# controller/backend are freed. The backend keeps a reference to the
-	# debugger plugin; drop it first so removal is clean. EditorDebuggerPlugin
-	# is RefCounted — remove_debugger_plugin() is enough, no queue_free().
+	# Drop the backend's reference to the debugger plugin before removal so
+	# teardown is clean; EditorDebuggerPlugin is RefCounted, so
+	# remove_debugger_plugin() is enough — no queue_free() needed.
 	if _debugger_plugin:
 		if _movie_maker_backend:
 			_movie_maker_backend._debugger_plugin = null
@@ -96,6 +125,8 @@ func _exit_tree() -> void:
 # every failure path below degrades to "no button" without affecting recording.
 
 
+## Finds the run bar row and inserts the record button into it. Warns and
+## gives up (recording still works from the dock) if the row is not found.
 func _setup_run_bar_button() -> void:
 	var row := _find_run_bar_button_row()
 	if row == null:
@@ -108,6 +139,10 @@ func _setup_run_bar_button() -> void:
 	_apply_button_state(_run_bar_button, false)
 
 
+## Finds the game view toolbar row and inserts the record button. If the
+## button survives from a previous plugin instance (GameView persists
+## across re-enables), re-establishes its signals and state instead of
+## inserting a duplicate.
 func _setup_game_view_button() -> void:
 	var row := _find_game_view_toolbar_row()
 	if row == null:
@@ -141,6 +176,8 @@ func _setup_game_view_button() -> void:
 	_refresh_game_view_button()
 
 
+## Builds a flat toggle button wired to the controller's recording state
+## (icon/text follow recording_started/stopped via _apply_button_state).
 func _build_record_button() -> Button:
 	var button := Button.new()
 	button.name = "GdTimeMachineRecord"
@@ -152,6 +189,8 @@ func _build_record_button() -> Button:
 	return button
 
 
+## Traverses the editor UI for the run bar's button row:
+## EditorRunBar → PanelContainer → HBoxContainer. Returns null when absent.
 func _find_run_bar_button_row() -> HBoxContainer:
 	var base := EditorInterface.get_base_control()
 	if base == null:
@@ -169,6 +208,8 @@ func _find_run_bar_button_row() -> HBoxContainer:
 	return null
 
 
+## Traverses the editor UI for the game view's toolbar row:
+## GameView → MarginContainer → HBoxContainer. Returns null when absent.
 func _find_game_view_toolbar_row() -> HBoxContainer:
 	var base := EditorInterface.get_base_control()
 	if base == null:
@@ -185,6 +226,8 @@ func _find_game_view_toolbar_row() -> HBoxContainer:
 	return null
 
 
+## Depth-first search for a descendant with the given class name; returns
+## the first match or null.
 func _find_node_by_class(node: Node, target_class: String) -> Node:
 	if node.get_class() == target_class:
 		return node
@@ -195,6 +238,8 @@ func _find_node_by_class(node: Node, target_class: String) -> Node:
 	return null
 
 
+## Toggles recording via the controller; starts a recording using the
+## dock's current config.
 func _on_record_button_pressed() -> void:
 	if _recorder_controller == null:
 		return
@@ -204,6 +249,7 @@ func _on_record_button_pressed() -> void:
 		_recorder_controller.start_recording(_dock.build_config())
 
 
+## Syncs a record button's text and icon with the recording state.
 func _apply_button_state(button: Button, recording: bool) -> void:
 	if button == null:
 		return
@@ -226,6 +272,11 @@ func _apply_button_state(button: Button, recording: bool) -> void:
 
 ## Pure button-state rule, extracted as a static so GUT can exercise the full
 ## matrix without standing up editor UI.
+##
+## State table:
+##   recording=false, mode=RESTART_SCENE → disabled, TOOLTIP_RESTART_DISABLED
+##   recording=true,  mode=any          → enabled,  TOOLTIP_DEFAULT
+##   recording=false, mode=other        → enabled,  TOOLTIP_DEFAULT
 static func compute_game_view_button_state(
 	recording: bool, mode: RecorderBackend.CaptureMode
 ) -> Dictionary:
@@ -234,6 +285,8 @@ static func compute_game_view_button_state(
 	return {"disabled": false, "tooltip": TOOLTIP_DEFAULT}
 
 
+## Re-applies icon/text, enabled state, and tooltip to the game view button
+## based on the controller's current recording state and capture mode.
 func _refresh_game_view_button() -> void:
 	if _game_view_button == null or _recorder_controller == null:
 		return
@@ -246,12 +299,14 @@ func _refresh_game_view_button() -> void:
 	_game_view_button.tooltip_text = state["tooltip"]
 
 
-# Default-param signature so it can connect to backend_changed (1 arg) and
-# recording_started/stopped (2 args) alike.
+## Signal adapter with default args so it can connect to backend_changed
+## (1 arg) and recording_started/stopped (2 args) alike.
 func _on_game_view_refresh_triggered(_arg1: Variant = null, _arg2: Variant = null) -> void:
 	_refresh_game_view_button()
 
 
+## Connects the controller signals (recording started/stopped, backend
+## changed) that drive game-view button refresh; safe to call repeatedly.
 func _connect_game_view_signals() -> void:
 	if not _recorder_controller.recording_started.is_connected(_on_game_view_refresh_triggered):
 		_recorder_controller.recording_started.connect(_on_game_view_refresh_triggered)

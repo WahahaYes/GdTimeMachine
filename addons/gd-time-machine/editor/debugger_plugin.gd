@@ -4,43 +4,35 @@ class_name GdTMDebuggerPlugin
 
 ## Editor-side bridge to the running game's debugger channel.
 ##
-## API correction (verified 2026-08-01): `EditorDebuggerPlugin` does NOT have
-## `send_message()`. Editor→game messages are sent on `EditorDebuggerSession`
-## via `get_session(id).send_message(...)`. The editor sends the full
-## `"prefix:payload"` wire form; the game side registers a capture on the
-## prefix and receives the payload with the prefix stripped.
+## Currently handles the graceful-stop broadcast: messages are sent on
+## EditorDebuggerSession instances via send_message(), using the
+## gd_time_machine prefix (full "prefix:payload" wire form); the game side
+## registers a capture on the prefix and receives the payload with the prefix
+## stripped.
 ##
-## Current roles (Op 2-3):
-## - Op 2 graceful-stop: send-only `gd_time_machine:graceful_stop` → game quit
-## - Op 5 future BackendScreenshotCapture: will be extended to pace
-##   `scene:rq_screenshot` [rq_id] → `game_view:get_screenshot` [id,w,h,path],
-##   one-in-flight with deferred idle yield, id tracking, has_capture only
-##   while measuring/capturing to avoid shadowing GameViewDebugger (see
-##   notes/SPIKE_screenshot_fps.md for pitfalls: sync _send_rq inside _capture
-##   starves editor, claiming game_view always shadows builtin).
-## `_has_capture` / `_capture` are placeholder for that future use.
+## _has_capture / _capture are inert placeholders reserved for future
+## game→editor message handling and claim nothing yet.
 
 
+## Whether this plugin claims a capture prefix. Today only gd_time_machine is
+## claimed, for the graceful-stop broadcast.
 func _has_capture(capture: String) -> bool:
-	# Today: only gd_time_machine for graceful-stop. Future Op 5 will also
-	# claim game_view while actively capturing — but only then, to avoid
-	# shadowing GameViewDebugger's own screenshots (see spike notes).
 	return capture == "gd_time_machine"
 
 
+## Entry point for future game→editor message handling. Returns false today
+## so no message is consumed and other plugins keep their captures.
 func _capture(message: String, data: Array, session_id: int) -> bool:
-	# Placeholder for Op 5 screenshot replies. Nothing to consume yet — and
-	# returning false here lets GameViewDebugger handle game_view messages
-	# until Op 5 claims it.
 	return false
 
 
+## Sets up per-session wiring. Session lifecycle is driven by the engine
+## debugger itself; the started/stopped hooks are kept present but inert so
+## future reply handling has a place to attach.
 func _setup_session(session_id: int) -> void:
 	var session := get_session(session_id)
 	if session == null:
 		return
-	# Session lifecycle is driven by the engine debugger itself; keep the
-	# wiring present but inert so future Op 5 reply handling has hooks.
 	session.started.connect(func() -> void: pass)
 	session.stopped.connect(func() -> void: pass)
 
@@ -65,8 +57,9 @@ func send_graceful_stop() -> bool:
 	return sent
 
 
-## Overridable seam for tests; also guards against a debugger that has
-## detached mid-send so this never crashes the editor.
+## Sends the graceful-stop message to a session. Overridable seam for tests;
+## also guards against a debugger that has detached mid-send so this never
+## crashes the editor.
 func _send_to_session(session: EditorDebuggerSession) -> void:
 	if session == null or not session.is_active():
 		return

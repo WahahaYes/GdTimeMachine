@@ -2,70 +2,90 @@
 extends RecorderBackend
 class_name BackendMovieMaker
 
-## Godot's built-in Movie Maker backend. No extra software needed.
+## Godot's built-in Movie Maker backend: captures the playing scene as .avi
+## with no extra software. Recording starts once the scene actually plays
+## (Movie Maker only writes frames while a scene runs), so playback state is
+## polled with a Timer — the editor exposes no play/stop signal.
 ##
-## Recordings are written as .avi via the engine's Movie Maker. Recording
-## starts when the scene actually begins playing (Movie Maker only writes
-## frames while a scene runs), so playback state is polled with a Timer —
-## there is no editor signal for play/stop (see godot-proposals#3504).
-##
-## All EditorInterface/ProjectSettings access goes through `_`-prefixed seam
-## methods so tests can subclass this backend and fake the editor without
-## touching engine singletons.
-##
-## State machine:
-##   start() → _active=true, _pending_start=true → scene plays (poll) →
-##   recording_started → duration timer (if any) or manual stop() or natural
-##   scene exit (poll) → recording_stopped. If the scene never starts playing
-##   before the duration elapses, recording_error is emitted instead.
-##
-## stop() is a graceful-stop funnel: it sends a graceful-stop message to the
-## running game (via the injected debugger plugin), sets _stopping=true and
-## arms a grace timer, then lets the poll observe the game exiting. Every stop
-## path (manual, duration expiry, natural exit, grace-timeout fallback)
-## converges on _finalize_stopped(), the single recording_stopped emission
-## site. The grace timer forces a fallback _stop_playing_scene() if the game
-## never quits on its own.
+## Stopping is graceful: the game is asked to quit so the AVI finalizes, a
+## grace timer bounds the wait, and a force-stop is the fallback.
 
-const POLL_INTERVAL := 0.5  # seconds between is_playing_scene() checks
+## State machine: idle → start() → pending-start (waiting for playback to
+## begin) → recording → stopped. Stop paths — manual stop(), duration expiry,
+## natural scene exit, or grace-timeout fallback — all converge on
+## _finalize_stopped(), the single recording_stopped emission site. If the
+## scene never starts playing before the duration elapses, recording_error is
+## emitted instead. The grace timer forces a fallback _stop_playing_scene()
+## if the game never quits on its own.
+
+## Seconds between playback-state checks.
+const POLL_INTERVAL := 0.5
+
+## Default recording destination when the config provides no output_path.
 const DEFAULT_OUTPUT_PATH := "res://movie.avi"
-const GRACE_PERIOD := 2.0  # seconds to wait for graceful game exit before force-stop
 
-var _active := false  # a recording session is in progress
-var _pending_start := false  # start() called, waiting for playback to begin
-var _stopping := false  # graceful stop in progress; awaiting poll exit or grace timer
+## Seconds to wait for the game to exit gracefully before forcing a stop.
+const GRACE_PERIOD := 2.0
+
+## Whether a recording session is in progress (from start() until finalize).
+var _active := false
+
+## True after start() while waiting for playback to begin.
+var _pending_start := false
+
+## True while a graceful stop is in progress: awaiting poll-observed exit or
+## the grace timer.
+var _stopping := false
+
+## Where the recording is written; resolved to DEFAULT_OUTPUT_PATH when unset.
 var _output_path := ""
-var _duration := 0.0  # 0 = record until stopped manually
+
+## Recording duration in seconds; 0 = record until stopped manually.
+var _duration := 0.0
+
+## Periodically checks whether the scene is still playing.
 var _poll_timer: Timer
+
+## One-shot timer that triggers _on_duration_timeout after _duration seconds.
 var _duration_timer: Timer
+
+## One-shot timer that triggers the force-stop fallback after the grace period.
 var _grace_timer: Timer
-var _debugger_plugin: Object = null  # injected by plugin.gd; used to send graceful-stop message
+
+## Injected by plugin.gd; used to send the graceful-stop request to the game.
+var _debugger_plugin: Object = null
 
 
+## Human-readable backend name shown in the UI.
 func get_backend_name() -> String:
 	return "Godot Movie Maker"
 
 
+## Short UI description of what this backend needs.
 func get_description() -> String:
 	return "Built-in Godot encoder. No extra software needed."
 
 
+## Movie Maker ships with the editor, so this backend is always available.
 func is_available() -> bool:
 	return true
 
 
+## Whether a recording session is currently in progress.
 func is_recording() -> bool:
 	return _active
 
 
+## Movie Maker needs --write-movie at game startup, so recording always
+## relaunches the scene. Explicit even though it matches the base default —
+## the default could change, this fact cannot.
 func get_capture_mode() -> CaptureMode:
-	# Movie Maker is a process-launch feature: --write-movie is appended at
-	# game startup, so recording always relaunches the scene (constraint 1 in
-	# notes/BRAINSTORM_in_place_recording.md). Explicit even though it matches
-	# the base default — the default could change, this fact cannot.
 	return CaptureMode.RESTART_SCENE
 
 
+## Begins a recording: configures Movie Maker settings, enables Movie Maker,
+## starts the poll (and the duration timer when a duration is set), then
+## launches the scene. No-op with a warning while a recording is active.
 func start(config: Dictionary) -> void:
 	if _active:
 		push_warning("Backend '%s' is already recording" % get_backend_name())
@@ -88,6 +108,9 @@ func start(config: Dictionary) -> void:
 	_play_scene(str(config.get("scene_path", "")))
 
 
+## Gracefully stops the recording: asks the game to quit so Movie Maker can
+## finalize the AVI, arms the grace timer as a fallback, and keeps polling to
+## observe the game exiting.
 func stop() -> void:
 	if not _active:
 		return
@@ -105,6 +128,9 @@ func stop() -> void:
 	_start_polling()
 
 
+## Poll tick: while stopping, waits for the scene to exit; otherwise detects
+## playback start (emitting recording_started) or a natural scene exit
+## (finalizing the recording).
 func _on_poll_timeout() -> void:
 	if not _active:
 		return
@@ -122,6 +148,8 @@ func _on_poll_timeout() -> void:
 		_finalize_stopped()
 
 
+## Duration expiry: if the scene never started playing, emits recording_error
+## and cleans up; otherwise triggers a graceful stop.
 func _on_duration_timeout() -> void:
 	if not _active:
 		return
@@ -144,6 +172,8 @@ func _on_duration_timeout() -> void:
 		stop()
 
 
+## Grace expiry: the game did not exit during the grace period, so force-stop
+## it and finalize the recording.
 func _on_grace_timeout() -> void:
 	if not _active:
 		return
@@ -156,6 +186,8 @@ func _on_grace_timeout() -> void:
 	_finalize_stopped()
 
 
+## Ends the session and emits recording_stopped exactly once: disables Movie
+## Maker and stops all timers. Later calls are no-ops.
 func _finalize_stopped() -> void:
 	# Single-emission guard: after the first finalize both flags are false, so
 	# any later call (idle poll, grace timer, explicit stop) is a no-op.
@@ -171,31 +203,37 @@ func _finalize_stopped() -> void:
 	_set_movie_maker_enabled(false)
 
 
-# --- Seam methods (overridable in tests) -----------------------------------
+# --- Editor interaction (isolated for testability) ---------------------------
 
 
+## Writes the output path to ProjectSettings and saves it.
 func _set_movie_file(path: String) -> void:
 	ProjectSettings.set_setting("editor/movie_writer/movie_file", path)
 	ProjectSettings.save()
 
 
+## Writes the target FPS to ProjectSettings and saves it.
 func _set_movie_fps(fps: int) -> void:
 	ProjectSettings.set_setting("editor/movie_writer/fps", fps)
 	ProjectSettings.save()
 
 
+## Enables or disables Movie Maker in the editor.
 func _set_movie_maker_enabled(enabled: bool) -> void:
 	EditorInterface.set_movie_maker_enabled(enabled)
 
 
+## Whether Movie Maker is currently enabled in the editor.
 func _is_movie_maker_enabled() -> bool:
 	return EditorInterface.is_movie_maker_enabled()
 
 
+## Whether a scene is currently playing in the editor.
 func _is_playing_scene() -> bool:
 	return EditorInterface.is_playing_scene()
 
 
+## Launches the given scene, or the current scene when the path is empty.
 func _play_scene(scene_path: String) -> void:
 	if scene_path.is_empty():
 		EditorInterface.play_current_scene()
@@ -203,59 +241,68 @@ func _play_scene(scene_path: String) -> void:
 		EditorInterface.play_custom_scene(scene_path)
 
 
+## Stops the running scene; the force-stop fallback after a graceful stop
+## fails to make the game quit on its own.
 func _stop_playing_scene() -> void:
 	EditorInterface.stop_playing_scene()
 
 
+## Asks the running game to quit gracefully via the injected debugger plugin
+## so Movie Maker finalizes the AVI. No-op when the plugin is not injected.
 func _send_graceful_stop_message() -> void:
-	# Asks the running game to quit gracefully (via plugin.gd's debugger
-	# plugin) so Movie Maker finalizes the AVI. No-op when the plugin has not
-	# been injected; overridable in tests to record call order.
 	if _debugger_plugin != null and _debugger_plugin.has_method("send_graceful_stop"):
 		_debugger_plugin.send_graceful_stop()
 
 
+## Returns the grace period; overridable so tests can shorten the window.
 func _get_grace_period() -> float:
-	# Overridable so tests can shorten the grace window.
 	return GRACE_PERIOD
 
 
 # --- Timer plumbing ----------------------------------------------------------
 
 
+## Starts the playback poll timer.
 func _start_polling() -> void:
 	_ensure_timers()
 	if _poll_timer:
 		_poll_timer.start(POLL_INTERVAL)
 
 
+## Starts the one-shot duration timer.
 func _start_duration_timer() -> void:
 	_ensure_timers()
 	if _duration_timer:
 		_duration_timer.start(_duration)
 
 
+## Stops the playback poll timer.
 func _stop_polling() -> void:
 	if _poll_timer:
 		_poll_timer.stop()
 
 
+## Stops the duration timer.
 func _stop_duration_timer() -> void:
 	if _duration_timer:
 		_duration_timer.stop()
 
 
+## Starts the one-shot grace timer.
 func _start_grace_timer() -> void:
 	_ensure_timers()
 	if _grace_timer:
 		_grace_timer.start(_get_grace_period())
 
 
+## Stops the grace timer.
 func _stop_grace_timer() -> void:
 	if _grace_timer:
 		_grace_timer.stop()
 
 
+## Lazily creates all three timers on first use (requires being inside the
+## scene tree) and wires their timeout callbacks.
 func _ensure_timers() -> void:
 	if _poll_timer == null and is_inside_tree():
 		_poll_timer = Timer.new()
