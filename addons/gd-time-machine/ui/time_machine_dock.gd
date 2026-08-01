@@ -1,5 +1,6 @@
 @tool
 extends VBoxContainer
+class_name TimeMachineDock
 
 ## GdTimeMachine dock UI (Phase 2, minimal).
 ##
@@ -159,10 +160,13 @@ func _on_record_pressed() -> void:
 	if _controller.is_recording():
 		_controller.stop_recording()
 	else:
-		_controller.start_recording(_build_config())
+		_controller.start_recording(build_config())
 
 
-func _build_config() -> Dictionary:
+## Builds the recording config from the currently configured UI fields.
+## Public so other surfaces (e.g. the run-bar record button) reuse the exact
+## settings shown in this tab.
+func build_config() -> Dictionary:
 	return {
 		"output_path": _build_output_path(),
 		"scene_path": _scene_edit.text.strip_edges(),
