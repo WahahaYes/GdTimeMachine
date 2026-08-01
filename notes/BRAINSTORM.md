@@ -2,7 +2,7 @@
 
 Quick notes, ideas, and sketches. Not polished.
 
----
+______________________________________________________________________
 
 ## Name Ideas
 
@@ -16,6 +16,7 @@ Quick notes, ideas, and sketches. Not polished.
 ## Wilder Ideas
 
 ### "Record That" button
+
 What if the addon added a small button to the **debugger toolbar** or **scene tree dock** that does "record last N seconds"? Like NVIDIA Shadowplay but for Godot dev. Uses OBS replay buffer.
 
 ```
@@ -27,7 +28,9 @@ OBS replay buffer:
 Zero overhead until you hit save. Perfect for capturing unexpected emergent AI behavior without planning ahead.
 
 ### CI integration
+
 The batch recording workflow (`capture_all_showcase.sh`) could be adapted to run in CI:
+
 - Spin up Godot in headless-ish mode
 - Use OBS virtual camera or direct encoder output
 - Capture footage as CI artifacts for PR review
@@ -36,6 +39,7 @@ The batch recording workflow (`capture_all_showcase.sh`) could be adapted to run
 Probably overkill but interesting.
 
 ### Python-free fallback
+
 For users who can't/won't install Python: fall back to `obs-websocket-js` via Node.js, or even a simple shell script that calls `curl` against the OBS WebSocket REST-like endpoints.
 
 Actually, OBS WebSocket is a real WebSocket (not REST). Can't use curl. So you'd need Node or Python or GDScript.
@@ -43,6 +47,7 @@ Actually, OBS WebSocket is a real WebSocket (not REST). Can't use curl. So you'd
 ### OBS installation detection
 
 On Linux you might find OBS at:
+
 ```
 /usr/bin/obs
 /usr/bin/obs-studio
@@ -55,23 +60,27 @@ Could use `OS.execute("which", ["obs"])` → check return code. Store in setting
 ### Potential pitfalls
 
 1. **OBS WebSocket password** — How does the user configure it?
+
    - Hardcoded in addon settings (stored in project.godot — bad for sharing)
    - Environment variable (like our current `OBS_PASSWORD`)
    - System keychain via custom tool
    - Simplest: text field in addon settings with a warning tooltip
 
-2. **OBS version detection** — OBS 28+ has WebSocket built-in. Older versions need plugin.
+1. **OBS version detection** — OBS 28+ has WebSocket built-in. Older versions need plugin.
+
    - On connect, check `GetVersion` response
    - Warn if WebSocket version is < 5.0.0
 
-3. **Multiple monitors** — Which monitor gets captured?
+1. **Multiple monitors** — Which monitor gets captured?
+
    - Current: full-screen Godot window → PipeWire capture captures the monitor Godot is on
    - Could let user pick monitor in OBS scene config
    - Or always capture the "Godot" window specifically (window capture, not screen capture)
 
-4. **Godot embedded game window** — The new Godot 4 "embedded game" feature puts the game inside the editor as a sub-window. OBS can't easily capture just that sub-window. Known issue (godot#103154). Workaround: launch a separate instance.
+1. **Godot embedded game window** — The new Godot 4 "embedded game" feature puts the game inside the editor as a sub-window. OBS can't easily capture just that sub-window. Known issue (godot#103154). Workaround: launch a separate instance.
 
-5. **Audio** — Our current pipeline doesn't capture game audio. OBS can capture desktop audio, but we'd want:
+1. **Audio** — Our current pipeline doesn't capture game audio. OBS can capture desktop audio, but we'd want:
+
    - Game audio separate from mic/desktop
    - Configurable audio sources
    - This is more of an OBS scene configuration concern than an addon concern
@@ -95,6 +104,7 @@ Key things we'd need to implement in GDScript (if not using obs-websocket-gd):
 ```
 
 OBS uses opcodes:
+
 - 0: Hello
 - 1: Identify
 - 2: Identified
@@ -126,14 +136,12 @@ It uses GDScript + Godot's built-in `WebSocketClient`. This means we can use GDS
 
 If we vendor this (it's Apache-2.0, same as our project), we could build our editor plugin on top of it directly.
 
----
+______________________________________________________________________
 
 ## Timeline sketch
 
-**Phase 1** (days): Wrap existing Python scripts with EditorPlugin → usable internally
-**Phase 2** (weeks): Port WebSocket to GDScript → drop Python dependency
-**Phase 3** (months): Platform capture sources, dock UI, batch UI → public release
+**Phase 1** (days): Wrap existing Python scripts with EditorPlugin → usable internally **Phase 2** (weeks): Port WebSocket to GDScript → drop Python dependency **Phase 3** (months): Platform capture sources, dock UI, batch UI → public release
 
----
+______________________________________________________________________
 
 _Just ideas, nothing committed to yet._

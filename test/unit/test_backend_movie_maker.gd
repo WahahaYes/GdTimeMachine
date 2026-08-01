@@ -1,8 +1,10 @@
 extends GutTest
 
+
 # Fake backend that overrides every EditorInterface/ProjectSettings seam so
 # tests never touch engine singletons. Mirrors the real seam set 1:1.
-class FakeMovieMaker extends BackendMovieMaker:
+class FakeMovieMaker:
+	extends BackendMovieMaker
 	var playing := false
 	var movie_maker_enabled := false
 	var movie_file_set := ""
@@ -181,7 +183,7 @@ func test_no_double_stopped_emission_after_natural_exit_then_stop() -> void:
 	backend._on_poll_timeout()
 	backend.playing = false
 	backend._on_poll_timeout()  # natural exit
-	backend.stop()              # explicit stop afterwards must not re-emit
+	backend.stop()  # explicit stop afterwards must not re-emit
 	assert_eq(stopped.size(), 1)
 
 
@@ -192,7 +194,7 @@ func test_duration_auto_stops_after_elapsed() -> void:
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn", "duration": 0.1})
 	backend.playing = true
 	backend._on_poll_timeout()  # recording starts
-	await wait_seconds(0.25)    # duration timer fires at 0.1s
+	await wait_seconds(0.25)  # duration timer fires at 0.1s
 	assert_eq(stopped.size(), 1)
 	assert_eq(stopped[0], ["Godot Movie Maker", OUTPUT])
 	assert_false(backend.is_recording())
