@@ -14,6 +14,11 @@ func test_default_contract_stubs() -> void:
 	assert_false(backend.is_recording())
 
 
+func test_capture_mode_defaults_to_restart_scene() -> void:
+	var backend := RecorderBackend.new()
+	assert_eq(backend.get_capture_mode(), RecorderBackend.CaptureMode.RESTART_SCENE)
+
+
 func test_default_start_and_stop_do_not_crash() -> void:
 	var backend := RecorderBackend.new()
 	backend.start({})

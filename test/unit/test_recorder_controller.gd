@@ -1,11 +1,14 @@
 extends GutTest
 
+
 # Mock backend exercising the RecorderBackend contract. Because it is an
 # inner class it is not collected by GUT as a test script.
-class MockBackend extends RecorderBackend:
+class MockBackend:
+	extends RecorderBackend
 	var display_name := "Mock"
 	var available := true
 	var recording := false
+	var capture_mode := RecorderBackend.CaptureMode.RESTART_SCENE
 	var started_config: Dictionary = {}
 	var stopped_calls := 0
 	var emit_started_on_start := false
@@ -21,6 +24,9 @@ class MockBackend extends RecorderBackend:
 
 	func is_recording() -> bool:
 		return recording
+
+	func get_capture_mode() -> CaptureMode:
+		return capture_mode
 
 	func start(config: Dictionary) -> void:
 		started_config = config
@@ -181,3 +187,29 @@ func test_unregister_backend_removes_and_selects_remaining() -> void:
 	controller.recording_error.connect(func(name, message): received.append([name, message]))
 	b.recording_error.emit("B", "ghost")
 	assert_eq(received.size(), 0)
+
+
+func test_capture_mode_defaults_to_restart_with_no_backend() -> void:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.RESTART_SCENE)
+
+
+func test_capture_mode_routes_to_active_backend() -> void:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := _make_backend()
+	backend.capture_mode = RecorderBackend.CaptureMode.IN_PLACE
+	controller.register_backend(backend)
+	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.IN_PLACE)
+
+
+func test_capture_mode_reapplied_on_backend_switch() -> void:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var restart := _make_backend("Restart")
+	var in_place := _make_backend("InPlace")
+	in_place.capture_mode = RecorderBackend.CaptureMode.IN_PLACE
+	controller.register_backend(restart)
+	controller.register_backend(in_place)
+	controller.select_backend("InPlace")
+	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.IN_PLACE)
+	controller.select_backend("Restart")
+	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.RESTART_SCENE)

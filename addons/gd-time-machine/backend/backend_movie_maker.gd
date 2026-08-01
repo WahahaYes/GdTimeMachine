@@ -22,10 +22,10 @@ class_name BackendMovieMaker
 const POLL_INTERVAL := 0.5  # seconds between is_playing_scene() checks
 const DEFAULT_OUTPUT_PATH := "res://movie.avi"
 
-var _active := false          # a recording session is in progress
-var _pending_start := false   # start() called, waiting for playback to begin
+var _active := false  # a recording session is in progress
+var _pending_start := false  # start() called, waiting for playback to begin
 var _output_path := ""
-var _duration := 0.0          # 0 = record until stopped manually
+var _duration := 0.0  # 0 = record until stopped manually
 var _poll_timer: Timer
 var _duration_timer: Timer
 
@@ -44,6 +44,14 @@ func is_available() -> bool:
 
 func is_recording() -> bool:
 	return _active
+
+
+func get_capture_mode() -> CaptureMode:
+	# Movie Maker is a process-launch feature: --write-movie is appended at
+	# game startup, so recording always relaunches the scene (constraint 1 in
+	# notes/BRAINSTORM_in_place_recording.md). Explicit even though it matches
+	# the base default — the default could change, this fact cannot.
+	return CaptureMode.RESTART_SCENE
 
 
 func start(config: Dictionary) -> void:
@@ -99,8 +107,9 @@ func _on_duration_timeout() -> void:
 		_pending_start = false
 		_active = false
 		_stop_polling()
-		recording_error.emit(get_backend_name(),
-			"Scene did not start playing before the duration elapsed")
+		recording_error.emit(
+			get_backend_name(), "Scene did not start playing before the duration elapsed"
+		)
 		_set_movie_maker_enabled(false)
 		_stop_playing_scene()
 	else:
@@ -117,6 +126,7 @@ func _finalize_stopped() -> void:
 
 
 # --- Seam methods (overridable in tests) -----------------------------------
+
 
 func _set_movie_file(path: String) -> void:
 	ProjectSettings.set_setting("editor/movie_writer/movie_file", path)
@@ -152,6 +162,7 @@ func _stop_playing_scene() -> void:
 
 
 # --- Timer plumbing ----------------------------------------------------------
+
 
 func _start_polling() -> void:
 	_ensure_timers()

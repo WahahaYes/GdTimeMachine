@@ -15,6 +15,12 @@ class_name RecorderBackend
 ##   scene_path: String   — scene to launch (empty = current/main scene)
 ##   fullscreen: bool     — launch fullscreen
 
+## How the backend captures footage: RESTART_SCENE backends (e.g. Movie
+## Maker) can only record a freshly launched scene; IN_PLACE backends record
+## the currently running scene and stop without killing it.
+enum CaptureMode { RESTART_SCENE, IN_PLACE }
+
+
 # NOTE: deliberately not named get_name() — Node already declares
 # get_name() -> StringName, and an incompatible override is a compile error.
 func get_backend_name() -> String:
@@ -31,6 +37,14 @@ func is_available() -> bool:
 
 func is_recording() -> bool:
 	return false
+
+
+## How this backend captures. UI uses this to be honest about behavior (e.g.
+## greying out the in-game record button when the backend would restart the
+## scene the user is looking at). Defaults to RESTART_SCENE, the conservative
+## answer; in-place backends override.
+func get_capture_mode() -> CaptureMode:
+	return CaptureMode.RESTART_SCENE
 
 
 func start(config: Dictionary) -> void:

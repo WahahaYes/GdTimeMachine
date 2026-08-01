@@ -34,6 +34,7 @@ var _setup_applied := false
 
 @onready var _title_icon: TextureRect = $TitleBar/TitleIcon
 @onready var _backend_option: OptionButton = $BackendRow/BackendOption
+@onready var _scene_row: HBoxContainer = $SettingsGroup/SceneRow
 @onready var _scene_edit: LineEdit = $SettingsGroup/SceneRow/SceneEdit
 @onready var _use_current_button: Button = $SettingsGroup/SceneRow/UseCurrentButton
 @onready var _duration_spin: SpinBox = $SettingsGroup/DurationRow/DurationSpin
@@ -82,6 +83,7 @@ func _apply_setup() -> void:
 	_populate_backends()
 	_load_settings()
 	_prefill_scene()
+	_update_scene_row_visibility()
 	_set_recording_ui(false)
 	_set_status("Ready", COLOR_IDLE)
 
@@ -90,7 +92,9 @@ func _populate_backends() -> void:
 	_backend_option.clear()
 	for name in _controller.get_backend_names():
 		_backend_option.add_item(str(name))
-	_select_backend_item(_controller.active_backend.get_backend_name() if _controller.active_backend else "")
+	_select_backend_item(
+		_controller.active_backend.get_backend_name() if _controller.active_backend else ""
+	)
 
 
 func _select_backend_item(backend_name: String) -> void:
@@ -109,7 +113,16 @@ func _on_backend_selected(index: int) -> void:
 
 func _on_backend_changed(backend_name: String) -> void:
 	_select_backend_item(backend_name)
+	_update_scene_row_visibility()
 	_persist_settings()
+
+
+## In-place backends record the running scene, so the "which scene to launch"
+## row is meaningless for them — hide it rather than let it imply a restart.
+func _update_scene_row_visibility() -> void:
+	if _controller == null or _scene_row == null:
+		return
+	_scene_row.visible = _controller.get_capture_mode() != RecorderBackend.CaptureMode.IN_PLACE
 
 
 func _on_use_current_pressed() -> void:
@@ -150,7 +163,9 @@ func _persist_settings() -> void:
 	es.set_setting(SETTING_DEFAULT_DURATION, int(_duration_spin.value))
 	es.set_setting(SETTING_DEFAULT_FPS, int(_fps_spin.value))
 	if _backend_option.selected >= 0:
-		es.set_setting(SETTING_DEFAULT_BACKEND, _backend_option.get_item_text(_backend_option.selected))
+		es.set_setting(
+			SETTING_DEFAULT_BACKEND, _backend_option.get_item_text(_backend_option.selected)
+		)
 
 
 func _on_record_pressed() -> void:

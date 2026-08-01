@@ -71,6 +71,15 @@ func is_recording() -> bool:
 	return active_backend != null and active_backend.is_recording()
 
 
+## Capture mode of the active backend, so UI never reaches into backends
+## directly. Defaults to RESTART_SCENE (the conservative answer) when no
+## backend is selected.
+func get_capture_mode() -> RecorderBackend.CaptureMode:
+	if active_backend == null:
+		return RecorderBackend.CaptureMode.RESTART_SCENE
+	return active_backend.get_capture_mode()
+
+
 func start_recording(config: Dictionary) -> void:
 	if active_backend == null:
 		push_warning("No backend selected; cannot start recording")
