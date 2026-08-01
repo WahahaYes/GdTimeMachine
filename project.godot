@@ -14,13 +14,17 @@ config/name="GdTimeMachine"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 
+[autoload]
+
+GdTimeMachineGracefulStop="*uid://c3xtfhcvwdmob"
+
 [dotnet]
 
 project/assembly_name="GdTimeMachine"
 
 [editor]
 
-movie_writer/movie_file="res://media/captures/scene_2026-08-01T14-36-47.avi"
+movie_writer/movie_file="res://media/captures/manual_test/recording_smoke_2026-08-01T16-16-33.avi"
 
 [editor_plugins]
 

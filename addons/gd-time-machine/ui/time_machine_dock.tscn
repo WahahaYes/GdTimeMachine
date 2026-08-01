@@ -54,7 +54,7 @@ text = "Duration:"
 
 [node name="DurationSpin" type="SpinBox" parent="SettingsGroup/DurationRow" unique_name_in_owner = true]
 size_flags_horizontal = 3
-min_value = 1.0
+min_value = 0.0
 max_value = 300.0
 value = 30.0
 suffix = " s"
@@ -76,8 +76,9 @@ value = 60.0
 theme_override_constants/separation = 4
 
 [node name="OutputLabel" type="Label" parent="SettingsGroup/OutputRow"]
-custom_minimum_size = Vector2(60, 0)
-text = "Output:"
+custom_minimum_size = Vector2(110, 0)
+text = "Output Directory:"
+tooltip_text = "Directory where recordings are saved. File name is auto-generated from scene + timestamp." + " Extension is .avi today (Op 4 adds OGV/PNG/MOV choice)."
 
 [node name="OutputEdit" type="LineEdit" parent="SettingsGroup/OutputRow" unique_name_in_owner = true]
 size_flags_horizontal = 3

@@ -66,6 +66,7 @@ func _ready() -> void:
 	_use_current_button.pressed.connect(_on_use_current_pressed)
 	_record_button.pressed.connect(_on_record_pressed)
 	_output_edit.text_changed.connect(func(_text): _persist_settings())
+	_output_edit.tooltip_text = "Directory where recordings are saved. File name is auto-generated from scene + timestamp. Extension is .avi today; format choice (OGV/MP4/PNG) is ENHANCEMENTS #5, before Op 5 screenshot backend so both backends share one preference."
 	_duration_spin.value_changed.connect(func(_value): _persist_settings())
 	_fps_spin.value_changed.connect(func(_value): _persist_settings())
 	if _controller != null:
@@ -76,6 +77,10 @@ func _apply_setup() -> void:
 	if _setup_applied:
 		return
 	_setup_applied = true
+	_duration_spin.min_value = 0.0
+	_duration_spin.tooltip_text = "0 = manual (record until you press Stop). Any positive value auto-stops after that many seconds."
+	$SettingsGroup/DurationRow.tooltip_text = _duration_spin.tooltip_text
+	$SettingsGroup/DurationRow/DurationLabel.tooltip_text = _duration_spin.tooltip_text
 	_controller.backend_changed.connect(_on_backend_changed)
 	_controller.recording_started.connect(_on_recording_started)
 	_controller.recording_stopped.connect(_on_recording_stopped)
@@ -186,7 +191,7 @@ func build_config() -> Dictionary:
 		"output_path": _build_output_path(),
 		"scene_path": _scene_edit.text.strip_edges(),
 		"fps": int(_fps_spin.value),
-		"duration": float(_duration_spin.value),
+		"duration": 0.0 if _duration_spin.value <= 0.0 else float(_duration_spin.value),
 	}
 
 

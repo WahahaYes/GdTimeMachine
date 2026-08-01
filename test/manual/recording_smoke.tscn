@@ -1,18 +1,18 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene format=3 uid="uid://ehpqehssj4q6"]
 
-[ext_resource type="Script" path="res://test/manual/recording_smoke.gd" id="1_smoke"]
+[ext_resource type="Script" uid="uid://bhpws2etd3jcn" path="res://test/manual/recording_smoke.gd" id="1_smoke"]
 
-[node name="RecordingSmoke" type="Node"]
+[node name="RecordingSmoke" type="Node" unique_id=1132620932]
 script = ExtResource("1_smoke")
 
-[node name="ColorRect" type="ColorRect" parent="."]
+[node name="ColorRect" type="ColorRect" parent="." unique_id=666379717]
 anchors_preset = 15
 anchor_right = 1.0
 anchor_bottom = 1.0
 grow_horizontal = 2
 grow_vertical = 2
 
-[node name="Label" type="Label" parent="."]
+[node name="Label" type="Label" parent="." unique_id=700464739]
 anchors_preset = 8
 anchor_left = 0.5
 anchor_top = 0.5
