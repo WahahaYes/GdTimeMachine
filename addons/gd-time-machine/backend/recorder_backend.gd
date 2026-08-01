@@ -14,6 +14,18 @@ class_name RecorderBackend
 ##   duration: float      — desired duration in seconds
 ##   scene_path: String   — scene to launch (empty = current/main scene)
 ##   fullscreen: bool     — launch fullscreen
+##
+## Screenshot-capture (future Op 5, IN_PLACE, zero-dep) note — see
+## notes/SPIKE_screenshot_fps.md (2026-08-01):
+## - 16-18 fps @720p foreground, 1 fps when game backgrounded/occluded
+##   regardless of OS.low_processor_usage_mode (fix attempt reverted).
+## - Requires game visible/on-screen: embedded GameView with Game tab
+##   active or floating Always-on-Top window, keep focused.
+## - Pattern for promotion: EditorDebuggerPlugin claiming game_view prefix
+##   only while actively capturing, one-in-flight pacing with id tracking
+##   ([rq_id] → [id,w,h,path]), deferred call_deferred(_deferred_send_next)
+##   to avoid starving editor, has_capture guarded by _measuring flag.
+##   See spike impl notes in ENHANCEMENTS #3 for exact pitfalls.
 
 ## How the backend captures footage: RESTART_SCENE backends (e.g. Movie
 ## Maker) can only record a freshly launched scene; IN_PLACE backends record

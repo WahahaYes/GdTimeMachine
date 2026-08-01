@@ -1,6 +1,6 @@
 # Session Plan — Engine-Native Recording Enhancements
 
-Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Update 2026-08-01: Op 1 shipped (43 GUT green incl. button-state matrix). Research ses_041598e3dffeO0PR0i4m6iIrH6 verified EditorDebuggerSession.send_message API. Status: ✅ Op 1 shipped — Op 2 plan ready at `.omo/plans/op2_graceful_stop.md`
+Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Update 2026-08-01: Op 1-2 shipped (66 GUT green incl. graceful-stop funnel, ButtonState matrix, CaptureMode). Research ses_041598e3dffeO0PR0i4m6iIrH6 verified EditorDebuggerSession.send_message API. Op 3 measured: 16-18 fps @720p fg / 1 fps bg (see `SPIKE_screenshot_fps.md`). Status: ✅ Op 1-3 shipped, spike code cleaned, ready for Op 4 hardening.
 
 ## Goal
 
@@ -40,11 +40,12 @@ Rationale: #5+#6 sit before #4 because they are unconditional value (Movie Maker
 - Tests: message sent before `_stop_playing_scene()`; autoload quit seam; single emission across stop paths; force-stop fallback; duration-during-grace no-double; EditorDebuggerPlugin contract+mirror behavior. 66/66 green.
 - In-editor spike checklist lives in `.omo/plans/op2_graceful_stop.md` — still recommended for AVI idx1 manual verification.
 
-### Op 3 — #3 Screenshot FPS spike (gates Op 5)
+### Op 3 — #3 Screenshot FPS spike (gates Op 5) — MEASURED 2026-08-01 (see SPIKE_screenshot_fps.md)
 
-- Time `scene:rq_screenshot` round-trips at 720p and 1080p; answer "is one-in-flight pacing sufficient for steady pacing?"
-- Fold in 4a's open question: does `OS.execute` output-array capture work from a worker `Thread`?
-- Deliverable: numbers + go/no-go recommendation appended to this note.
+- Measured `scene:rq_screenshot` [rq_id] → `game_view:get_screenshot` [id,w,h,path] one-in-flight, deferred idle yield, at 720p 16-18 fps fg / 1 fps bg, 1080p 9.4 fps mixed. Game must be foreground — low_processor fix attempt reverted after proving ineffective. Pattern abstracted for reuse in Op 5: id tracking, has_capture only while measuring to avoid shadowing GameViewDebugger, deferred send_next, stddev measurement.
+- Thread ffmpeg probe: `OS.execute` output-array capture from worker Thread verified via dock button (exit 0 no freeze).
+- Deliverable: `notes/SPIKE_screenshot_fps.md` + go/no-go: **GO** — 16-18 fps @720p fg = low-end product viable dev-tool, OBS remains primary.
+- Spike code cleaned: `editor/screenshot_spike_plugin.gd`, `test/manual/screenshot_spike.*` removed after measurement, SPIKE_ENABLED conditionals removed, no lingering refs — ready to promote pattern to `BackendScreenshotCapture`.
 
 ### Op 4 — #5+#6 Movie Maker hardening batch (no deps)
 

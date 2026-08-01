@@ -1,6 +1,6 @@
 # Engine-Native Recording Enhancements (before OBS)
 
-Status: Op 1 shipped (2026-08-01) — 43/43 GUT green incl. button-state matrix. Next: Op 2 graceful-stop.
+Status: Op 1-3 shipped (2026-08-01) — 43 green Op 1, 66 green Op 2, Op 3 measured at 16-18 fps foreground / 1 fps backgrounded (see `SPIKE_screenshot_fps.md`). Next: Op 4 hardening (#5 format dropdown + #6 metadata) before Op 5 screenshot backend.
 
 The queue of improvements we can make using only Godot's built-in recording machinery (Movie Maker + the debugger screenshot channel), before the OBS backend (Phase 3/4) becomes the primary in-place path. OBS remains the long-term answer for "record a running scene with audio at full fps", but everything here is engine-native with zero external deps, and each item either fixes a defect in what we ship today or de-risks the in-place story.
 
@@ -38,11 +38,13 @@ Doc-verified mechanism: `_write_end()` "occurs when the engine quits by pressing
 
 In-editor spike still recommended to verify wire (see `.omo/plans/op2_graceful_stop.md` spike checklist) — AVI idx1 finalization after Stop.
 
-## 3. `[~]` Screenshot-channel FPS spike (measure before betting)
+## 3. `[x]` Screenshot-channel FPS spike — MEASURED 2026-08-01 (see `SPIKE_screenshot_fps.md`)
 
-A 30-minute spike to time `scene:rq_screenshot` round-trips at 720p and 1080p (PNG encode on the game side + TCP + file write + decode on the editor side). This number decides whether the zero-dep in-place backend is viable as a product feature or only a dev tool.
+Measured one-in-flight `scene:rq_screenshot` [rq_id] → `game_view:get_screenshot` [id,w,h,path] deferred to idle frame to keep editor responsive. Game must be foreground — verified fix attempt `OS.low_processor_usage_mode=false` did NOT help (reverted).
 
-Deliverable: measured fps per resolution on one machine, plus the answer to "is one screenshot request in flight at a time sufficient for steady pacing?"
+Results on AMD RENoir/Vulkan/Linux/Godot 4.7.1: 16-18 fps @~720p foreground (55-62ms avg, 136-143 frames/10s), 9.4 fps @1080p mixed, **1.0 fps when game backgrounded** (1000ms sleep, platform/window-manager throttling beyond addon control). Foreground requirement documented for Op 5. One-in-flight pacing with deferred idle yield works — tight loop starved editor. Go for Op 5 as IN_PLACE dev-tool/bug-report backend (16-18 fps zero-dep), OBS remains primary.
+
+Harness was `editor/screenshot_spike_plugin.gd` (removed after measurement) + `test/manual/screenshot_spike.tscn` (removed). Pattern to reuse for Op 5: `EditorDebuggerPlugin` claiming `game_view` prefix, pacing via `call_deferred`, id tracking for multiplexing, `has_capture` only while measuring to avoid shadowing GameViewDebugger.
 
 ## 4. `[>]` BackendScreenshotCapture — zero-dep in-place recording
 

@@ -4,23 +4,34 @@ class_name GdTMDebuggerPlugin
 
 ## Editor-side bridge to the running game's debugger channel.
 ##
-## API CORRECTION (verified 2026-08-01): `EditorDebuggerPlugin` does NOT have
-## `send_message()`. Editor->game messages are sent on `EditorDebuggerSession`
+## API correction (verified 2026-08-01): `EditorDebuggerPlugin` does NOT have
+## `send_message()`. Editor→game messages are sent on `EditorDebuggerSession`
 ## via `get_session(id).send_message(...)`. The editor sends the full
 ## `"prefix:payload"` wire form; the game side registers a capture on the
 ## prefix and receives the payload with the prefix stripped.
 ##
-## This plugin only *sends* for Op 2 (graceful stop). `_has_capture` /
-## `_capture` claim the `gd_time_machine` prefix so future Op 5 screenshot
-## replies can be received editor-side; the actual handling is a placeholder.
+## Current roles (Op 2-3):
+## - Op 2 graceful-stop: send-only `gd_time_machine:graceful_stop` → game quit
+## - Op 5 future BackendScreenshotCapture: will be extended to pace
+##   `scene:rq_screenshot` [rq_id] → `game_view:get_screenshot` [id,w,h,path],
+##   one-in-flight with deferred idle yield, id tracking, has_capture only
+##   while measuring/capturing to avoid shadowing GameViewDebugger (see
+##   notes/SPIKE_screenshot_fps.md for pitfalls: sync _send_rq inside _capture
+##   starves editor, claiming game_view always shadows builtin).
+## `_has_capture` / `_capture` are placeholder for that future use.
 
 
 func _has_capture(capture: String) -> bool:
+	# Today: only gd_time_machine for graceful-stop. Future Op 5 will also
+	# claim game_view while actively capturing — but only then, to avoid
+	# shadowing GameViewDebugger's own screenshots (see spike notes).
 	return capture == "gd_time_machine"
 
 
 func _capture(message: String, data: Array, session_id: int) -> bool:
-	# Placeholder for Op 5 screenshot replies. Nothing to consume yet.
+	# Placeholder for Op 5 screenshot replies. Nothing to consume yet — and
+	# returning false here lets GameViewDebugger handle game_view messages
+	# until Op 5 claims it.
 	return false
 
 
