@@ -152,11 +152,13 @@ addons/gd-time-machine/
 ├── backend/
 │   └── backend_movie_maker.gd
 ├── ui/
-│   ├── recorder_dock.gd
-│   ├── recorder_dock.tscn
+│   ├── time_machine_dock.gd
+│   ├── time_machine_dock.tscn
 │   └── icons/
 │       ├── icon_record.svg     or .png
 │       └── icon_stop.svg
+test/manual/
+└── recording_smoke.tscn        # manual smoke scene for Movie Maker backend
 ```
 
 **`backend/backend_movie_maker.gd`:**
@@ -165,12 +167,12 @@ addons/gd-time-machine/
 extends RecorderBackend
 class_name BackendMovieMaker
 
-func get_name() -> String:    return "Godot Movie Maker"
+func get_backend_name() -> String:    return "Godot Movie Maker"
 func get_description() -> String:  return "Built-in Godot encoder. No extra software needed."
 
 func is_available() -> bool:  return true   # always available in Godot 4
 
-func is_recording() -> bool:  return EditorInterface.is_movie_maker_enabled()
+func is_recording() -> bool:  return _active   # internal session state, not is_movie_maker_enabled()
 
 func start(config: Dictionary) -> void:
     ProjectSettings.set_setting("editor/movie_writer/movie_file", config.output_path)
@@ -182,20 +184,27 @@ func start(config: Dictionary) -> void:
 
 func stop() -> void:
     EditorInterface.set_movie_maker_enabled(false)
-    EditorInterface.stop_playing()
+    EditorInterface.stop_playing_scene()   # NOTE: stop_playing() does not exist in 4.x
 ```
 
-**Start detection:** Connect to `EditorInterface.play_mode_changed` signal or poll `EditorInterface.is_playing_scene()` via a Timer.
+**Start detection:** Poll `EditorInterface.is_playing_scene()` via a 0.5s Timer. There is
+NO `play_mode_changed` signal on EditorInterface (verified on 4.7.1; feature request
+godot-proposals#3504 / PR godot#103056 still unmerged). When playback begins → emit
+`recording_started`. EditorInterface/ProjectSettings calls go through `_`-prefixed seam
+methods so GUT tests can fake the editor.
 
-**Stop detection:** Use a Timer (e.g., 0.5s interval) that polls `EditorInterface.is_playing_scene()`. When playback stops, emit `recording_stopped`. This catches both manual stop (user clicks Stop) and natural exit (scene closes).
+**Stop detection:** Same Timer polls `is_playing_scene()`. When playback stops, emit
+`recording_stopped`. This catches both manual stop (user clicks Stop) and natural exit
+(scene closes). A one-shot duration timer (from `config.duration`, 0 = off) auto-stops the
+recording; if the scene never starts playing before it elapses, `recording_error` is
+emitted instead (watchdog).
 
-**`ui/recorder_dock.tscn` layout:**
+**`ui/time_machine_dock.tscn` layout** (minimal; title "GdTimeMachine"):
 ```
 VBoxContainer
 ├── HBoxContainer — Title
-│   ├── TextureRect — icon
-│   ├── Label — "Godot Recorder"
-│   └── Button — ⚙ settings
+│   ├── TextureRect — icon (icon_record.svg)
+│   └── Label — "GdTimeMachine"
 ├── HSeparator
 ├── HBoxContainer — Backend selector
 │   ├── Label — "Backend:"
@@ -203,48 +212,48 @@ VBoxContainer
 ├── VBoxContainer — Settings group
 │   ├── HBoxContainer — Scene
 │   │   ├── LineEdit (editable, populated from current scene)
-│   │   └── Button — "Use Current"
+│   │   └── Button — "Current" (Use Current)
 │   ├── HBoxContainer — Duration
-│   │   ├── SpinBox (1–300, default 30)
-│   │   └── Label — "seconds"
+│   │   └── SpinBox (1–300, default 30, suffix " s")
 │   └── HBoxContainer — FPS
-│       ├── SpinBox (15–240, default 60)
-│       └── Label — "fps"
+│       └── SpinBox (15–240, default 60)
 ├── HBoxContainer — Output
-│   ├── Label — "→"
-│   └── LineEdit (default: "res://media/captures/")
+│   ├── Label — "Output:"
+│   └── LineEdit (default: "res://media/captures")
 ├── HBoxContainer — Status
 │   ├── Label — "Status: Ready"
-│   └── TextureRect — status indicator (green/red/grey)
-├── Button — "● Record" / "■ Stop"  (toggles)
-└── VBoxContainer — Recent captures
-    ├── Label — "Recent captures:"
-    └── ItemList — populated by scanning output dir
+│   └── ColorRect — status indicator (green/red/grey)
+└── Button — "Record" / "Stop"  (toggles; icon_record.svg / icon_stop.svg)
 ```
 
-**`ui/recorder_dock.gd`:**
+> Recent-captures ItemList is **deferred to Phase 5** (locked decision) — Phase 2 dock is minimal.
+
+**`ui/time_machine_dock.gd`:**
 ```gdscript
 @tool
 extends VBoxContainer
 
 var controller: RecorderController
 
+func setup(controller: RecorderController) -> void: ...   # called by plugin.gd before dock enters tree
+
 func _ready() -> void:
-    controller = find_parent("EditorPlugin").get_node("RecorderController")
-    controller.recording_started.connect(_on_recording_started)
-    controller.recording_stopped.connect(_on_recording_stopped)
-    # populate backend selector from controller.backends
+    # connect UI signals; @onready $ paths (unique % names don't resolve on reparented docks)
+    # load icons lazily with load() — preload() fails during first import scan
 
 func _on_record_pressed() -> void:
     if controller.is_recording():
         controller.stop_recording()
     else:
         controller.start_recording({
-            output_path = _build_output_path(),
+            output_path = _build_output_path(),   # {output_dir}/{scene}_{timestamp}.avi
             scene_path = $ScenePath.text,
             fps = $FPS.value,
         })
 ```
+
+Dock settings persist under `gd_time_machine/recorder/*` EditorSettings keys (output_dir,
+default_duration, default_fps, default_backend) — read with fallbacks, written on change.
 
 **Acceptance:**
 - Plugin loads, dock appears, Movie Maker backend is selectable
@@ -516,10 +525,9 @@ addons/gd-time-machine/
 │   └── platform_capture.gd             # Phase 4
 │
 ├── ui/
-│   ├── recorder_dock.gd                # Phase 2
-│   ├── recorder_dock.tscn              # Phase 2
+│   ├── time_machine_dock.gd              # Phase 2
+│   ├── time_machine_dock.tscn            # Phase 2
 │   └── icons/
-│       ├── icon_recorder.svg
 │       ├── icon_record.svg
 │       └── icon_stop.svg
 │
@@ -534,6 +542,8 @@ addons/gd-time-machine/
     │   ├── test_recorder_backend.gd
     │   ├── test_backend_movie_maker.gd
     │   └── test_backend_obs.gd
+    ├── manual/
+    │   └── recording_smoke.tscn          # Phase 2 — animated scene for manual Movie Maker verification
     └── integration/
         └── test_obs_connection.gd
 ```

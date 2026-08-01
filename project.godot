@@ -18,6 +18,10 @@ config/icon="res://icon.svg"
 
 project/assembly_name="GdTimeMachine"
 
+[editor]
+
+movie_writer/movie_file="res://media/captures/recording_smoke_2026-07-31T22-09-07.avi"
+
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/gd-time-machine/plugin.cfg", "res://addons/gut/plugin.cfg")

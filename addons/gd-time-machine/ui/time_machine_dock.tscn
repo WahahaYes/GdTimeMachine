@@ -1,0 +1,100 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://addons/gd-time-machine/ui/time_machine_dock.gd" id="1_dock"]
+
+[node name="GdTimeMachine" type="VBoxContainer"]
+theme_override_constants/separation = 4
+script = ExtResource("1_dock")
+
+[node name="TitleBar" type="HBoxContainer" parent="."]
+theme_override_constants/separation = 6
+
+[node name="TitleIcon" type="TextureRect" parent="TitleBar" unique_name_in_owner = true]
+custom_minimum_size = Vector2(16, 16)
+expand_mode = 1
+stretch_mode = 5
+
+[node name="TitleLabel" type="Label" parent="TitleBar"]
+text = "GdTimeMachine"
+
+[node name="Separator" type="HSeparator" parent="."]
+
+[node name="BackendRow" type="HBoxContainer" parent="."]
+theme_override_constants/separation = 4
+
+[node name="BackendLabel" type="Label" parent="BackendRow"]
+text = "Backend:"
+
+[node name="BackendOption" type="OptionButton" parent="BackendRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+
+[node name="SettingsGroup" type="VBoxContainer" parent="."]
+theme_override_constants/separation = 2
+
+[node name="SceneRow" type="HBoxContainer" parent="SettingsGroup"]
+theme_override_constants/separation = 4
+
+[node name="SceneLabel" type="Label" parent="SettingsGroup/SceneRow"]
+custom_minimum_size = Vector2(60, 0)
+text = "Scene:"
+
+[node name="SceneEdit" type="LineEdit" parent="SettingsGroup/SceneRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+placeholder_text = "res://scenes/my_scene.tscn"
+
+[node name="UseCurrentButton" type="Button" parent="SettingsGroup/SceneRow" unique_name_in_owner = true]
+text = "Current"
+
+[node name="DurationRow" type="HBoxContainer" parent="SettingsGroup"]
+theme_override_constants/separation = 4
+
+[node name="DurationLabel" type="Label" parent="SettingsGroup/DurationRow"]
+custom_minimum_size = Vector2(60, 0)
+text = "Duration:"
+
+[node name="DurationSpin" type="SpinBox" parent="SettingsGroup/DurationRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+min_value = 1.0
+max_value = 300.0
+value = 30.0
+suffix = " s"
+
+[node name="FpsRow" type="HBoxContainer" parent="SettingsGroup"]
+theme_override_constants/separation = 4
+
+[node name="FpsLabel" type="Label" parent="SettingsGroup/FpsRow"]
+custom_minimum_size = Vector2(60, 0)
+text = "FPS:"
+
+[node name="FpsSpin" type="SpinBox" parent="SettingsGroup/FpsRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+min_value = 15.0
+max_value = 240.0
+value = 60.0
+
+[node name="OutputRow" type="HBoxContainer" parent="SettingsGroup"]
+theme_override_constants/separation = 4
+
+[node name="OutputLabel" type="Label" parent="SettingsGroup/OutputRow"]
+custom_minimum_size = Vector2(60, 0)
+text = "Output:"
+
+[node name="OutputEdit" type="LineEdit" parent="SettingsGroup/OutputRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+text = "res://media/captures"
+
+[node name="StatusRow" type="HBoxContainer" parent="."]
+theme_override_constants/separation = 6
+
+[node name="StatusLight" type="ColorRect" parent="StatusRow" unique_name_in_owner = true]
+custom_minimum_size = Vector2(12, 12)
+size_flags_vertical = 4
+color = Color(0.62, 0.62, 0.62, 1)
+
+[node name="StatusLabel" type="Label" parent="StatusRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+text = "Ready"
+clip_text = true
+
+[node name="RecordButton" type="Button" parent="." unique_name_in_owner = true]
+text = "Record"
