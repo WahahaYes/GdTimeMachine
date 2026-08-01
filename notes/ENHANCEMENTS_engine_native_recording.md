@@ -1,16 +1,16 @@
 # Engine-Native Recording Enhancements (before OBS)
 
-Status: brainstorm backlog — nothing implemented yet.
+Status: Op 1 shipped (2026-08-01) — 43/43 GUT green incl. button-state matrix. Next: Op 2 graceful-stop.
 
 The queue of improvements we can make using only Godot's built-in recording machinery (Movie Maker + the debugger screenshot channel), before the OBS backend (Phase 3/4) becomes the primary in-place path. OBS remains the long-term answer for "record a running scene with audio at full fps", but everything here is engine-native with zero external deps, and each item either fixes a defect in what we ship today or de-risks the in-place story.
 
-Legend: `[>]` designed, not built · `[~]` needs a spike/verification · `[ ]` idea
+Legend: `[x]` shipped · `[>]` designed, not built · `[~]` needs a spike/verification · `[ ]` idea
 
 Engine facts these build on are cited in `BRAINSTORM_in_place_recording.md` (constraints 1–10, verified against the official `MovieWriter` class docs on 2026-08-01).
 
 ______________________________________________________________________
 
-## 1. `[>]` CaptureMode on `RecorderBackend` + grey-out the in-game button
+## 1. `[x]` CaptureMode on `RecorderBackend` + grey-out the in-game button — SHIPPED 2026-08-01
 
 The interface generalization from `BRAINSTORM_in_place_recording.md` — the first concrete step of that plan, and the thing that makes the UI honest about what each backend can do.
 
@@ -20,24 +20,23 @@ The interface generalization from `BRAINSTORM_in_place_recording.md` — the fir
 - GameView toolbar button greys out with an explanatory tooltip when `!recording and mode == RESTART_SCENE` — only the Record state; Stop is always allowed. Run-bar button unchanged (restart is the expected price there).
 - Dock "Scene / Use Current" section hides when mode is `IN_PLACE`.
 
-Files: `backend/recorder_backend.gd`, `backend/backend_movie_maker.gd`, `controller/recorder_controller.gd`, `plugin.gd`, `ui/time_machine_dock.gd`. Tests: default mode on the abstract base; `get_capture_mode()` routing via the controller; button grey-out state transitions (Record disabled when `!recording + RESTART_SCENE`, enabled when recording or `IN_PLACE`, re-applied on `backend_changed`/`recording_*`).
+Implemented: `backend/recorder_backend.gd` enum + default, `backend_movie_maker.gd` explicit override, `controller/recorder_controller.gd` forwarder, `plugin.gd` pure `compute_game_view_button_state()` + `_refresh_game_view_button()` wired to `backend_changed`/`recording_*`, `ui/time_machine_dock.gd` SceneRow hide. Tests: `test_recorder_backend.gd` default + `test_recorder_controller.gd` routing/reapply + `test_plugin_button_state.gd` 5-case matrix. 43/43 GUT green.
 
-## 2. `[>]` Graceful-stop autoload — finalize the AVI on Stop
+## 2. `[x]` Graceful-stop autoload — finalize the AVI on Stop — SHIPPED 2026-08-01
 
-Fixes a defect in the current backend: editor Stop SIGKILLs the game, so `_write_end()` never runs and the AVI is left without its final index/header.
+Fixes a defect in the current backend: editor Stop SIGKILLs the game (OS::kill SIGKILL at editor_run_bar.cpp:462), so `_write_end()` never runs and the AVI is left without its final index/header.
 
 Doc-verified mechanism: `_write_end()` "occurs when the engine quits by pressing the window manager's close button, or when `SceneTree.quit()` is called" — so a graceful `get_tree().quit()` from the game finalizes the file.
 
-Design:
+**Shipped design (API correction verified 2026-08-01):** `EditorDebuggerPlugin` does NOT have `send_message()` — editor→game messages are sent on `EditorDebuggerSession` via `get_session(id).send_message("gd_time_machine:graceful_stop", [])`. Game side registers capture name `gd_time_machine`, callable receives payload `graceful_stop` (prefix stripped at remote_debugger.cpp:658-672).
 
-- Addon ships a game-side autoload (`autoload/graceful_stop.gd`) injected via `EditorPlugin.add_autoload_singleton()` on `_enter_tree`, removed on `_exit_tree` — no permanent footprint in the user's project.
-- The autoload registers `EngineDebugger.register_message_capture( "gd_time_machine:graceful_stop", ...)`; on message → `get_tree().quit()`.
-- `BackendMovieMaker.stop()` (and the plugin's stop path) first sends `gd_time_machine:graceful_stop` to the running game via an `EditorDebuggerPlugin.send_message()`, then stops playback.
-- Side benefit: window-close on the game window already finalizes, so manual quits are safe too.
+- `autoload/graceful_stop.gd` (game-side Node, no @tool): registers `gd_time_machine` capture in `_ready()`, `_quit_game()` seam (get_tree().quit()) for GUT, unregisters on `_exit_tree`.
+- `editor/debugger_plugin.gd` `@tool extends EditorDebuggerPlugin` `GdTMDebuggerPlugin`: `_has_capture` claims `gd_time_machine`, `send_graceful_stop()` broadcasts to all sessions via `get_session(i).send_message()`, fallback to session 0 (single-session editor), `_send_to_session` guards `is_active()` so detached debugger never crashes editor. Placeholder `_capture` for future Op 5 screenshot replies.
+- `plugin.gd`: `add_debugger_plugin()` + `add_autoload_singleton(AUTOLOAD_NAME="GdTimeMachineGracefulStop")` on `_enter_tree`, removal in reverse on `_exit_tree` (autoload dirties project.godot [autoload] — crash leaves residue, accepted caveat). Injects debugger plugin into `BackendMovieMaker._debugger_plugin`.
+- `backend_movie_maker.gd` funnel: `stop()` sends graceful message BEFORE any SIGKILL fallback, sets `_stopping=true`, arms grace Timer 2.0s (seam `_get_grace_period()` → 0.1s in tests), keeps polling. `_on_poll_timeout` during `_stopping` → finalizes when `!_is_playing_scene()`. `_on_grace_timeout` force-calls `_stop_playing_scene()` then `_finalize_stopped()`. `_finalize_stopped()` single-emission guard (`not _active and not _stopping` → no-op). `_stopping` idempotency + duration-timeout-during-grace ignored. `is_recording()` stays true during grace window.
+- Tests: 22 BackendMovieMaker (was 16) incl. graceful-sent-before-stop_playing, single emission via poll, grace-timer fallback, stop-during-grace idempotency, duration-during-grace no-double, natural-exit-no-graceful; 5 autoload harness (quit seam); 13 debugger plugin (contract + mirror behavior) — 66/66 green.
 
-Verify in a spike: `EngineDebugger.register_message_capture` from GDScript + `EditorDebuggerPlugin.send_message` round-trip (both documented APIs).
-
-Files: new `autoload/graceful_stop.gd`, `plugin.gd` (debugger plugin registration), seam on `backend_movie_maker.gd` for the send. Tests: stop flow emits the message before `_stop_playing_scene()`; autoload calls `quit()` on message (via a seam on `get_tree().quit()` so GUT can fake it headlessly).
+In-editor spike still recommended to verify wire (see `.omo/plans/op2_graceful_stop.md` spike checklist) — AVI idx1 finalization after Stop.
 
 ## 3. `[~]` Screenshot-channel FPS spike (measure before betting)
 

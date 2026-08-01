@@ -1,6 +1,6 @@
 # Session Plan — Engine-Native Recording Enhancements
 
-Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Status: ✅ Aligned — ready to implement, nothing built yet
+Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Update 2026-08-01: Op 1 shipped (43 GUT green incl. button-state matrix). Research ses_041598e3dffeO0PR0i4m6iIrH6 verified EditorDebuggerSession.send_message API. Status: ✅ Op 1 shipped — Op 2 plan ready at `.omo/plans/op2_graceful_stop.md`
 
 ## Goal
 
@@ -22,21 +22,23 @@ Rationale: #5+#6 sit before #4 because they are unconditional value (Movie Maker
 
 ## Op specs
 
-### Op 1 — #1 CaptureMode + honest UI (no deps, small)
+### Op 1 — #1 CaptureMode + honest UI (no deps, small) — SHIPPED 2026-08-01
 
 - `backend/recorder_backend.gd`: `enum CaptureMode { RESTART_SCENE, IN_PLACE }`, `get_capture_mode()` defaulting to `RESTART_SCENE`. BackendMovieMaker relies on the default (explicit override optional, documentation value only).
 - `controller/recorder_controller.gd`: null-safe `get_capture_mode()` forwarder.
 - `plugin.gd`: extract a pure `_compute_button_state(recording, mode)` for testability; **wire buttons to `backend_changed`** (gap found during spec — buttons currently only listen to `recording_started`/`recording_stopped`, so the grey-out would go stale on backend switch). Grey out only the GameView button, only when `!recording and mode == RESTART_SCENE`; Stop always enabled; run-bar and dock buttons unchanged.
 - `ui/time_machine_dock.gd`: hide `$SettingsGroup/SceneRow` when `IN_PLACE`.
 - Tests: default mode on abstract base; controller routing; button-state matrix incl. re-apply on `backend_changed`/`recording_*` (fake IN_PLACE backend).
+- **Shipped:** 43/43 green.
 
-### Op 2 — #2 Graceful-stop autoload (no deps; builds #4 infra)
+### Op 2 — #2 Graceful-stop autoload (no deps; builds #4 infra) — SHIPPED 2026-08-01 (66/66 green)
 
-- Task 0 (30 min, in-editor): verify `EditorDebuggerPlugin.send_message` → game-side `EngineDebugger.register_message_capture` round-trip with a throwaway script.
-- New `autoload/graceful_stop.gd`: capture `gd_time_machine:graceful_stop` → `get_tree().quit()` behind a seam. Registered via `add_autoload_singleton()` on `_enter_tree`, removed on `_exit_tree`.
-- One `EditorDebuggerPlugin` subclass registered in `plugin.gd` — this same registration hosts Op 5's screenshot loop later.
-- **Stop-flow rework** (race found during spec): today `stop()` emits `recording_stopped` then kills playback; with a graceful quit the poll sees not-playing and `_finalize_stopped()` would emit a second time. New funnel: `stop()` sends the message, sets `_stopping`, starts a ~2s grace timer; poll-observed exit or timer expiry → single `_finalize_stopped()`; timer expiry also force-calls `_stop_playing_scene()` as fallback. All stop paths (manual, duration, natural exit) converge on the one emission site.
-- Tests: message sent before `_stop_playing_scene()`; autoload quit seam; single emission across stop paths; force-stop fallback.
+- Task 0 (30 min, in-editor): verify `EditorDebuggerPlugin.send_message` → game-side `EngineDebugger.register_message_capture` round-trip with a throwaway script. **API correction:** `EditorDebuggerPlugin` does NOT have `send_message()` — it lives on `EditorDebuggerSession` via `get_session(id).send_message("gd_time_machine:graceful_stop", [])`. Verified against engine source (editor_debugger_plugin.cpp:63-66, remote_debugger.cpp:658-672) and wild addons (beehave, dialogue_manager, godot-statecharts, cozy-cube relays).
+- New `autoload/graceful_stop.gd`: capture `gd_time_machine` prefix → payload `graceful_stop` → `get_tree().quit()` behind `_quit_game()` seam. Registered via `add_autoload_singleton()` on `_enter_tree`, removed on `_exit_tree`.
+- One `EditorDebuggerPlugin` subclass (`editor/debugger_plugin.gd` `GdTMDebuggerPlugin`) registered in `plugin.gd` — this same registration hosts Op 5's screenshot loop later. `send_graceful_stop()` broadcasts to all sessions + fallback to session 0, `_send_to_session` guards `is_active()`.
+- **Stop-flow rework** (race found during spec): today `stop()` emits `recording_stopped` then kills playback; with a graceful quit the poll sees not-playing and `_finalize_stopped()` would emit a second time. New funnel: `stop()` sends the message, sets `_stopping`, starts a ~2s grace timer; poll-observed exit or timer expiry → single `_finalize_stopped()`; timer expiry also force-calls `_stop_playing_scene()` as fallback. All stop paths (manual, duration, natural exit) converge on the one emission site. `_active` stays true during grace so `is_recording()` remains true and double-stop is idempotent.
+- Tests: message sent before `_stop_playing_scene()`; autoload quit seam; single emission across stop paths; force-stop fallback; duration-during-grace no-double; EditorDebuggerPlugin contract+mirror behavior. 66/66 green.
+- In-editor spike checklist lives in `.omo/plans/op2_graceful_stop.md` — still recommended for AVI idx1 manual verification.
 
 ### Op 3 — #3 Screenshot FPS spike (gates Op 5)
 

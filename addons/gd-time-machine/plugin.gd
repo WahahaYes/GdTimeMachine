@@ -6,8 +6,18 @@ const ICON_STOP_PATH := "res://addons/gd-time-machine/ui/icons/icon_stop.svg"
 const TOOLTIP_DEFAULT := "GdTimeMachine — Start/stop recording (uses the dock settings)"
 const TOOLTIP_RESTART_DISABLED := "Recording with this backend restarts the scene — disabled here to protect the running game.\nStart from the dock or run bar instead, or switch to an in-place backend in the dock."
 
+# Graceful-stop wiring. The autoload is what the running game uses to receive
+# the editor's graceful-stop debugger message and quit cleanly (so Movie Maker
+# finalizes the AVI instead of being SIGKILLed). add_autoload_singleton()
+# writes the entry into project.godot's [autoload] section; _exit_tree removes
+# it, but a crash while the plugin is enabled leaves residue there (accepted —
+# see notes/SESSION_PLAN_engine_native_recording.md Op 2).
+const AUTOLOAD_NAME := "GdTimeMachineGracefulStop"
+const AUTOLOAD_PATH := "res://addons/gd-time-machine/autoload/graceful_stop.gd"
+
 var _recorder_controller: RecorderController
 var _movie_maker_backend: BackendMovieMaker
+var _debugger_plugin: EditorDebuggerPlugin = null  # injected into the backend for graceful stop
 var _dock: TimeMachineDock
 var _run_bar_button: Button
 var _game_view_button: Button
@@ -15,9 +25,21 @@ var _game_view_section: HBoxContainer
 
 
 func _enter_tree() -> void:
+	# Graceful-stop wiring. The debugger plugin is registered first so the
+	# backend can be handed a live reference to it; the autoload singleton is
+	# registered alongside so the running game receives the graceful-stop
+	# message and quits cleanly (finalizing the AVI) instead of being SIGKILLed.
+	#
+	# NOTE: docs recommend _enable_plugin()/_disable_plugin() for symmetric
+	# autoload registration, but we stay with _enter_tree()/_exit_tree() for
+	# consistency with the rest of this plugin and with wild addons in the wild.
+	_debugger_plugin = preload("res://addons/gd-time-machine/editor/debugger_plugin.gd").new()
+	add_debugger_plugin(_debugger_plugin)
+	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
 	_recorder_controller = RecorderController.new()
 	add_child(_recorder_controller)
 	_movie_maker_backend = BackendMovieMaker.new()
+	_movie_maker_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_movie_maker_backend)
 	_dock = preload("res://addons/gd-time-machine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller)
@@ -32,6 +54,16 @@ func _enter_tree() -> void:
 func _exit_tree() -> void:
 	if _recorder_controller:
 		_recorder_controller.stop_recording_if_active()
+	# Tear down graceful-stop wiring (reverse of _enter_tree) before the
+	# controller/backend are freed. The backend keeps a reference to the
+	# debugger plugin; drop it first so removal is clean. EditorDebuggerPlugin
+	# is RefCounted — remove_debugger_plugin() is enough, no queue_free().
+	if _debugger_plugin:
+		if _movie_maker_backend:
+			_movie_maker_backend._debugger_plugin = null
+		remove_debugger_plugin(_debugger_plugin)
+		_debugger_plugin = null
+	remove_autoload_singleton(AUTOLOAD_NAME)
 	if _run_bar_button:
 		if _run_bar_button.is_inside_tree():
 			_run_bar_button.get_parent().remove_child(_run_bar_button)

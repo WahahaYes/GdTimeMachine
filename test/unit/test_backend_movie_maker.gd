@@ -13,6 +13,8 @@ class FakeMovieMaker:
 	var played_current_scene := false
 	var stop_playing_calls := 0
 	var project_save_calls := 0
+	var graceful_sent := false
+	var graceful_send_count := 0
 
 	func _set_movie_file(path: String) -> void:
 		movie_file_set = path
@@ -39,6 +41,14 @@ class FakeMovieMaker:
 
 	func _stop_playing_scene() -> void:
 		stop_playing_calls += 1
+
+	func _send_graceful_stop_message() -> void:
+		graceful_sent = true
+		graceful_send_count += 1
+
+	func _get_grace_period() -> float:
+		# Short grace window so tests exercise the force-stop fallback fast.
+		return 0.1
 
 
 const OUTPUT := "res://media/captures/demo_2026-01-01T00-00-00.avi"
@@ -157,11 +167,19 @@ func test_stop_emits_stopped_and_disables_movie_maker() -> void:
 	backend.playing = true
 	backend._on_poll_timeout()
 	backend.stop()
+	# Graceful funnel: message sent, nothing finalized yet, playback untouched.
+	assert_true(backend.graceful_sent)
+	assert_eq(backend.stop_playing_calls, 0)
+	assert_eq(stopped.size(), 0)
+	assert_true(backend.is_recording())
+	# Game exits on its own; poll observes it → single emission, no force-stop.
+	backend.playing = false
+	backend._on_poll_timeout()
 	assert_eq(stopped.size(), 1)
 	assert_eq(stopped[0], ["Godot Movie Maker", OUTPUT])
 	assert_false(backend.is_recording())
 	assert_false(backend.movie_maker_enabled)
-	assert_eq(backend.stop_playing_calls, 1)
+	assert_eq(backend.stop_playing_calls, 0)
 
 
 func test_stop_when_not_recording_is_noop() -> void:
@@ -185,6 +203,88 @@ func test_no_double_stopped_emission_after_natural_exit_then_stop() -> void:
 	backend._on_poll_timeout()  # natural exit
 	backend.stop()  # explicit stop afterwards must not re-emit
 	assert_eq(stopped.size(), 1)
+	assert_false(backend.graceful_sent)
+
+
+func test_stop_single_emission_when_poll_sees_exit() -> void:
+	var backend := _make_backend()
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.stop()
+	backend.playing = false
+	backend._on_poll_timeout()  # graceful exit observed
+	assert_eq(stopped.size(), 1)
+	backend._on_poll_timeout()  # idle poll after finalize must not re-emit
+	assert_eq(stopped.size(), 1)
+
+
+func test_grace_timer_forces_stop_and_single_emission() -> void:
+	var backend := _make_backend()
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.stop()
+	# Game never quits; grace timer (0.1s in the fake) expires → force-stop.
+	await wait_seconds(0.25)
+	assert_eq(stopped.size(), 1)
+	assert_eq(stopped[0], ["Godot Movie Maker", OUTPUT])
+	assert_eq(backend.stop_playing_calls, 1)
+	assert_true(backend.graceful_sent)
+	assert_false(backend.is_recording())
+	assert_false(backend.movie_maker_enabled)
+	# No second emission after the grace window.
+	await wait_seconds(0.2)
+	assert_eq(stopped.size(), 1)
+
+
+func test_stop_during_grace_is_idempotent() -> void:
+	var backend := _make_backend()
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.stop()
+	backend.stop()  # second stop during grace must not re-send or finalize
+	assert_eq(backend.graceful_send_count, 1)
+	assert_eq(stopped.size(), 0)
+	backend.playing = false
+	backend._on_poll_timeout()
+	assert_eq(stopped.size(), 1)
+
+
+func test_duration_timeout_during_grace_does_not_double_emit() -> void:
+	var backend := _make_backend()
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.stop()
+	backend._on_duration_timeout()  # fires during grace → ignored
+	backend.playing = false
+	backend._on_poll_timeout()
+	assert_eq(stopped.size(), 1)
+	assert_false(backend.is_recording())
+
+
+func test_natural_exit_does_not_send_graceful_message() -> void:
+	var backend := _make_backend()
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.playing = false
+	backend._on_poll_timeout()  # natural scene exit, no explicit stop
+	assert_false(backend.graceful_sent)
+	assert_eq(stopped.size(), 1)
+	assert_eq(backend.stop_playing_calls, 0)
 
 
 func test_duration_auto_stops_after_elapsed() -> void:
