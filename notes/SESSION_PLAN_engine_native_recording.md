@@ -1,6 +1,6 @@
 # Session Plan — Engine-Native Recording Enhancements
 
-Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Update 2026-08-01: Op 1-2 shipped (66 GUT green incl. graceful-stop funnel, ButtonState matrix, CaptureMode). Research ses_041598e3dffeO0PR0i4m6iIrH6 verified EditorDebuggerSession.send_message API. Op 3 measured: 16-18 fps @720p fg / 1 fps bg (see `SPIKE_screenshot_fps.md`). Status: ✅ Op 1-3 shipped, spike code cleaned, ready for Op 4 hardening.
+Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Update 2026-08-01: Op 1-2 shipped (66 GUT green incl. graceful-stop funnel, ButtonState matrix, CaptureMode). Research ses_041598e3dffeO0PR0i4m6iIrH6 verified EditorDebuggerSession.send_message API. Op 3 measured: 16-18 fps @720p fg / 1 fps bg (see `SPIKE_screenshot_fps.md`). Status: ✅ Op 1-4 shipped (106/106 GUT green), spike code cleaned. Update 2026-08-02: Op 5 scope locked — screenshot core first, ffmpeg 4a separate.
 
 ## Goal
 
@@ -54,11 +54,20 @@ Rationale: #5+#6 sit before #4 because they are unconditional value (Movie Maker
 - Tests: config routing per extension; metadata/restore seam assertions.
 - **Shipped:** dropdown (GdTMOutputFormat + `test_output_format.gd`), AVI 4 GB dock warning, and restore-on-stop for `movie_file`+`fps` (no `ProjectSettings.save()` anywhere). Spike outcome: metadata is **NO-GO** — `play_custom_scene()` (RUN_CUSTOM) skips the metadata block, only `play_current_scene()` (RUN_CURRENT) reads it (see `SPIKE_movie_metadata.md`). Remaining: manual windowed verify (see Open items).
 
-### Op 5 — #4 BackendScreenshotCapture core (deps: #1, #2, #3-go)
+### Op 5 — #4 BackendScreenshotCapture core (deps: #1, #2, #3-go) — SCOPE LOCKED 2026-08-02
+
+Core only; the ffmpeg auto-convert hook (4a) is Op 6, separate.
 
 - New `backend/backend_screenshot_capture.gd`, `CaptureMode.IN_PLACE`: paced one-in-flight `scene:rq_screenshot` loop (target fps default ~15) on the Op-2 debugger plugin; buffer received PNG paths.
-- On stop: write frames (`<output_path>.frames/frame_%05d.png`) + manifest (measured average fps, frame count, elapsed) → `recording_stopped`. No container writer, no conversion in this op.
-- Tests: state machine, one-in-flight pacing, stop-writes-files (fakes for debugger + file seams).
+- On stop: copy frames into `<output_path>.frames/frame_%05d.png` + write manifest (measured average fps, frame count, elapsed) → `recording_stopped`. **Game keeps running** — no graceful quit. No container writer, no conversion in this op.
+- Locked decisions (aligned 2026-08-02):
+  - Claim `game_view` prefix **only while recording** (spike: shadowing GameViewDebugger breaks the embedded preview when idle). Expected tradeoff: embedded preview may stall during capture — document it; v1 does not forward frames back.
+  - Copy each PNG **on receipt** (the game writes temp files; side cleanup race) — no batch copy at stop.
+  - No running game on Record → `recording_error` ("Play a scene first"), never auto-launch (that's RESTART behavior).
+  - No-reply timeout during capture → finalize with the frames received so far.
+  - Dock: hide the format row for this backend (PNG-only until 4a; AVI/OGV meaningless pre-convert). Scene row already hidden via #1.
+  - `get_description()` + dock tooltip: foreground requirement, no audio, dev-tool quality (from spike).
+- Tests: state machine, one-in-flight pacing (no 2nd rq before reply), stop-writes-frames+manifest, duration expiry, no-game → error, no-reply timeout → finalize, has_capture only-while-recording (fakes for debugger channel + file seams).
 
 ### Op 6 — #4a ffmpeg auto-convert (deps: #4, #5)
 
@@ -86,12 +95,11 @@ Rationale: #5+#6 sit before #4 because they are unconditional value (Movie Maker
 - [ ] Op 1: `make test-godot` green incl. button-state matrix; GameView button greys with tooltip on Movie Maker, enabled on (fake) IN_PLACE backend
 - [ ] Op 2: stop emits graceful-stop message before playback stops; AVI finalized (index/header present) after editor-initiated Stop — manual windowed verification
 - [ ] Op 3: fps numbers at 720p/1080p + go/no-go appended to this note
-- [ ] Op 4: dropdown routes all three extensions; AVI 4 GB warning shown; no `movie_file`/`fps` residue in project.godot after a recording
+- [x] Op 4: dropdown routes all three extensions; AVI 4 GB warning shown; no `movie_file`/`fps` residue in project.godot after a recording (by construction — the addon never calls `ProjectSettings.save()`; restore seams GUT-tested)
 - [ ] Op 5: frames + manifest written on stop; game never restarts; GUT green
 - [ ] Op 6: probe-present → converted clip + frames cleaned; probe-missing → frames kept + status; nonzero exit → frames kept + stderr tail
 - [ ] Op 7: shortcut, status-bar state, semantics tooltip
 
 ## Open items
 
-- Op 3 spike results pending — Op 5 scope (product feature vs dev tool) depends on the measured ceiling.
-- #6 metadata spike outcome selects metadata vs restore-on-stop for `movie_file`.
+- Manual windowed check (bundles Op 2 AVI-finalization + #6 spike open item): graceful Stop finalizes the AVI (idx1 present) and the child sees in-memory `movie_file`/`fps` via GLOBAL_GET without `save()` — expected, unverified. Do before/with Op 5 build validation.

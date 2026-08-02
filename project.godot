@@ -22,10 +22,6 @@ GdTimeMachineGracefulStop="*uid://c3xtfhcvwdmob"
 
 project/assembly_name="GdTimeMachine"
 
-[editor]
-
-movie_writer/movie_file="res://media/captures/manual_test/recording_smoke_2026-08-01T16-16-33.avi"
-
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/GdTimeMachine/plugin.cfg", "res://addons/gut/plugin.cfg")
