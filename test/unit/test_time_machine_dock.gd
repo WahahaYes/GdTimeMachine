@@ -156,6 +156,29 @@ func test_scene_switch_loads_defaults_when_no_override() -> void:
 	assert_false(dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck").button_pressed)
 
 
+func test_scene_switch_from_override_scene_to_unchecked_scene_loads_defaults() -> void:
+	# User requirement: when moving to a new scene whose "Remember settings
+	# for this scene" box is unchecked (no override), the UI must fall back
+	# to the default profile — not keep showing the previous scene's override
+	# values (i.e. not "do nothing").
+	var store := FakeStore.new()
+	store.default.output_dir = "res://my_default"
+	var override := RecordingProfile.new()
+	override.output_dir = "res://a_specific"
+	override.fps = 30
+	store.scenes["res://scenes/a.tscn"] = override
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	# Scene a has an override → checkbox on, override loaded into the UI.
+	assert_true(check.button_pressed)
+	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://a_specific")
+	# Moving to b (no override, unchecked): falls back to the default profile.
+	dock.on_editor_scene_changed("res://scenes/b.tscn")
+	assert_false(check.button_pressed)
+	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://my_default")
+
+
 func test_scene_switch_to_untitled_saves_previous_and_loads_defaults() -> void:
 	var store := FakeStore.new()
 	store.default.output_dir = "res://my_default"

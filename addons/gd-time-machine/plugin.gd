@@ -42,8 +42,11 @@ var _movie_maker_backend: BackendMovieMaker
 ## Registered debugger plugin; injected into the backend for graceful stop.
 var _debugger_plugin: EditorDebuggerPlugin = null
 
-## Bottom-panel dock instance.
+## Bottom-panel dock instance (plain Control UI hosted inside _editor_dock).
 var _dock: TimeMachineDock
+
+## EditorDock wrapper hosting _dock in the bottom panel (4.6+ add_dock API).
+var _editor_dock: EditorDock
 
 ## Config store for default and per-scene profiles.
 var _config_store: ConfigStore
@@ -74,7 +77,16 @@ func _enter_tree() -> void:
 	_recorder_controller.register_backend(_movie_maker_backend)
 	_dock = preload("res://addons/gd-time-machine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
-	add_control_to_bottom_panel(_dock, "GdTimeMachine")
+	# Bottom-panel placement via the EditorDock API (4.6+). The legacy
+	# add_control_to_bottom_panel() is deprecated; an EditorDock owns the tab
+	# title/slot, and the dock content is added as its child.
+	_editor_dock = EditorDock.new()
+	_editor_dock.name = "GdTimeMachineDock"
+	_editor_dock.title = "GdTimeMachine"
+	_editor_dock.default_slot = EditorDock.DOCK_SLOT_BOTTOM
+	_editor_dock.available_layouts = EditorDock.DOCK_LAYOUT_ALL
+	_editor_dock.add_child(_dock)
+	add_dock(_editor_dock)
 	# Follow the edited scene: the engine emits scene_changed on this plugin
 	# whenever the active scene tab changes, with the new scene root as arg.
 	scene_changed.connect(_on_scene_changed)
@@ -118,9 +130,10 @@ func _exit_tree() -> void:
 		_game_view_section.queue_free()
 		_game_view_section = null
 		_game_view_button = null
-	if _dock:
-		remove_control_from_bottom_panel(_dock)
-		_dock.queue_free()
+	if _editor_dock:
+		remove_dock(_editor_dock)
+		_editor_dock.queue_free()
+		_editor_dock = null
 		_dock = null
 	if _recorder_controller:
 		remove_child(_recorder_controller)

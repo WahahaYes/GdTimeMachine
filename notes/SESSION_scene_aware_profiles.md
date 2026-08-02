@@ -40,6 +40,6 @@ The manual Save/Clear buttons remain as "save now without switching" convenience
 - `ui/time_machine_dock.tscn` — checkbox retitled "Remember settings for this scene".
 - `test/unit/test_time_machine_dock.gd` (new) — real `RecorderController` + `MockBackend` (mirrors test_recorder_controller.gd) + in-memory `FakeStore extends ConfigStore`; SceneEdit pre-seeded so `_prefill_scene` skips `EditorInterface` (unavailable headless). 8 tests: save-on-leave on/off, untitled-previous no-save, override loaded, defaults when no override, untitled target → defaults + checkbox disabled, recording guard.
 
-## Heads-up (adjacent, not addressed)
+## Heads-up (now addressed)
 
-`add_control_to_bottom_panel()` / `add_control_to_dock()` are deprecated in 4.6+ in favor of `add_dock(EditorDock)` with `default_slot = DOCK_SLOT_BOTTOM`. Worth budgeting on a 4.7 cleanup pass.
+`add_control_to_bottom_panel()` / `add_control_to_dock()` are deprecated in 4.6+ in favor of `add_dock(EditorDock)` with `default_slot = DOCK_SLOT_BOTTOM`. **Migrated 2026-08-01** — see `SESSION_editordock_migration.md`.
