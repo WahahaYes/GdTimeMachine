@@ -47,11 +47,12 @@ Rationale: #5+#6 sit before #4 because they are unconditional value (Movie Maker
 - Deliverable: `notes/SPIKE_screenshot_fps.md` + go/no-go: **GO** — 16-18 fps @720p fg = low-end product viable dev-tool, OBS remains primary.
 - Spike code cleaned: `editor/screenshot_spike_plugin.gd`, `test/manual/screenshot_spike.*` removed after measurement, SPIKE_ENABLED conditionals removed, no lingering refs — ready to promote pattern to `BackendScreenshotCapture`.
 
-### Op 4 — #5+#6 Movie Maker hardening batch (no deps)
+### Op 4 — #5+#6 Movie Maker hardening batch (no deps) — SHIPPED 2026-08-01
 
 - #5: dock format dropdown (OGV / AVI / PNG) persisted under `gd_time_machine/recorder/output_format`; **default stays AVI** (decision 2026-08-01 — no behavior change for existing users; OGV opt-in). Extension → `editor/movie_writer/movie_file` routing in the backend; `_build_output_path` uses the selected extension. AVI selected → dock warning label about the 4 GB cap. OGV row/tooltip notes editor-binaries-only.
 - #6 (spike-gated): verify root-node `movie_file` metadata wins over the global setting and survives `play_custom_scene()`. If yes → set metadata on the launched root, drop the global write. If no → restore-on-stop. Either way the `ProjectSettings.save()` pollution dies (decision reversal — see below); metadata covers `movie_file` only, so `fps` gets restore-on-stop regardless.
 - Tests: config routing per extension; metadata/restore seam assertions.
+- **Shipped:** dropdown (GdTMOutputFormat + `test_output_format.gd`), AVI 4 GB dock warning, and restore-on-stop for `movie_file`+`fps` (no `ProjectSettings.save()` anywhere). Spike outcome: metadata is **NO-GO** — `play_custom_scene()` (RUN_CUSTOM) skips the metadata block, only `play_current_scene()` (RUN_CURRENT) reads it (see `SPIKE_movie_metadata.md`). Remaining: manual windowed verify (see Open items).
 
 ### Op 5 — #4 BackendScreenshotCapture core (deps: #1, #2, #3-go)
 

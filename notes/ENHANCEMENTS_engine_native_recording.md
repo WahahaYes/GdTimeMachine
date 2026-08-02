@@ -1,6 +1,6 @@
 # Engine-Native Recording Enhancements (before OBS)
 
-Status: Op 1-3 shipped (2026-08-01) — 43 green Op 1, 66 green Op 2, Op 3 measured at 16-18 fps foreground / 1 fps backgrounded (see `SPIKE_screenshot_fps.md`). Next: Op 4 hardening (#5 format dropdown + #6 metadata) before Op 5 screenshot backend.
+Status: Op 1-3 shipped (2026-08-01) — 43 green Op 1, 66 green Op 2, Op 3 measured at 16-18 fps foreground / 1 fps backgrounded (see `SPIKE_screenshot_fps.md`). Scene-aware profiles + config-store refactor shipped same day (see `SESSION_scene_aware_profiles.md`) — that session also delivered the format dropdown + 4 GB dock warning (#5) and the `EditorDock` migration (see `SESSION_editordock_migration.md`). 106/106 GUT green. Op 4 shipped — #5 dropdown + #6 `project.godot` pollution fixed via restore-on-stop (metadata approach NO-GO, see `SPIKE_movie_metadata.md`). Next: one manual windowed verify (graceful-stop AVI finalization + no-save GLOBAL_GET propagation) before Op 5 (#4) screenshot backend.
 
 The queue of improvements we can make using only Godot's built-in recording machinery (Movie Maker + the debugger screenshot channel), before the OBS backend (Phase 3/4) becomes the primary in-place path. OBS remains the long-term answer for "record a running scene with audio at full fps", but everything here is engine-native with zero external deps, and each item either fixes a defect in what we ship today or de-risks the in-place story.
 
@@ -55,7 +55,7 @@ The engine-native way to "record a running scene, stop without killing it". Real
 - Never queue more than one screenshot request (one-in-flight pacing).
 - Known limits to document: no audio; real-time jitter; fps ceiling from the spike.
 
-Depends on: #3 (fps spike), #1 (`CaptureMode` → `IN_PLACE` so buttons behave), #5 (shared format dropdown for the auto-convert target — conversion can ship after, defaulting to OGV/AVI until the dropdown exists). Files: new `backend/backend_screenshot_capture.gd`, editor-debugger-plugin glue, `backend/ffmpeg_convert.gd` (probe + command builder + async runner), new `recording_converted` signal on `recorder_backend.gd` + controller forwarder, dock "Converting…" status + auto-convert/ffmpeg-path settings, GUT fakes for the debugger and `OS.execute`/`Thread` seams. Tests: state machine, one-in-flight pacing, stop-writes-files (fake PNG paths); probe-present → convert invoked, probe-missing → frames kept + status; exit-0 → `recording_converted` + frames dir cleaned, exit-nonzero → frames kept + `recording_error` with stderr tail.
+Depends on: #3 (fps spike), #1 (`CaptureMode` → `IN_PLACE` so buttons behave), #5 (shared format dropdown for the auto-convert target — shipped 2026-08-01, so 4a maps formats to codec/container pairs directly). Files: new `backend/backend_screenshot_capture.gd`, editor-debugger-plugin glue, `backend/ffmpeg_convert.gd` (probe + command builder + async runner), new `recording_converted` signal on `recorder_backend.gd` + controller forwarder, dock "Converting…" status + auto-convert/ffmpeg-path settings, GUT fakes for the debugger and `OS.execute`/`Thread` seams. Tests: state machine, one-in-flight pacing, stop-writes-files (fake PNG paths); probe-present → convert invoked, probe-missing → frames kept + status; exit-0 → `recording_converted` + frames dir cleaned, exit-nonzero → frames kept + `recording_error` with stderr tail.
 
 #### 4a. ffmpeg auto-convert hook (conditional)
 
@@ -74,23 +74,23 @@ On `stop()`, after frames + manifest are written:
 
 Verify in the #3 spike: exact `OS.execute`/`Thread` signatures and whether a worker thread may call `OS.execute` while the editor runs (it may — but confirm output-array capture works from a thread).
 
-## 5. `[ ]` Movie Maker output-format dropdown (OGV / AVI / PNG) + 4 GB guard
+## 5. `[x]` Movie Maker output-format dropdown (OGV / AVI / PNG) + 4 GB guard — SHIPPED 2026-08-01
 
-The engine ships three writers; we currently hardcode AVI via `editor/movie_writer/movie_file`. Surface the choice in the dock. **The dropdown is backend-agnostic**: Movie Maker maps it to the engine's `editor/movie_writer/movie_file` extension; `BackendScreenshotCapture` maps it to an ffmpeg codec/container pair (see 4a). A single "output format" preference drives both backends. Formats a backend can't write natively are produced by the shared tier-2 ffmpeg hook — per-backend tier-1 sets + the format matrix live in `BRAINSTORM_tier2_ffmpeg_exports.md`.
+The engine ships three writers; we no longer hardcode AVI. **The dropdown is backend-agnostic**: Movie Maker maps it to the engine's `editor/movie_writer/movie_file` extension (the output path's extension drives the engine's writer); `BackendScreenshotCapture` maps it to an ffmpeg codec/container pair (see 4a). A single "output format" preference drives both backends. Formats a backend can't write natively are produced by the shared tier-2 ffmpeg hook — per-backend tier-1 sets + the format matrix live in `BRAINSTORM_tier2_ffmpeg_exports.md`.
 
 - OGV (Theora + Vorbis): smaller files, has audio, editor-binaries only — good default for most captures.
-- AVI (MJPEG + uncompressed audio): current default; **capped at 4 GB** — a long/high-res recording can hit the cap and break the file. Add a size guard or a dock warning.
+- AVI (MJPEG + uncompressed audio): current default; **capped at 4 GB** — a long/high-res recording can hit the cap and break the file. Guard shipped as a dock warning ("AVI is capped at 4 GB…"); a hard size guard can follow if the warning proves insufficient.
 - PNG sequence + WAV: lossless master for a later FFmpeg encode.
 
-Files: `ui/time_machine_dock.gd` (format selector), `backend_movie_maker.gd` (extension → setting), `recorder_backend.gd` config docs. Tests: config routing for each extension.
+Implemented: `config/output_format.gd` (`GdTMOutputFormat` — shared enum → extension → display name → warning text), dock format selector + warning row (`ui/time_machine_dock.gd` `_format_option` / `_update_format_warning()`), `build_config()` routes `output_format` → extension → output path, which the backend sets as `movie_file`. Tests: `test_output_format.gd` (routing/parsing for each extension). Remaining: the format → ffmpeg codec/container mapping for the screenshot backend, which lands with Op 4a.
 
-## 6. `[ ]` Per-scene `movie_file` root metadata
+## 6. `[x]` No `project.godot` pollution (`movie_file`/`fps`) — RESOLVED via restore-on-stop — SHIPPED 2026-08-01
 
-Docs: "for running single scenes, a `movie_file` metadata can be added to the root node, specifying the path to a movie file that will be used when recording that scene."
+The original idea — per-scene `movie_file` metadata on the scene root (docs: "for running single scenes, a `movie_file` metadata can be added to the root node…") — is **NO-GO for this addon**, verified in `SPIKE_movie_metadata.md` against `editor_run_bar.cpp:280-364`:
 
-We currently write the global `editor/movie_writer/movie_file` ProjectSetting (plus `ProjectSettings.save()` — a side effect on the user's project). Setting `movie_file` metadata on the scene root we launch would scope the path to the recording and avoid polluting global settings.
+- The engine reads `movie_file` metadata **only in RUN_CURRENT** (`play_current_scene()`/F6, on the in-memory edited scene root); `play_custom_scene()` (RUN_CUSTOM) skips the metadata block and always falls back to the global `editor/movie_writer/movie_file`. Our backend launches via `play_custom_scene()`, so metadata can never fire for the dock's arbitrary-scene flow — and it would cover `movie_file` only, never `fps`.
 
-Verify: that the metadata path wins over / works without the global setting, and that it survives the scene being launched by `play_custom_scene()`. Files: `backend_movie_maker.gd` (`_set_movie_file` seam), manual test. Tests: seam test asserting metadata is set on the launched root node.
+Shipped instead (the plan's pre-specified fallback branch): **restore-on-stop** in `backend_movie_maker.gd` — capture the previous `editor/movie_writer/movie_file` + `fps` on `start()`, set the new values **in-memory with no `ProjectSettings.save()`** (the child reads them via GLOBAL_GET), restore on `_finalize_stopped()` and the duration-error path. Same pollution removal, works for any scene path, covers both settings. Tests: restore seams in `test_backend_movie_maker.gd`. Remaining: manual windowed check that the child sees the in-memory value without `save()` (spike "Open item left") — bundled with Op 2's AVI-finalization verify.
 
 ## 7. `[ ]` Nice-to-haves
 
@@ -98,8 +98,14 @@ Verify: that the metadata path wins over / works without the global setting, and
 - Show recording state (backend, elapsed, output path) in the editor status bar while recording.
 - Dock tooltip explaining fixed-fps (non-real-time) vs real-time capture semantics per backend (constraint 9).
 
+## 8. `[x]` Scene-aware profiles + shared config store — SHIPPED 2026-08-01
+
+Not engine-native per se, but shipped in the same effort and it reshaped how per-scene settings work — the "scene-specific settings" the dock offers today. The dock follows the open scene (`EditorPlugin.scene_changed` / `scene_closed` forwarded from `plugin.gd`) and auto-saves/loads per-scene profiles on switch; `CompositeConfigStore` resolves scene override > `profiles.cfg` `[default]` > `EditorSettings`, with `profiles.cfg` as the source of truth (first-run seed from EditorSettings, write-through on save). Also delivered alongside it: the `EditorDock` migration (deprecated `add_control_to_bottom_panel`) and the #5 format dropdown.
+
+Full detail: `SESSION_scene_aware_profiles.md` + `SESSION_editordock_migration.md`. 106/106 GUT green.
+
 ______________________________________________________________________
 
 ## Cut line
 
-Items 1–4 are the in-place story: interface honesty (#1), a defect fix for the current backend that doubles as shared infra for #4 (#2), and a measured zero-dep in-place backend (#3 → #4). Item 4a's ffmpeg hook is where #4 meets #5 — the shared format dropdown becomes the single "output format" preference for both backends. Items 5–7 are hardening/polish of the Movie Maker path. OBS (Phase 3/4, sketched in `BRAINSTORM.md`) supersedes #4 as the product answer, but #1–#2 remain relevant regardless, and #5–#6 are backend-agnostic.
+Items 1–4 are the in-place story: interface honesty (#1), a defect fix for the current backend that doubles as shared infra for #4 (#2), and a measured zero-dep in-place backend (#3 → #4). Item 4a's ffmpeg hook is where #4 meets #5 — the shared format dropdown (shipped) becomes the single "output format" preference for both backends; the format → codec/container mapping is the only part of #5 still pending, and it lands with 4a. Item 8's config store + scene-aware profiles is the dock/UX side of the same effort. Item 7 is polish of the Movie Maker path; #6's pollution fix already shipped via restore-on-stop. OBS (Phase 3/4, sketched in `BRAINSTORM.md`) supersedes #4 as the product answer, but #1–#2 and #8 remain relevant regardless, and #5 is backend-agnostic.
