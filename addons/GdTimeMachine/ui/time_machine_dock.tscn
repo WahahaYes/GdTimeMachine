@@ -108,12 +108,6 @@ theme_override_constants/separation = 4
 [node name="PerSceneCheck" type="CheckBox" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
 text = "Remember settings for this scene"
 
-[node name="SaveSceneButton" type="Button" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
-text = "Save scene profile"
-
-[node name="ClearSceneButton" type="Button" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
-text = "Clear"
-
 [node name="StatusRow" type="HBoxContainer" parent="."]
 theme_override_constants/separation = 6
 

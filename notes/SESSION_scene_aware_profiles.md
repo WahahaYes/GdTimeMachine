@@ -31,7 +31,7 @@ Rejected alternatives (all worse):
 - **Auto-load**: entering a scene loads its resolved profile (scene override > default) and syncs the checkbox. Untitled scenes (empty path) → defaults, no save (no stable key).
 - **Recording guard**: scene switches are ignored while recording — an active session is never disturbed.
 
-The manual Save/Clear buttons remain as "save now without switching" conveniences; the "Current" button becomes a re-sync affordance. profiles.cfg format untouched.
+The manual Save/Clear buttons remain as "save now without switching" conveniences; the "Current" button becomes a re-sync affordance. profiles.cfg format untouched. ~~(Superseded 2026-08-02: both buttons removed — the checkbox is now the single per-scene control, see Update below.)~~
 
 ## Changes
 
@@ -53,3 +53,16 @@ The manual Save/Clear buttons remain as "save now without switching" convenience
 - **Write-through**: `save_default_profile()` writes to both stores, so dock edits materialize in `profiles.cfg` `[default]`.
 
 106/106 GUT green. README "Settings" + Architecture updated; `make sync-docs`/`check-docs` pass.
+
+## Update 2026-08-02 — Save/Clear buttons removed
+
+The "Save scene profile" and "Clear" buttons are removed from the dock (tscn nodes, vars, tooltips, signal wiring, and both handlers deleted). The per-scene checkbox ("Remember settings for this scene") is now the single per-scene control:
+
+- **Checked** → auto-save on scene switch / reload on return, exactly as before (`_auto_save_current_scene_profile` untouched). Checking does not save immediately — the save still happens on the next switch.
+- **Unchecked** (non-empty scene path) → `clear_scene_profile(scene_path)` drops the stored override (so the unchecked state is durable across sessions — the override can no longer force the checkbox back on at next load), then `_load_profile_into_ui(get_default_profile())` falls back to global defaults. This replaces the removed Clear button.
+- **Empty scene path** → no save/clear (checkbox is disabled in that state).
+- A new `_syncing_scene_state` guard wraps programmatic checkbox sync in `_refresh_per_scene_state`, so internal `button_pressed` sets (which emit `toggled`) don't fire the clear/fallback side effects.
+
+Untouched: `_auto_save_current_scene_profile`, `on_editor_scene_changed`/`on_editor_scene_closed`, `_flushed_on_close`, `build_config`, `_load_settings`, the ConfigStore API, and the `scene_path = ""` store convention.
+
+Tests: 110/110 GUT green (was 106; +4 dock tests: uncheck-with-override clears + falls back, uncheck-without-override falls back, programmatic uncheck on scene switch records no clear, untitled scene records no clear). No existing tests were modified.

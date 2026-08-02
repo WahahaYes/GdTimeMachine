@@ -42,12 +42,13 @@ class MockBackend:
 		recording = false
 
 
-# In-memory ConfigStore stand-in that records every scene-profile save.
+# In-memory ConfigStore stand-in that records every scene-profile save/clear.
 class FakeStore:
 	extends ConfigStore
 	var default: RecordingProfile = RecordingProfile.new()
 	var scenes := {}
 	var saved_scene_calls: Array = []
+	var cleared_scene_calls: Array = []
 	var saved_default_calls := 0
 
 	func get_default_profile() -> RecordingProfile:
@@ -65,6 +66,7 @@ class FakeStore:
 		default = profile
 
 	func clear_scene_profile(scene_path: String) -> void:
+		cleared_scene_calls.append(scene_path)
 		scenes.erase(scene_path)
 
 
@@ -264,3 +266,87 @@ func test_close_then_switch_does_not_double_save() -> void:
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_eq(store.saved_scene_calls.size(), 1)
 	assert_eq(dock.get_node("SettingsGroup/SceneRow/SceneEdit").text, "res://scenes/b.tscn")
+
+
+func test_uncheck_clears_override_and_falls_back_to_defaults() -> void:
+	# The checkbox is the single per-scene control: unchecking must drop the
+	# stored override (so the unchecked state is durable across sessions) and
+	# fall back to the default profile — the removed Clear button's job.
+	var store := FakeStore.new()
+	store.default.output_dir = "res://my_default"
+	var override := RecordingProfile.new()
+	override.output_dir = "res://a_specific"
+	override.fps = 30
+	store.scenes["res://scenes/a.tscn"] = override
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var output: LineEdit = dock.get_node("SettingsGroup/OutputRow/OutputEdit")
+	# Override exists → checkbox on, override loaded into the UI.
+	assert_true(check.button_pressed)
+	assert_eq(output.text, "res://a_specific")
+	# User unchecks: override cleared, UI falls back to defaults.
+	check.button_pressed = false
+	assert_eq(store.cleared_scene_calls.size(), 1)
+	assert_eq(store.cleared_scene_calls[0], "res://scenes/a.tscn")
+	assert_false(check.button_pressed)
+	assert_eq(output.text, "res://my_default")
+
+
+func test_uncheck_without_override_falls_back_to_defaults() -> void:
+	# Unchecking a scene with no stored override reloads the default profile
+	# into the UI. (Whether clear_scene_profile fires is an implementation
+	# detail here — assert the observable UI.)
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var output: LineEdit = dock.get_node("SettingsGroup/OutputRow/OutputEdit")
+	assert_false(check.button_pressed)
+	assert_eq(output.text, "res://media/captures")
+	# Change the store's default after setup: the UI must not pick it up until
+	# per-scene mode is toggled off and defaults are reloaded.
+	store.default.output_dir = "res://my_default"
+	check.button_pressed = true  # Enter per-scene mode: no override → UI kept.
+	assert_eq(output.text, "res://media/captures")
+	check.button_pressed = false  # Leave per-scene mode → defaults reloaded.
+	assert_eq(output.text, "res://my_default")
+
+
+func test_programmatic_uncheck_via_scene_switch_does_not_clear() -> void:
+	# Switching to a scene without an override programmatically unchecks the
+	# box inside _refresh_per_scene_state; that internal sync must not fire
+	# the clear/fallback side effects (the _syncing_scene_state guard).
+	var store := FakeStore.new()
+	store.default.output_dir = "res://my_default"
+	var override := RecordingProfile.new()
+	override.output_dir = "res://a_specific"
+	store.scenes["res://scenes/a.tscn"] = override
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	assert_true(check.button_pressed)
+	dock.on_editor_scene_changed("res://scenes/b.tscn")
+	assert_false(check.button_pressed)
+	assert_eq(store.cleared_scene_calls.size(), 0)
+	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://my_default")
+
+
+func test_uncheck_untitled_scene_does_not_clear() -> void:
+	# Untitled scenes (empty field) have no stable profile key: no clear may
+	# fire for them, and the internal uncheck-sync must not either. Switching
+	# to an untitled scene drives _refresh_per_scene_state with an empty path
+	# (note: programmatic LineEdit.text sets do not emit text_changed, so the
+	# switch path is what exercises this).
+	var store := FakeStore.new()
+	var override := RecordingProfile.new()
+	override.output_dir = "res://a_specific"
+	store.scenes["res://scenes/a.tscn"] = override
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	assert_true(check.button_pressed)
+	dock.on_editor_scene_changed("")
+	assert_false(check.button_pressed)
+	assert_true(check.disabled)
+	assert_eq(store.cleared_scene_calls.size(), 0)

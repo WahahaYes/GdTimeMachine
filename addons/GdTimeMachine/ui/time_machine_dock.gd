@@ -18,6 +18,11 @@ class_name TimeMachineDock
 ## EditorPlugin.scene_changed). On a scene switch the previous scene's profile
 ## is saved when per-scene mode is on, then the new scene's profile (scene
 ## override > default) is loaded.
+##
+## The per-scene checkbox ("Remember settings for this scene") is the single
+## per-scene control: checked = the scene's settings are saved to and loaded
+## from its own profile on scene switch; unchecked = the default profile is
+## used, and any stored override for the current scene is cleared.
 
 ## Fallback output directory when no setting is stored.
 const DEFAULT_OUTPUT_DIR := "res://media/captures"
@@ -61,6 +66,11 @@ var _setup_applied := false
 ## True while _load_profile_into_ui is applying values, to suppress _persist.
 var _applying_profile := false
 
+## True while _refresh_per_scene_state is syncing the checkbox programmatically;
+## setting button_pressed emits toggled, which must not trigger the
+## clear/fallback side effects of _on_per_scene_toggled.
+var _syncing_scene_state := false
+
 ## Scene path whose per-scene profile was just flushed by on_editor_scene_closed.
 ## The scene_changed that follows a tab close must not re-save it.
 var _flushed_on_close := ""
@@ -100,12 +110,6 @@ var _flushed_on_close := ""
 
 ## Per-scene override checkbox.
 @onready var _per_scene_check: CheckBox = $SettingsGroup/PerSceneRow/PerSceneCheck
-
-## Saves current UI values as the per-scene profile.
-@onready var _save_scene_button: Button = $SettingsGroup/PerSceneRow/SaveSceneButton
-
-## Clears the per-scene profile for the current scene.
-@onready var _clear_scene_button: Button = $SettingsGroup/PerSceneRow/ClearSceneButton
 
 ## Status indicator light.
 @onready var _status_light: ColorRect = $StatusRow/StatusLight
@@ -172,15 +176,11 @@ func _apply_setup() -> void:
 	$SettingsGroup/FormatRow.tooltip_text = "Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless sequence."
 	_format_option.tooltip_text = "Output format for recordings."
 	_format_warning_label.tooltip_text = "Format-specific notice."
-	_per_scene_check.tooltip_text = "When checked, this scene's settings are saved as its own profile when you switch away, and reloaded when you come back."
-	_save_scene_button.tooltip_text = "Save the current settings as this scene's profile now. Switching scenes also saves automatically when the checkbox is on."
-	_clear_scene_button.tooltip_text = "Remove the per-scene profile for this scene."
+	_per_scene_check.tooltip_text = "When checked, this scene's settings are saved as its own profile when you switch away, and reloaded when you come back.\nWhen unchecked, the default profile is used and any stored per-scene profile for this scene is cleared."
 	_record_button.tooltip_text = "Start or stop recording with the settings above."
 
 	_format_option.item_selected.connect(_on_format_selected)
 	_per_scene_check.toggled.connect(_on_per_scene_toggled)
-	_save_scene_button.pressed.connect(_on_save_scene_profile)
-	_clear_scene_button.pressed.connect(_on_clear_scene_profile)
 
 	_controller.backend_changed.connect(_on_backend_changed)
 	_controller.recording_started.connect(_on_recording_started)
@@ -334,75 +334,59 @@ func _on_scene_edit_changed(_new_text: String) -> void:
 	_refresh_per_scene_state()
 
 
-## Handles per-scene checkbox toggle.
+## Handles per-scene checkbox toggle. The checkbox is the single per-scene
+## control: unchecking clears the stored override for the current scene and
+## falls back to the default profile; checking loads the stored override if
+## one exists (the save happens on the next scene switch, not here).
 func _on_per_scene_toggled(button_pressed: bool) -> void:
-	_save_scene_button.disabled = not button_pressed or _scene_edit.text.strip_edges().is_empty()
-	_clear_scene_button.disabled = _scene_edit.text.strip_edges().is_empty()
+	if _syncing_scene_state:
+		# Programmatic checkbox sync (e.g. _refresh_per_scene_state) must not
+		# trigger the clear/fallback side effects.
+		return
+	var sp := _scene_edit.text.strip_edges()
+	if sp.is_empty():
+		return
 	if not button_pressed:
-		# Reload default profile into UI when leaving per-scene mode.
-		var default_profile := _config_store.get_default_profile()
-		_load_profile_into_ui(default_profile)
+		# Leaving per-scene mode: drop the stored override so the unchecked
+		# state is durable across sessions, then fall back to the default
+		# profile (this replaces the removed Clear button).
+		_config_store.clear_scene_profile(sp)
+		_load_profile_into_ui(_config_store.get_default_profile())
 	else:
 		# Entering per-scene mode: if a scene profile exists, load it;
-		# otherwise keep current UI values as the candidate profile.
-		var sp := _scene_edit.text.strip_edges()
-		if not sp.is_empty():
-			var scene_profile := _config_store.get_scene_profile(sp)
-			if scene_profile != null:
-				_load_profile_into_ui(scene_profile)
+		# otherwise keep current UI values as the candidate profile (the save
+		# happens on the next scene switch via _auto_save_current_scene_profile).
+		var scene_profile := _config_store.get_scene_profile(sp)
+		if scene_profile != null:
+			_load_profile_into_ui(scene_profile)
 
 
-## Saves current UI values as per-scene profile for the scene in the line edit.
-func _on_save_scene_profile() -> void:
-	var sp := _scene_edit.text.strip_edges()
-	if sp.is_empty():
-		_set_status("Enter a scene path first", COLOR_ERROR)
-		return
-	var profile := _build_profile_from_ui()
-	_config_store.save_scene_profile(sp, profile)
-	_per_scene_check.button_pressed = true
-	_clear_scene_button.disabled = false
-	_save_scene_button.disabled = false
-	_set_status("Saved per-scene profile for %s" % sp.get_file(), COLOR_IDLE)
-
-
-## Clears the per-scene profile for the current scene path.
-func _on_clear_scene_profile() -> void:
-	var sp := _scene_edit.text.strip_edges()
-	if sp.is_empty():
-		return
-	_config_store.clear_scene_profile(sp)
-	_per_scene_check.button_pressed = false
-	_refresh_per_scene_state()
-	_set_status("Cleared per-scene profile for %s" % sp.get_file(), COLOR_IDLE)
-
-
-## Refreshes per-scene checkbox, buttons, and optionally loads the scene profile.
+## Refreshes per-scene checkbox and optionally loads the scene profile.
 func _refresh_per_scene_state() -> void:
 	_ensure_config_store()
 	var sp := _scene_edit.text.strip_edges()
 	if sp.is_empty():
 		_per_scene_check.disabled = true
+		_syncing_scene_state = true
 		_per_scene_check.button_pressed = false
-		_save_scene_button.disabled = true
-		_clear_scene_button.disabled = true
+		_syncing_scene_state = false
 		return
 	_per_scene_check.disabled = false
 	var existing := _config_store.get_scene_profile(sp)
 	if existing != null:
 		# Scene override exists — reflect it and load it.
 		if not _per_scene_check.button_pressed:
+			_syncing_scene_state = true
 			_per_scene_check.button_pressed = true
+			_syncing_scene_state = false
 		_applying_profile = true
 		_load_profile_into_ui(existing)
 		_applying_profile = false
-		_save_scene_button.disabled = false
-		_clear_scene_button.disabled = false
 	else:
-		# No override — checkbox unchecked, save allowed, clear disabled.
+		# No override — checkbox unchecked.
+		_syncing_scene_state = true
 		_per_scene_check.button_pressed = false
-		_save_scene_button.disabled = false
-		_clear_scene_button.disabled = true
+		_syncing_scene_state = false
 	_update_format_warning()
 
 
@@ -489,8 +473,8 @@ func on_editor_scene_closed(closed_path: String) -> void:
 ## Saves the current UI values as the per-scene profile for the scene in the
 ## field — the "auto-save on switch" half of scene tracking. Only fires when
 ## per-scene mode is checked and the scene has a saved path (untitled scenes
-## have no stable profile key). Saving here makes the Save button a
-## convenience ("save now") rather than a requirement.
+## have no stable profile key). This is the only place per-scene profiles are
+## written.
 func _auto_save_current_scene_profile() -> void:
 	if not _per_scene_check.button_pressed:
 		return
@@ -653,12 +637,6 @@ func _set_controls_enabled(enabled: bool) -> void:
 	_fps_spin.editable = enabled
 	_output_edit.editable = enabled
 	_per_scene_check.disabled = not enabled or _scene_edit.text.strip_edges().is_empty()
-	_save_scene_button.disabled = (
-		not enabled
-		or not _per_scene_check.button_pressed
-		or _scene_edit.text.strip_edges().is_empty()
-	)
-	_clear_scene_button.disabled = not enabled or _scene_edit.text.strip_edges().is_empty()
 
 
 ## Sets the status label text and status light color.
