@@ -9,14 +9,16 @@ GdTimeMachine is a Godot editor addon that records footage of your project's sce
 What works today:
 
 - **Godot Movie Maker backend** — recording is done by Godot's built-in Movie Maker. No external software or dependencies.
-- **Output** — recordings are written as `.avi` files.
+- **Output** — recordings are written as `.avi` by default, with `.ogv` and PNG sequence as opt-in formats. File names are auto-generated from scene name + timestamp.
 - **Bottom panel dock** — a "GdTimeMachine" tab in the editor's bottom panel holds the controls.
 - **Toolbar buttons** — Record/Stop buttons in the run bar and in the game view toolbar.
-- **Graceful stop** — Stop asks the running game to quit cleanly so Movie Maker finalizes the AVI file, instead of killing the process mid-write.
+- **Graceful stop** — Stop asks the running game to quit cleanly so Movie Maker finalizes the file, instead of killing the process mid-write.
+- **No project.godot pollution** — Movie Maker settings are set in-memory for the recording and restored afterwards; nothing is written to `project.godot` on disk.
+- **Local config store** — default profile in `EditorSettings` under `gd_time_machine/recorder/*`, per-scene overrides in `addons/gd-time-machine/config/state/profiles.cfg` (gitignored by default, localized under the addon, opt-in to commit).
 
 ## Backends
 
-| Backend | CaptureMode | Deps | Output | Notes | |---|---|---|---|---| | Godot Movie Maker | `RESTART_SCENE` | none (built-in) | AVI | Restarts the scene to record; duration watchdog stops recording if the scene never starts; AVI files are capped at 4 GB | | Screenshot | `IN_PLACE` | none | images | Planned — zero-dependency, dev-quality capture of the running scene | | OBS | `IN_PLACE` | OBS Studio | — | Planned — requires OBS installed; records the running scene without restarting it |
+| Backend | CaptureMode | Deps | Output | Notes | |---|---|---|---|---| | Godot Movie Maker | `RESTART_SCENE` | none (built-in) | AVI / OGV / PNG sequence | Restarts the scene to record; duration watchdog stops recording if the scene never starts; AVI files are capped at 4 GB | | Screenshot | `IN_PLACE` | none | images | Planned — zero-dependency, dev-quality capture of the running scene | | OBS | `IN_PLACE` | OBS Studio | — | Planned — requires OBS installed; records the running scene without restarting it |
 
 `RESTART_SCENE` backends (Movie Maker) must launch a fresh scene to record, so the in-game record button is greyed out while a scene is running — starting a recording would restart the scene you are looking at.
 
@@ -24,16 +26,38 @@ What works today:
 
 1. Enable the plugin (see [Installation](#installation)).
 1. Open the **GdTimeMachine** tab in the editor's bottom panel.
-1. Set the output directory, scene, FPS, and duration.
-1. Press **Record**.
+1. Set the backend, scene, output directory, format, FPS, and duration.
+1. Press **Record**. Per-scene checkbox: when checked, you can save a separate profile for the current scene into `addons/gd-time-machine/config/state/profiles.cfg`; switching scenes reloads any existing scene profile.
 
-Recording starts when the scene plays. Press **Stop** (in the run bar or the game view toolbar) to finalize the file — the running game is asked to quit gracefully, then the AVI is closed out.
+Recording starts when the scene plays. Press **Stop** to finalize the file — the running game is asked to quit gracefully, then the clip is closed out.
+
+### Output format
+
+- AVI — MJPEG, 4 GB cap, largest files.
+- OGV — Theora+Vorbis, smaller, editor binaries only.
+- PNG — PNG image sequence + WAV, lossless master for external encode.
 
 ## Settings
 
-Editor settings, found under `Project > Editor Settings`, in the `gd_time_machine/recorder/` section:
+Default profile lives in `EditorSettings` (`Project > Editor Settings`) under `gd_time_machine/recorder/`:
 
-| Setting | Type | Purpose | |---|---|---| | `gd_time_machine/recorder/output_dir` | String | Directory recordings are written to | | `gd_time_machine/recorder/default_duration` | float | Default recording duration in seconds (0 = record until stopped) | | `gd_time_machine/recorder/default_fps` | int | Default target FPS cap | | `gd_time_machine/recorder/default_backend` | String | Backend selected by default |
+| Setting | Type | Purpose | |---|---|---| | `gd_time_machine/recorder/output_dir` | String | Directory recordings are written to | | `gd_time_machine/recorder/output_format` | String | Default format (`avi`, `ogv`, `png`) | | `gd_time_machine/recorder/default_duration` | float | Default recording duration in seconds (0 = record until stopped) | | `gd_time_machine/recorder/default_fps` | int | Default target FPS cap | | `gd_time_machine/recorder/default_backend` | String | Backend selected by default |
+
+Per-scene overrides live in `addons/gd-time-machine/config/state/profiles.cfg` (INI via ConfigFile):
+
+```ini
+[default]
+output_dir = res://media/captures
+output_format = avi
+fps = 60
+duration = 30
+
+["res://scenes/menu.tscn"]
+fps = 30
+output_format = png
+```
+
+This file lives under `addons/gd-time-machine/config/state/` and is gitignored by default. Teams can commit it if they want shared recording profiles.
 
 ## Installation
 
@@ -42,7 +66,12 @@ Editor settings, found under `Project > Editor Settings`, in the `gd_time_machin
 
 ## Architecture
 
-Recording backends (`RecorderBackend` subclasses) are a small abstraction over how footage is captured, each with its own `CaptureMode`. The `RecorderController` owns backend lifecycles and re-emits backend signals; the dock UI only talks to the controller, never directly to a backend.
+- `RecordingProfile` — per-recording config, serializable via `to_dict()`/`from_dict()`.
+- `GdTMOutputFormat` — shared format enum → extension → display name → warning text.
+- `ConfigStore` interface — `EditorSettingsConfigStore` (user-wide defaults) + `ProjectLocalConfigStore` (`addons/gd-time-machine/config/state/profiles.cfg` per-scene overrides) + `CompositeConfigStore` (scene override > default).
+- `RecorderBackend` subclasses with `CaptureMode`.
+- `RecorderController` owns backend lifecycles and re-emits backend signals; dock talks only to the controller and the config store, never directly to a backend or ProjectSettings movie_writer keys.
+- `BackendMovieMaker` — snapshot/restore of `editor/movie_writer/*` without `ProjectSettings.save()`, removing the old `project.godot` pollution.
 
 ## License
 

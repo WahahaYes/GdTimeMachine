@@ -45,6 +45,24 @@ placeholder_text = "res://scenes/my_scene.tscn"
 [node name="UseCurrentButton" type="Button" parent="SettingsGroup/SceneRow" unique_name_in_owner = true]
 text = "Current"
 
+[node name="FormatRow" type="HBoxContainer" parent="SettingsGroup"]
+theme_override_constants/separation = 4
+
+[node name="FormatLabel" type="Label" parent="SettingsGroup/FormatRow"]
+custom_minimum_size = Vector2(60, 0)
+text = "Format:"
+
+[node name="FormatOption" type="OptionButton" parent="SettingsGroup/FormatRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+
+[node name="FormatWarningRow" type="HBoxContainer" parent="SettingsGroup"]
+
+[node name="FormatWarningLabel" type="Label" parent="SettingsGroup/FormatWarningRow" unique_name_in_owner = true]
+custom_minimum_size = Vector2(0, 0)
+size_flags_horizontal = 3
+text = ""
+autowrap_mode = 3
+
 [node name="DurationRow" type="HBoxContainer" parent="SettingsGroup"]
 theme_override_constants/separation = 4
 
@@ -83,6 +101,18 @@ tooltip_text = "Directory where recordings are saved. File names are auto-genera
 [node name="OutputEdit" type="LineEdit" parent="SettingsGroup/OutputRow" unique_name_in_owner = true]
 size_flags_horizontal = 3
 text = "res://media/captures"
+
+[node name="PerSceneRow" type="HBoxContainer" parent="SettingsGroup"]
+theme_override_constants/separation = 4
+
+[node name="PerSceneCheck" type="CheckBox" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
+text = "Per-scene for this scene"
+
+[node name="SaveSceneButton" type="Button" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
+text = "Save scene profile"
+
+[node name="ClearSceneButton" type="Button" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
+text = "Clear"
 
 [node name="StatusRow" type="HBoxContainer" parent="."]
 theme_override_constants/separation = 6

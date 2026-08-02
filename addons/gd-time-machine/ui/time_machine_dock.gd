@@ -4,24 +4,15 @@ class_name TimeMachineDock
 
 ## Minimal GdTimeMachine dock UI.
 ##
-## Backend selector, scene picker, duration/FPS, output directory, status
-## line, and a Record/Stop toggle. All recording control goes through the
-## RecorderController — the dock never talks to a backend directly.
+## Backend selector, scene picker, format selector, duration/FPS, output
+## directory, per-scene override, status line, and a Record/Stop toggle.
+## All recording control goes through the RecorderController — the dock never
+## talks to a backend directly.
 ##
-## Per-project values persist in EditorSettings under the `gd_time_machine/`
-## prefix so they survive editor restarts.
-
-## EditorSettings key for the output directory.
-const SETTING_OUTPUT_DIR := "gd_time_machine/recorder/output_dir"
-
-## EditorSettings key for the default recording duration.
-const SETTING_DEFAULT_DURATION := "gd_time_machine/recorder/default_duration"
-
-## EditorSettings key for the default capture FPS.
-const SETTING_DEFAULT_FPS := "gd_time_machine/recorder/default_fps"
-
-## EditorSettings key for the preferred backend name.
-const SETTING_DEFAULT_BACKEND := "gd_time_machine/recorder/default_backend"
+## Configuration persists in two layers:
+## - Defaults in EditorSettings under gd_time_machine/* (user-wide).
+## - Per-scene overrides in addons/gd-time-machine/config/state/profiles.cfg
+##   (project-local, localized under the addon).
 
 ## Fallback output directory when no setting is stored.
 const DEFAULT_OUTPUT_DIR := "res://media/captures"
@@ -56,37 +47,72 @@ var _icon_stop: Texture2D
 ## Controller the dock talks to; injected via setup() before _ready().
 var _controller: RecorderController
 
+## Config store (defaults + per-scene overrides); injected via setup().
+var _config_store: ConfigStore
+
 ## Guards the one-time UI wiring in _apply_setup().
 var _setup_applied := false
 
+## True while _load_profile_into_ui is applying values, to suppress _persist.
+var _applying_profile := false
+
 ## Dock title icon (shows the record icon).
 @onready var _title_icon: TextureRect = $TitleBar/TitleIcon
+
 ## Backend selector dropdown.
 @onready var _backend_option: OptionButton = $BackendRow/BackendOption
+
 ## Row holding the scene picker (hidden for in-place backends).
 @onready var _scene_row: HBoxContainer = $SettingsGroup/SceneRow
+
 ## Scene path to record.
 @onready var _scene_edit: LineEdit = $SettingsGroup/SceneRow/SceneEdit
+
 ## Fills _scene_edit with the currently open scene.
 @onready var _use_current_button: Button = $SettingsGroup/SceneRow/UseCurrentButton
+
+## Row holding the format picker.
+@onready var _format_row: HBoxContainer = $SettingsGroup/FormatRow
+
+## Format selector dropdown.
+@onready var _format_option: OptionButton = $SettingsGroup/FormatRow/FormatOption
+
+## Warning label for formats that need a notice (e.g. AVI 4GB).
+@onready var _format_warning_label: Label = $SettingsGroup/FormatWarningRow/FormatWarningLabel
+
 ## Recording duration in seconds (0 = manual).
 @onready var _duration_spin: SpinBox = $SettingsGroup/DurationRow/DurationSpin
+
 ## Capture FPS.
 @onready var _fps_spin: SpinBox = $SettingsGroup/FpsRow/FpsSpin
+
 ## Output directory for recordings.
 @onready var _output_edit: LineEdit = $SettingsGroup/OutputRow/OutputEdit
+
+## Per-scene override checkbox.
+@onready var _per_scene_check: CheckBox = $SettingsGroup/PerSceneRow/PerSceneCheck
+
+## Saves current UI values as the per-scene profile.
+@onready var _save_scene_button: Button = $SettingsGroup/PerSceneRow/SaveSceneButton
+
+## Clears the per-scene profile for the current scene.
+@onready var _clear_scene_button: Button = $SettingsGroup/PerSceneRow/ClearSceneButton
+
 ## Status indicator light.
 @onready var _status_light: ColorRect = $StatusRow/StatusLight
+
 ## Status text label.
 @onready var _status_label: Label = $StatusRow/StatusLabel
+
 ## Record/Stop toggle button.
 @onready var _record_button: Button = $RecordButton
 
 
 ## Called by plugin.gd before the dock enters the tree; stores the
-## controller. UI wiring happens in _ready() once the nodes exist.
-func setup(controller: RecorderController) -> void:
+## controller and optional config store. UI wiring happens in _ready().
+func setup(controller: RecorderController, config_store: ConfigStore = null) -> void:
 	_controller = controller
+	_config_store = config_store
 	if is_inside_tree():
 		_apply_setup()
 
@@ -105,20 +131,22 @@ func _ready() -> void:
 	_backend_option.item_selected.connect(_on_backend_selected)
 	_use_current_button.pressed.connect(_on_use_current_pressed)
 	_record_button.pressed.connect(_on_record_pressed)
-	_output_edit.text_changed.connect(func(_text): _persist_settings())
+	_output_edit.text_changed.connect(func(_t): _on_output_changed())
 	_output_edit.tooltip_text = "Directory where recordings are saved. File names are auto-generated from scene name + timestamp."
-	_duration_spin.value_changed.connect(func(_value): _persist_settings())
-	_fps_spin.value_changed.connect(func(_value): _persist_settings())
+	_duration_spin.value_changed.connect(func(_v): _on_duration_changed())
+	_fps_spin.value_changed.connect(func(_v): _on_fps_changed())
+	_scene_edit.text_changed.connect(_on_scene_edit_changed)
 	if _controller != null:
 		_apply_setup()
 
 
-## One-time setup: minimums and tooltips, controller signal wiring, backend
-## population, settings load, scene prefill, and initial UI state.
+## One-time setup: tooltips, signal wiring, backend/format population,
+## settings load, scene prefill, and initial UI state.
 func _apply_setup() -> void:
 	if _setup_applied:
 		return
 	_setup_applied = true
+	_ensure_config_store()
 	_duration_spin.min_value = 0.0
 	_duration_spin.tooltip_text = "0 = record until Stop is pressed. Positive value auto-stops after that many seconds."
 	$SettingsGroup/DurationRow.tooltip_text = _duration_spin.tooltip_text
@@ -132,21 +160,40 @@ func _apply_setup() -> void:
 	$SettingsGroup/FpsRow/FpsLabel.tooltip_text = _fps_spin.tooltip_text
 	$SettingsGroup/SceneRow.tooltip_text = _scene_edit.tooltip_text
 	$SettingsGroup/OutputRow.tooltip_text = _output_edit.tooltip_text
+	$SettingsGroup/FormatRow.tooltip_text = "Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless sequence."
+	_format_option.tooltip_text = "Output format for recordings."
+	_format_warning_label.tooltip_text = "Format-specific notice."
+	_per_scene_check.tooltip_text = "When checked, save a separate profile for this scene."
+	_save_scene_button.tooltip_text = "Save the current settings as a per-scene profile for this scene."
+	_clear_scene_button.tooltip_text = "Remove the per-scene profile for this scene."
 	_record_button.tooltip_text = "Start or stop recording with the settings above."
+
+	_format_option.item_selected.connect(_on_format_selected)
+	_per_scene_check.toggled.connect(_on_per_scene_toggled)
+	_save_scene_button.pressed.connect(_on_save_scene_profile)
+	_clear_scene_button.pressed.connect(_on_clear_scene_profile)
+
 	_controller.backend_changed.connect(_on_backend_changed)
 	_controller.recording_started.connect(_on_recording_started)
 	_controller.recording_stopped.connect(_on_recording_stopped)
 	_controller.recording_error.connect(_on_recording_error)
 	_populate_backends()
+	_populate_formats()
 	_load_settings()
 	_prefill_scene()
 	_update_scene_row_visibility()
+	_refresh_per_scene_state()
 	_set_recording_ui(false)
 	_set_status("Ready", COLOR_IDLE)
 
 
-## Fills the backend dropdown from the controller's registered backends and
-## selects the active one.
+## Ensures _config_store exists; creates a composite store by default.
+func _ensure_config_store() -> void:
+	if _config_store == null:
+		_config_store = CompositeConfigStore.new()
+
+
+## Fills the backend dropdown from the controller's registered backends.
 func _populate_backends() -> void:
 	_backend_option.clear()
 	for name in _controller.get_backend_names():
@@ -156,7 +203,14 @@ func _populate_backends() -> void:
 	)
 
 
-## Selects the dropdown item whose text matches backend_name, if present.
+## Fills the format dropdown from GdTMOutputFormat.
+func _populate_formats() -> void:
+	_format_option.clear()
+	for fmt in GdTMOutputFormat.all_formats():
+		_format_option.add_item(GdTMOutputFormat.display_name(fmt))
+
+
+## Selects the dropdown item whose text matches backend_name.
 func _select_backend_item(backend_name: String) -> void:
 	for i in _backend_option.item_count:
 		if _backend_option.get_item_text(i) == backend_name:
@@ -164,21 +218,191 @@ func _select_backend_item(backend_name: String) -> void:
 			return
 
 
+## Selects the format dropdown item matching the given format enum.
+func _select_format_item(format: GdTMOutputFormat.Format) -> void:
+	var target := GdTMOutputFormat.display_name(format)
+	for i in _format_option.item_count:
+		if _format_option.get_item_text(i) == target:
+			_format_option.select(i)
+			return
+	# Fallback: match by extension substring.
+	var ext := GdTMOutputFormat.to_extension(format)
+	for i in _format_option.item_count:
+		if _format_option.get_item_text(i).to_lower().contains(ext):
+			_format_option.select(i)
+			return
+
+
+## Returns the currently selected output format from the dropdown.
+func _get_selected_format() -> GdTMOutputFormat.Format:
+	if _format_option.selected < 0:
+		return GdTMOutputFormat.DEFAULT
+	var text := _format_option.get_item_text(_format_option.selected)
+	return GdTMOutputFormat.from_string(text)
+
+
+## Updates the warning label for the selected format.
+func _update_format_warning() -> void:
+	var fmt := _get_selected_format()
+	var warning := GdTMOutputFormat.warning_text(fmt)
+	_format_warning_label.text = warning
+	_format_warning_label.visible = not warning.is_empty()
+
+
+## Loads a RecordingProfile's values into the UI controls.
+func _load_profile_into_ui(profile: RecordingProfile) -> void:
+	_applying_profile = true
+	_output_edit.text = (
+		profile.output_dir if not profile.output_dir.is_empty() else DEFAULT_OUTPUT_DIR
+	)
+	_duration_spin.value = profile.duration
+	_fps_spin.value = float(profile.fps) if profile.fps > 0 else DEFAULT_FPS
+	_select_format_item(profile.output_format)
+	_update_format_warning()
+	if not profile.backend_name.is_empty():
+		_select_backend_item(profile.backend_name)
+		if _controller != null:
+			_controller.select_backend(profile.backend_name)
+	_applying_profile = false
+
+
+## Builds a RecordingProfile from the current UI values.
+func _build_profile_from_ui() -> RecordingProfile:
+	var p := RecordingProfile.new()
+	p.output_dir = _output_edit.text.strip_edges()
+	if p.output_dir.is_empty():
+		p.output_dir = DEFAULT_OUTPUT_DIR
+	p.output_format = _get_selected_format()
+	p.fps = int(_fps_spin.value)
+	p.duration = 0.0 if _duration_spin.value <= 0.0 else float(_duration_spin.value)
+	p.scene_path = _scene_edit.text.strip_edges()
+	if _backend_option.selected >= 0:
+		p.backend_name = _backend_option.get_item_text(_backend_option.selected)
+	return p
+
+
 ## Switches the controller to the backend chosen in the dropdown and
-## persists the preference.
+## persists the preference to the default profile.
 func _on_backend_selected(index: int) -> void:
 	if _controller == null:
 		return
-	_controller.select_backend(_backend_option.get_item_text(index))
-	_persist_settings()
+	var name := _backend_option.get_item_text(index)
+	_controller.select_backend(name)
+	if not _applying_profile:
+		_persist_default_profile()
 
 
-## Reacts to a backend change made elsewhere (e.g. another UI surface):
-## re-selects the dropdown, updates scene-row visibility, and persists.
+## Switches format and updates warning + persistence.
+func _on_format_selected(_index: int) -> void:
+	_update_format_warning()
+	if not _applying_profile:
+		_persist_default_profile()
+
+
+## Handles output directory edits.
+func _on_output_changed() -> void:
+	if _applying_profile:
+		return
+	_persist_default_profile()
+
+
+## Handles duration edits.
+func _on_duration_changed() -> void:
+	if _applying_profile:
+		return
+	_persist_default_profile()
+
+
+## Handles FPS edits.
+func _on_fps_changed() -> void:
+	if _applying_profile:
+		return
+	_persist_default_profile()
+
+
+## Handles scene path edits — refresh per-scene state.
+func _on_scene_edit_changed(_new_text: String) -> void:
+	_refresh_per_scene_state()
+
+
+## Handles per-scene checkbox toggle.
+func _on_per_scene_toggled(button_pressed: bool) -> void:
+	_save_scene_button.disabled = not button_pressed or _scene_edit.text.strip_edges().is_empty()
+	_clear_scene_button.disabled = _scene_edit.text.strip_edges().is_empty()
+	if not button_pressed:
+		# Reload default profile into UI when leaving per-scene mode.
+		var default_profile := _config_store.get_default_profile()
+		_load_profile_into_ui(default_profile)
+	else:
+		# Entering per-scene mode: if a scene profile exists, load it;
+		# otherwise keep current UI values as the candidate profile.
+		var sp := _scene_edit.text.strip_edges()
+		if not sp.is_empty():
+			var scene_profile := _config_store.get_scene_profile(sp)
+			if scene_profile != null:
+				_load_profile_into_ui(scene_profile)
+
+
+## Saves current UI values as per-scene profile for the scene in the line edit.
+func _on_save_scene_profile() -> void:
+	var sp := _scene_edit.text.strip_edges()
+	if sp.is_empty():
+		_set_status("Enter a scene path first", COLOR_ERROR)
+		return
+	var profile := _build_profile_from_ui()
+	_config_store.save_scene_profile(sp, profile)
+	_per_scene_check.button_pressed = true
+	_clear_scene_button.disabled = false
+	_save_scene_button.disabled = false
+	_set_status("Saved per-scene profile for %s" % sp.get_file(), COLOR_IDLE)
+
+
+## Clears the per-scene profile for the current scene path.
+func _on_clear_scene_profile() -> void:
+	var sp := _scene_edit.text.strip_edges()
+	if sp.is_empty():
+		return
+	_config_store.clear_scene_profile(sp)
+	_per_scene_check.button_pressed = false
+	_refresh_per_scene_state()
+	_set_status("Cleared per-scene profile for %s" % sp.get_file(), COLOR_IDLE)
+
+
+## Refreshes per-scene checkbox, buttons, and optionally loads the scene profile.
+func _refresh_per_scene_state() -> void:
+	_ensure_config_store()
+	var sp := _scene_edit.text.strip_edges()
+	if sp.is_empty():
+		_per_scene_check.disabled = true
+		_per_scene_check.button_pressed = false
+		_save_scene_button.disabled = true
+		_clear_scene_button.disabled = true
+		return
+	_per_scene_check.disabled = false
+	var existing := _config_store.get_scene_profile(sp)
+	if existing != null:
+		# Scene override exists — reflect it and load it.
+		if not _per_scene_check.button_pressed:
+			_per_scene_check.button_pressed = true
+		_applying_profile = true
+		_load_profile_into_ui(existing)
+		_applying_profile = false
+		_save_scene_button.disabled = false
+		_clear_scene_button.disabled = false
+	else:
+		# No override — checkbox unchecked, save allowed, clear disabled.
+		_per_scene_check.button_pressed = false
+		_save_scene_button.disabled = false
+		_clear_scene_button.disabled = true
+	_update_format_warning()
+
+
+## Reacts to a backend change made elsewhere: re-selects dropdown and updates
+## visibility/per-scene state.
 func _on_backend_changed(backend_name: String) -> void:
 	_select_backend_item(backend_name)
 	_update_scene_row_visibility()
-	_persist_settings()
+	_persist_default_profile()
 
 
 ## In-place backends record the running scene, so the "which scene to launch"
@@ -189,10 +413,11 @@ func _update_scene_row_visibility() -> void:
 	_scene_row.visible = _controller.get_capture_mode() != RecorderBackend.CaptureMode.IN_PLACE
 
 
-## Handles the "Use Current" button: fills the scene field with the
-## currently open scene.
+## Handles the "Use Current" button: fills the scene field and refreshes
+## per-scene state.
 func _on_use_current_pressed() -> void:
 	_use_current_scene_path()
+	_refresh_per_scene_state()
 
 
 ## Prefills the scene field with the current scene on first open, unless
@@ -214,72 +439,107 @@ func _use_current_scene_path() -> void:
 		_scene_edit.text = str(main)
 
 
-## Loads the persisted settings (output dir, duration, FPS, preferred
-## backend) into the UI; falls back to defaults for missing values.
+## Loads persisted settings into the UI. Uses the config store's default and
+## per-scene resolution, falling back to local constants.
 func _load_settings() -> void:
-	var es := EditorInterface.get_editor_settings()
-	var output_dir: Variant = es.get_setting(SETTING_OUTPUT_DIR)
-	_output_edit.text = str(output_dir) if output_dir != null else DEFAULT_OUTPUT_DIR
-	var duration: Variant = es.get_setting(SETTING_DEFAULT_DURATION)
-	_duration_spin.value = float(duration) if duration != null else DEFAULT_DURATION
-	var fps: Variant = es.get_setting(SETTING_DEFAULT_FPS)
-	_fps_spin.value = float(fps) if fps != null else DEFAULT_FPS
-	var preferred: Variant = es.get_setting(SETTING_DEFAULT_BACKEND)
-	if preferred != null:
-		_controller.select_backend(str(preferred))
+	_ensure_config_store()
+	var scene_path := _scene_edit.text.strip_edges()
+	var profile: RecordingProfile
+	if not scene_path.is_empty():
+		profile = _config_store.resolve_profile(scene_path)
+	else:
+		profile = _config_store.get_default_profile()
+	_load_profile_into_ui(profile)
+	# Also sync controller backend from profile if set.
+	if not profile.backend_name.is_empty() and _controller != null:
+		_controller.select_backend(profile.backend_name)
 
 
-## Writes the current UI values back to EditorSettings.
+## Persists current UI as the default profile via the config store.
+func _persist_default_profile() -> void:
+	if _applying_profile:
+		return
+	_ensure_config_store()
+	var profile := _build_profile_from_ui()
+	# Default profile should not carry scene_path.
+	profile.scene_path = ""
+	_config_store.save_default_profile(profile)
+
+
+## Back-compat alias: writes the current UI values to the default store.
 func _persist_settings() -> void:
-	var es := EditorInterface.get_editor_settings()
-	es.set_setting(SETTING_OUTPUT_DIR, _output_edit.text.strip_edges())
-	es.set_setting(SETTING_DEFAULT_DURATION, int(_duration_spin.value))
-	es.set_setting(SETTING_DEFAULT_FPS, int(_fps_spin.value))
-	if _backend_option.selected >= 0:
-		es.set_setting(
-			SETTING_DEFAULT_BACKEND, _backend_option.get_item_text(_backend_option.selected)
-		)
+	_persist_default_profile()
 
 
-## Toggles recording via the controller, persisting settings first; starts
+## Toggles recording via the controller, persisting default first; starts
 ## with the config built by build_config().
 func _on_record_pressed() -> void:
 	if _controller == null:
 		return
-	_persist_settings()
+	if not _per_scene_check.button_pressed:
+		_persist_default_profile()
 	if _controller.is_recording():
 		_controller.stop_recording()
 	else:
 		_controller.start_recording(build_config())
 
 
-## Builds the recording config from the currently configured UI fields.
-## Public so other surfaces (e.g. the run-bar record button) reuse the exact
-## settings shown in this tab.
+## Builds the recording config from the currently configured UI fields and
+## resolved effective profile (scene override > default).
+## Public so other surfaces reuse the exact settings shown in this tab.
 func build_config() -> Dictionary:
+	var effective: RecordingProfile
+	var scene_path := _scene_edit.text.strip_edges()
+	_ensure_config_store()
+	if not scene_path.is_empty() and _per_scene_check.button_pressed:
+		# If per-scene checkbox is on and a scene profile exists, use it;
+		# otherwise use current UI as effective.
+		var sp := _config_store.get_scene_profile(scene_path)
+		if sp != null:
+			effective = sp
+			# Scene path still comes from the UI so the file timestamp uses it.
+			effective.scene_path = scene_path
+		else:
+			effective = _build_profile_from_ui()
+	else:
+		effective = _build_profile_from_ui()
+
+	# Resolve output dir fallback.
+	var output_dir := effective.output_dir
+	if output_dir.is_empty():
+		output_dir = DEFAULT_OUTPUT_DIR
+
 	return {
-		"output_path": _build_output_path(),
-		"scene_path": _scene_edit.text.strip_edges(),
-		"fps": int(_fps_spin.value),
-		"duration": 0.0 if _duration_spin.value <= 0.0 else float(_duration_spin.value),
+		"output_path": _build_output_path_for_profile(effective, output_dir),
+		"scene_path": effective.scene_path if not effective.scene_path.is_empty() else scene_path,
+		"fps": effective.fps,
+		"duration": effective.duration,
+		"output_format": GdTMOutputFormat.to_extension(effective.output_format),
 	}
 
 
-## Builds the full output file path: output dir + scene name + timestamp,
-## creating the directory if needed. Empty dir falls back to
-## DEFAULT_OUTPUT_DIR; empty scene falls back to "scene".
-func _build_output_path() -> String:
-	var dir := _output_edit.text.strip_edges()
+## Builds output file path for a given profile and resolved dir.
+func _build_output_path_for_profile(profile: RecordingProfile, output_dir: String) -> String:
+	var dir := output_dir.strip_edges()
 	if dir.is_empty():
 		dir = DEFAULT_OUTPUT_DIR
-	var scene_path := _scene_edit.text.strip_edges()
+	var scene_path := (
+		profile.scene_path if not profile.scene_path.is_empty() else _scene_edit.text.strip_edges()
+	)
 	var scene_name := "scene"
 	if not scene_path.is_empty():
 		scene_name = scene_path.get_file().get_basename()
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-	var path := "%s/%s_%s.avi" % [dir, scene_name, stamp]
+	var ext := GdTMOutputFormat.to_extension(profile.output_format)
+	var path := "%s/%s_%s.%s" % [dir, scene_name, stamp, ext]
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
 	return path
+
+
+## Builds the full output file path (back-compat): dir + scene + timestamp.
+func _build_output_path() -> String:
+	var profile := _build_profile_from_ui()
+	return _build_output_path_for_profile(profile, profile.output_dir)
 
 
 ## Updates the UI when a recording starts (button → Stop, green status).
@@ -300,8 +560,7 @@ func _on_recording_error(_backend_name: String, message: String) -> void:
 	_set_status("Error: %s" % message, COLOR_ERROR)
 
 
-## Switches the record button between Record/Stop look and enables or
-## disables the configuration controls accordingly.
+## Switches the record button between Record/Stop look and disables config.
 func _set_recording_ui(recording: bool) -> void:
 	if recording:
 		_record_button.icon = _icon_stop
@@ -314,15 +573,22 @@ func _set_recording_ui(recording: bool) -> void:
 	_set_controls_enabled(not recording)
 
 
-## Enables or disables the configuration controls (backends, scene,
-## duration, FPS, output dir) while a recording is in progress.
+## Enables or disables the configuration controls while recording.
 func _set_controls_enabled(enabled: bool) -> void:
 	_backend_option.disabled = not enabled
 	_scene_edit.editable = enabled
 	_use_current_button.disabled = not enabled
+	_format_option.disabled = not enabled
 	_duration_spin.editable = enabled
 	_fps_spin.editable = enabled
 	_output_edit.editable = enabled
+	_per_scene_check.disabled = not enabled or _scene_edit.text.strip_edges().is_empty()
+	_save_scene_button.disabled = (
+		not enabled
+		or not _per_scene_check.button_pressed
+		or _scene_edit.text.strip_edges().is_empty()
+	)
+	_clear_scene_button.disabled = not enabled or _scene_edit.text.strip_edges().is_empty()
 
 
 ## Sets the status label text and status light color.

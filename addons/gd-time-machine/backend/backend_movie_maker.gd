@@ -43,6 +43,12 @@ var _output_path := ""
 ## Recording duration in seconds; 0 = record until stopped manually.
 var _duration := 0.0
 
+## Previous movie_file setting captured on start(), restored on finalize.
+var _prev_movie_file: Variant = null
+
+## Previous fps setting captured on start(), restored on finalize.
+var _prev_fps: Variant = null
+
 ## Periodically checks whether the scene is still playing.
 var _poll_timer: Timer
 
@@ -83,9 +89,9 @@ func get_capture_mode() -> CaptureMode:
 	return CaptureMode.RESTART_SCENE
 
 
-## Begins a recording: configures Movie Maker settings, enables Movie Maker,
-## starts the poll (and the duration timer when a duration is set), then
-## launches the scene. No-op with a warning while a recording is active.
+## Begins a recording: captures previous ProjectSettings, configures Movie Maker
+## settings without persisting to disk, enables Movie Maker, starts the poll
+## and duration timer, then launches the scene.
 func start(config: Dictionary) -> void:
 	if _active:
 		push_warning("Backend '%s' is already recording" % get_backend_name())
@@ -98,6 +104,8 @@ func start(config: Dictionary) -> void:
 		_output_path = DEFAULT_OUTPUT_PATH
 	_duration = float(config.get("duration", 0.0))
 	var fps: int = int(config.get("fps", 0))
+	_prev_movie_file = _get_movie_file()
+	_prev_fps = _get_movie_fps()
 	_set_movie_file(_output_path)
 	if fps > 0:
 		_set_movie_fps(fps)
@@ -167,6 +175,7 @@ func _on_duration_timeout() -> void:
 			get_backend_name(), "Scene did not start playing before the duration elapsed"
 		)
 		_set_movie_maker_enabled(false)
+		_restore_settings()
 		_stop_playing_scene()
 	else:
 		stop()
@@ -186,8 +195,8 @@ func _on_grace_timeout() -> void:
 	_finalize_stopped()
 
 
-## Ends the session and emits recording_stopped exactly once: disables Movie
-## Maker and stops all timers. Later calls are no-ops.
+## Ends the session and emits recording_stopped exactly once: restores
+## previous ProjectSettings, disables Movie Maker and stops all timers.
 func _finalize_stopped() -> void:
 	# Single-emission guard: after the first finalize both flags are false, so
 	# any later call (idle poll, grace timer, explicit stop) is a no-op.
@@ -201,21 +210,66 @@ func _finalize_stopped() -> void:
 	_stop_grace_timer()
 	recording_stopped.emit(get_backend_name(), _output_path)
 	_set_movie_maker_enabled(false)
+	_restore_settings()
+
+
+# --- Settings snapshot/restore (no ProjectSettings.save()) -------------------
+
+
+## Restores movie_file and fps to what they were before start().
+func _restore_settings() -> void:
+	if _prev_movie_file == null:
+		_clear_movie_file()
+	else:
+		_set_movie_file_no_restore(str(_prev_movie_file))
+	if _prev_fps == null:
+		_clear_movie_fps()
+	else:
+		_set_movie_fps_no_restore(int(_prev_fps))
+	_prev_movie_file = null
+	_prev_fps = null
 
 
 # --- Editor interaction (isolated for testability) ---------------------------
 
 
-## Writes the output path to ProjectSettings and saves it.
+## Reads current movie_file setting.
+func _get_movie_file() -> Variant:
+	return ProjectSettings.get_setting("editor/movie_writer/movie_file")
+
+
+## Reads current fps setting.
+func _get_movie_fps() -> Variant:
+	return ProjectSettings.get_setting("editor/movie_writer/fps")
+
+
+## Writes the output path to ProjectSettings without saving to disk.
+## The child process sees it via GLOBAL_GET already, so no save() is needed.
 func _set_movie_file(path: String) -> void:
 	ProjectSettings.set_setting("editor/movie_writer/movie_file", path)
-	ProjectSettings.save()
 
 
-## Writes the target FPS to ProjectSettings and saves it.
+func _set_movie_file_no_restore(path: String) -> void:
+	ProjectSettings.set_setting("editor/movie_writer/movie_file", path)
+
+
+func _clear_movie_file() -> void:
+	if ProjectSettings.has_setting("editor/movie_writer/movie_file"):
+		ProjectSettings.set_setting("editor/movie_writer/movie_file", null)
+
+
+## Writes the target FPS to ProjectSettings without saving to disk.
 func _set_movie_fps(fps: int) -> void:
 	ProjectSettings.set_setting("editor/movie_writer/fps", fps)
-	ProjectSettings.save()
+
+
+func _set_movie_fps_no_restore(fps: int) -> void:
+	ProjectSettings.set_setting("editor/movie_writer/fps", fps)
+
+
+func _clear_movie_fps() -> void:
+	if ProjectSettings.has_setting("editor/movie_writer/fps"):
+		ProjectSettings.set_setting("editor/movie_writer/fps", null)
 
 
 ## Enables or disables Movie Maker in the editor.

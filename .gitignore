@@ -35,5 +35,8 @@ __pycache__/
 # Git worktrees for showcase recording
 .worktrees/
 
+# GdTimeMachine local state (per-scene recording profiles, etc.)
+addons/gd-time-machine/config/state/*.cfg
+
 # Captures
 media/captures/

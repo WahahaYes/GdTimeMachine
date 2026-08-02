@@ -45,6 +45,9 @@ var _debugger_plugin: EditorDebuggerPlugin = null
 ## Bottom-panel dock instance.
 var _dock: TimeMachineDock
 
+## Config store for default and per-scene profiles.
+var _config_store: ConfigStore
+
 ## Record button inserted into the editor run bar.
 var _run_bar_button: Button
 
@@ -55,7 +58,7 @@ var _game_view_button: Button
 var _game_view_section: HBoxContainer
 
 
-## Registers the debugger plugin and autoload, builds the controller and
+## Registers the debugger plugin, autoload, config store, controller and
 ## backend, adds the dock to the bottom panel, and schedules run-bar /
 ## game-view button setup for the first process frame (those UI bars are
 ## constructed after plugin _enter_tree).
@@ -63,13 +66,14 @@ func _enter_tree() -> void:
 	_debugger_plugin = preload("res://addons/gd-time-machine/editor/debugger_plugin.gd").new()
 	add_debugger_plugin(_debugger_plugin)
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
+	_config_store = CompositeConfigStore.new()
 	_recorder_controller = RecorderController.new()
 	add_child(_recorder_controller)
 	_movie_maker_backend = BackendMovieMaker.new()
 	_movie_maker_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_movie_maker_backend)
 	_dock = preload("res://addons/gd-time-machine/ui/time_machine_dock.tscn").instantiate()
-	_dock.setup(_recorder_controller)
+	_dock.setup(_recorder_controller, _config_store)
 	add_control_to_bottom_panel(_dock, "GdTimeMachine")
 	# The run bar and game view are constructed during editor init, after
 	# plugin _enter_tree (and after end-of-frame deferred calls). Wait for the
