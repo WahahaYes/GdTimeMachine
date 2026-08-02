@@ -1,6 +1,6 @@
 [gd_scene load_steps=2 format=3]
 
-[ext_resource type="Script" path="res://addons/gd-time-machine/ui/time_machine_dock.gd" id="1_dock"]
+[ext_resource type="Script" path="res://addons/GdTimeMachine/ui/time_machine_dock.gd" id="1_dock"]
 
 [node name="GdTimeMachine" type="VBoxContainer"]
 theme_override_constants/separation = 4

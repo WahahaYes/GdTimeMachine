@@ -47,7 +47,7 @@ repos:
         name: Check README/LICENSE drift (via make)
         entry: make check-docs
         language: system
-        files: ^(README\.md|LICENSE\.txt|addons/gd-time-machine/(README\.md|LICENSE\.txt))$
+        files: ^(README\.md|LICENSE\.txt|addons/GdTimeMachine/(README\.md|LICENSE\.txt))$
         require_serial: true
         pass_filenames: false
 

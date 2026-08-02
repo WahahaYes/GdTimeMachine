@@ -1,7 +1,7 @@
 extends GutTest
 
 # Op 2 graceful-stop autoload tests
-# (addons/gd-time-machine/autoload/graceful_stop.gd).
+# (addons/GdTimeMachine/autoload/graceful_stop.gd).
 #
 # The real autoload registers a message capture with EngineDebugger in _ready()
 # and quits via get_tree().quit() in _quit_game() — both engine-global side
@@ -12,7 +12,7 @@ extends GutTest
 # The instances are never added to the tree, so _ready/_exit_tree never run at
 # all; the overrides are belt-and-suspenders for safety.
 
-const GracefulStopScript := preload("res://addons/gd-time-machine/autoload/graceful_stop.gd")
+const GracefulStopScript := preload("res://addons/GdTimeMachine/autoload/graceful_stop.gd")
 
 
 class GracefulStopHarness:

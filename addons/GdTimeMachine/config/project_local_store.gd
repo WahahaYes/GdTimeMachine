@@ -4,9 +4,9 @@ class_name ProjectLocalConfigStore
 
 ## Per-scene overrides stored in a project-local ConfigFile.
 ##
-## Default location: res://addons/gd-time-machine/config/state/profiles.cfg
+## Default location: res://addons/GdTimeMachine/config/state/profiles.cfg
 ## This file lives under the addon so all GdTimeMachine state is localized in
-## one place (addons/gd-time-machine/config/state/). It is gitignored by
+## one place (addons/GdTimeMachine/config/state/). It is gitignored by
 ## default; teams can commit it if they want shared recording profiles.
 ##
 ## File format (ConfigFile = INI):
@@ -21,7 +21,7 @@ class_name ProjectLocalConfigStore
 ##   output_dir = ...
 ##   ...
 
-const DEFAULT_PATH := "res://addons/gd-time-machine/config/state/profiles.cfg"
+const DEFAULT_PATH := "res://addons/GdTimeMachine/config/state/profiles.cfg"
 const SECTION_DEFAULT := "default"
 
 ## Injected file path for testing. When empty, DEFAULT_PATH is used.

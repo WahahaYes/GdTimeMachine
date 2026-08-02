@@ -121,10 +121,10 @@ See `notes/ENHANCEMENTS_engine_native_recording.md` for the full engine-native b
 
 ## Files
 
-- `addons/gd-time-machine/backend/recorder_backend.gd` — add `CaptureMode`
-- `addons/gd-time-machine/backend/backend_movie_maker.gd` — return `RESTART_SCENE`
-- `addons/gd-time-machine/controller/recorder_controller.gd` — expose mode
-- `addons/gd-time-machine/plugin.gd` — button enable/tooltip per mode
+- `addons/GdTimeMachine/backend/recorder_backend.gd` — add `CaptureMode`
+- `addons/GdTimeMachine/backend/backend_movie_maker.gd` — return `RESTART_SCENE`
+- `addons/GdTimeMachine/controller/recorder_controller.gd` — expose mode
+- `addons/GdTimeMachine/plugin.gd` — button enable/tooltip per mode
 - `test/unit/test_recorder_controller.gd` — GUT: `get_capture_mode()` routing
 - `test/unit/test_plugin_button_state.gd` — GUT: grey-out state transitions (or fold into the existing controller/backend suites)
 - `notes/BRAINSTORM.md` — existing OBS websocket sketches

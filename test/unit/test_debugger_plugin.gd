@@ -1,7 +1,7 @@
 extends GutTest
 
 # Op 2 graceful-stop editor plugin tests
-# (addons/gd-time-machine/editor/debugger_plugin.gd).
+# (addons/GdTimeMachine/editor/debugger_plugin.gd).
 #
 # Testability constraint (verified empirically on Godot 4.7 headless):
 #   * GdTMDebuggerPlugin extends the editor-only native EditorDebuggerPlugin,
@@ -18,8 +18,8 @@ extends GutTest
 #      through duck-typed FakeSession doubles. The contract tests guarantee the
 #      mirror stays truthful to the real file.
 
-const PluginScript := preload("res://addons/gd-time-machine/editor/debugger_plugin.gd")
-const PLUGIN_SOURCE_PATH := "res://addons/gd-time-machine/editor/debugger_plugin.gd"
+const PluginScript := preload("res://addons/GdTimeMachine/editor/debugger_plugin.gd")
+const PLUGIN_SOURCE_PATH := "res://addons/GdTimeMachine/editor/debugger_plugin.gd"
 
 const WIRE_MESSAGE := "gd_time_machine:graceful_stop"
 const CAPTURE_PREFIX := "gd_time_machine"

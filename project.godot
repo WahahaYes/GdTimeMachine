@@ -28,4 +28,4 @@ movie_writer/movie_file="res://media/captures/manual_test/recording_smoke_2026-0
 
 [editor_plugins]
 
-enabled=PackedStringArray("res://addons/gd-time-machine/plugin.cfg", "res://addons/gut/plugin.cfg")
+enabled=PackedStringArray("res://addons/GdTimeMachine/plugin.cfg", "res://addons/gut/plugin.cfg")

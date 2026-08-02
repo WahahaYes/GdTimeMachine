@@ -11,7 +11,7 @@ class_name TimeMachineDock
 ##
 ## Configuration persists in two layers:
 ## - Defaults in EditorSettings under gd_time_machine/* (user-wide).
-## - Per-scene overrides in addons/gd-time-machine/config/state/profiles.cfg
+## - Per-scene overrides in addons/GdTimeMachine/config/state/profiles.cfg
 ##   (project-local, localized under the addon).
 ##
 ## The scene field follows the open scene automatically (plugin forwards
@@ -38,10 +38,10 @@ const COLOR_RECORDING := Color("4caf50")
 const COLOR_ERROR := Color("e03131")
 
 ## Icon path for the record state.
-const ICON_RECORD_PATH := "res://addons/gd-time-machine/ui/icons/icon_record.svg"
+const ICON_RECORD_PATH := "res://addons/GdTimeMachine/ui/icons/icon_record.svg"
 
 ## Icon path for the stop state.
-const ICON_STOP_PATH := "res://addons/gd-time-machine/ui/icons/icon_stop.svg"
+const ICON_STOP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
 
 ## Loaded record icon (lazy-loaded — see _ready()).
 var _icon_record: Texture2D

@@ -7,7 +7,7 @@ extends GutTest
 # interactive playbook; the controller-level re-apply semantics are covered
 # in test_recorder_controller.gd.
 
-const PluginScript := preload("res://addons/gd-time-machine/plugin.gd")
+const PluginScript := preload("res://addons/GdTimeMachine/plugin.gd")
 
 const RESTART := RecorderBackend.CaptureMode.RESTART_SCENE
 const IN_PLACE := RecorderBackend.CaptureMode.IN_PLACE

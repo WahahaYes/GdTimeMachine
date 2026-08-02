@@ -14,7 +14,7 @@ What works today:
 - **Toolbar buttons** — Record/Stop buttons in the run bar and in the game view toolbar.
 - **Graceful stop** — Stop asks the running game to quit cleanly so Movie Maker finalizes the file, instead of killing the process mid-write.
 - **No project.godot pollution** — Movie Maker settings are set in-memory for the recording and restored afterwards; nothing is written to `project.godot` on disk.
-- **Local config store** — default profile in `EditorSettings` under `gd_time_machine/recorder/*`, per-scene overrides in `addons/gd-time-machine/config/state/profiles.cfg` (gitignored by default, localized under the addon, opt-in to commit).
+- **Local config store** — default profile in `EditorSettings` under `gd_time_machine/recorder/*`, per-scene overrides in `addons/GdTimeMachine/config/state/profiles.cfg` (gitignored by default, localized under the addon, opt-in to commit).
 - **Scene-aware profiles** — the dock tracks the open scene automatically (`EditorPlugin.scene_changed`) and auto-loads/saves per-scene settings on scene switch.
 
 ## Backends
@@ -28,7 +28,7 @@ What works today:
 1. Enable the plugin (see [Installation](#installation)).
 1. Open the **GdTimeMachine** tab in the editor's bottom panel.
 1. Set the backend, output directory, format, FPS, and duration. The scene field follows the currently open scene automatically.
-1. Press **Record**. "Remember settings for this scene": when checked, this scene's settings are saved to its own profile in `addons/gd-time-machine/config/state/profiles.cfg` when you switch scenes, and reloaded when you come back. When unchecked, settings use the default profile.
+1. Press **Record**. "Remember settings for this scene": when checked, this scene's settings are saved to its own profile in `addons/GdTimeMachine/config/state/profiles.cfg` when you switch scenes, and reloaded when you come back. When unchecked, settings use the default profile.
 
 Recording starts when the scene plays. Press **Stop** to finalize the file — the running game is asked to quit gracefully, then the clip is closed out.
 
@@ -40,7 +40,7 @@ Recording starts when the scene plays. Press **Stop** to finalize the file — t
 
 ## Settings
 
-On first use, the default profile is seeded into `addons/gd-time-machine/config/state/profiles.cfg` (the `[default]` section) from `EditorSettings` (`Project > Editor Settings`, keys under `gd_time_machine/recorder/`):
+On first use, the default profile is seeded into `addons/GdTimeMachine/config/state/profiles.cfg` (the `[default]` section) from `EditorSettings` (`Project > Editor Settings`, keys under `gd_time_machine/recorder/`):
 
 | Setting | Type | Purpose | |---|---|---| | `gd_time_machine/recorder/output_dir` | String | Directory recordings are written to | | `gd_time_machine/recorder/output_format` | String | Default format (`avi`, `ogv`, `png`) | | `gd_time_machine/recorder/default_duration` | float | Default recording duration in seconds (0 = record until stopped) | | `gd_time_machine/recorder/default_fps` | int | Default target FPS cap | | `gd_time_machine/recorder/default_backend` | String | Backend selected by default |
 
@@ -58,18 +58,18 @@ fps = 30
 output_format = png
 ```
 
-This file lives under `addons/gd-time-machine/config/state/` and is gitignored by default. Teams can commit it if they want shared recording profiles.
+This file lives under `addons/GdTimeMachine/config/state/` and is gitignored by default. Teams can commit it if they want shared recording profiles.
 
 ## Installation
 
-1. Copy the `addons/gd-time-machine` directory into your project's `addons/` folder.
+1. Copy the `addons/GdTimeMachine` directory into your project's `addons/` folder.
 1. Enable it in **Project > Project Settings > Plugins** (activate the GdTimeMachine plugin).
 
 ## Architecture
 
 - `RecordingProfile` — per-recording config, serializable via `to_dict()`/`from_dict()`.
 - `GdTMOutputFormat` — shared format enum → extension → display name → warning text.
-- `ConfigStore` interface — `EditorSettingsConfigStore` (first-run default seed) + `ProjectLocalConfigStore` (`addons/gd-time-machine/config/state/profiles.cfg` `[default]` + per-scene overrides, the source of truth) + `CompositeConfigStore` (scene override > local default > editor default).
+- `ConfigStore` interface — `EditorSettingsConfigStore` (first-run default seed) + `ProjectLocalConfigStore` (`addons/GdTimeMachine/config/state/profiles.cfg` `[default]` + per-scene overrides, the source of truth) + `CompositeConfigStore` (scene override > local default > editor default).
 - `RecorderBackend` subclasses with `CaptureMode`.
 - `RecorderController` owns backend lifecycles and re-emits backend signals; dock talks only to the controller and the config store, never directly to a backend or ProjectSettings movie_writer keys.
 - `BackendMovieMaker` — snapshot/restore of `editor/movie_writer/*` without `ProjectSettings.save()`, removing the old `project.godot` pollution.

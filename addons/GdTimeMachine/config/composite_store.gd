@@ -3,7 +3,7 @@ extends ConfigStore
 class_name CompositeConfigStore
 
 ## Combines an EditorSettings-backed default store with an optional per-scene
-## local store (ConfigFile under addons/gd-time-machine/config/state/).
+## local store (ConfigFile under addons/GdTimeMachine/config/state/).
 ##
 ## The local [default] section is the source of truth for the default profile:
 ##   - First read with no local [default] seeds it from the EditorSettings default.

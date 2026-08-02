@@ -10,7 +10,7 @@ extends GutTest
 ## before _ready so _prefill_scene skips EditorInterface, which is
 ## unavailable in headless test runs.
 
-const DOCK_SCENE := "res://addons/gd-time-machine/ui/time_machine_dock.tscn"
+const DOCK_SCENE := "res://addons/GdTimeMachine/ui/time_machine_dock.tscn"
 
 
 # Mock backend exercising the RecorderBackend contract (mirrors the one in

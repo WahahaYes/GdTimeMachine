@@ -12,10 +12,10 @@ extends EditorPlugin
 ## same pieces are torn down in reverse order.
 
 ## Icon shown on the record buttons while idle.
-const ICON_RECORD_PATH := "res://addons/gd-time-machine/ui/icons/icon_record.svg"
+const ICON_RECORD_PATH := "res://addons/GdTimeMachine/ui/icons/icon_record.svg"
 
 ## Icon shown on the record buttons while recording.
-const ICON_STOP_PATH := "res://addons/gd-time-machine/ui/icons/icon_stop.svg"
+const ICON_STOP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
 
 ## Default tooltip for the record buttons.
 const TOOLTIP_DEFAULT := "GdTimeMachine — Start/stop recording (uses the dock settings)"
@@ -31,7 +31,7 @@ const TOOLTIP_RESTART_DISABLED := "This backend restarts the scene to record. Us
 const AUTOLOAD_NAME := "GdTimeMachineGracefulStop"
 
 ## Script backing the graceful-stop autoload singleton.
-const AUTOLOAD_PATH := "res://addons/gd-time-machine/autoload/graceful_stop.gd"
+const AUTOLOAD_PATH := "res://addons/GdTimeMachine/autoload/graceful_stop.gd"
 
 ## Owns backends and exposes the recording API used by the dock and buttons.
 var _recorder_controller: RecorderController
@@ -66,7 +66,7 @@ var _game_view_section: HBoxContainer
 ## game-view button setup for the first process frame (those UI bars are
 ## constructed after plugin _enter_tree).
 func _enter_tree() -> void:
-	_debugger_plugin = preload("res://addons/gd-time-machine/editor/debugger_plugin.gd").new()
+	_debugger_plugin = preload("res://addons/GdTimeMachine/editor/debugger_plugin.gd").new()
 	add_debugger_plugin(_debugger_plugin)
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
 	_config_store = CompositeConfigStore.new()
@@ -75,7 +75,7 @@ func _enter_tree() -> void:
 	_movie_maker_backend = BackendMovieMaker.new()
 	_movie_maker_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_movie_maker_backend)
-	_dock = preload("res://addons/gd-time-machine/ui/time_machine_dock.tscn").instantiate()
+	_dock = preload("res://addons/GdTimeMachine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
 	# Bottom-panel placement via the EditorDock API (4.6+). The legacy
 	# add_control_to_bottom_panel() is deprecated; an EditorDock owns the tab

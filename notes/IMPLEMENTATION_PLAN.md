@@ -21,7 +21,7 @@ Create the addon skeleton. No backends yet, just a plugin that Godot recognizes.
 **Files to create:**
 
 ```
-addons/gd-time-machine/
+addons/GdTimeMachine/
 ├── plugin.cfg
 ├── plugin.gd
 └── README.md
@@ -59,7 +59,7 @@ func _exit_tree() -> void:
 
 **Acceptance:**
 
-- Copy `addons/gd-time-machine/` into a test project
+- Copy `addons/GdTimeMachine/` into a test project
 - Enable plugin in Project Settings → Plugins
 - Verify no errors in the editor output
 
@@ -72,7 +72,7 @@ The core abstraction layer. Everything else builds on this.
 **Files to create:**
 
 ```
-addons/gd-time-machine/
+addons/GdTimeMachine/
 ├── controller/
 │   └── recorder_controller.gd     # Signal router, backend lifecycle
 └── backend/
@@ -147,7 +147,7 @@ The "works immediately" path. After this phase, the addon can record scenes with
 **Files to create:**
 
 ```
-addons/gd-time-machine/
+addons/GdTimeMachine/
 ├── backend/
 │   └── backend_movie_maker.gd
 ├── ui/
@@ -264,7 +264,7 @@ Fetch the OBS WebSocket GDScript library and verify it can handshake with a runn
 **Files to create:**
 
 ```
-addons/gd-time-machine/
+addons/GdTimeMachine/
 └── vendor/
     └── obs_websocket_gd/
         ├── obs_websocket.gd        # Main file from upstream
@@ -309,7 +309,7 @@ Port the existing Python `obs_controller.py` logic into GDScript. This is the pr
 **Files to create:**
 
 ```
-addons/gd-time-machine/
+addons/GdTimeMachine/
 └── backend/
     ├── backend_obs.gd              # Main OBS backend
     └── platform_capture.gd         # Platform-specific capture source helpers
@@ -502,7 +502,7 @@ ______________________________________________________________________
 ## File manifest (complete)
 
 ```
-addons/gd-time-machine/
+addons/GdTimeMachine/
 ├── plugin.cfg                          # Phase 0
 ├── plugin.gd                           # Phase 0, updated Phase 5
 ├── README.md                           # Phase 0
@@ -579,7 +579,7 @@ This means Phase 5 includes defining the manifest JSON schema and adding a "Expo
 
 ## Naming reference
 
-| Thing | Name | |-------|------| | Addon directory | `addons/gd-time-machine/` | | Plugin name (in `plugin.cfg`) | `GdTimeMachine` | | CLI companion (future) | `gdtime-cli` (or `gdtm-cli`) | | Scene dock | `res://addons/gd-time-machine/ui/time_machine_dock.tscn` | | Settings prefix | `gd_time_machine/` |
+| Thing | Name | |-------|------| | Addon directory | `addons/GdTimeMachine/` | | Plugin name (in `plugin.cfg`) | `GdTimeMachine` | | CLI companion (future) | `gdtime-cli` (or `gdtm-cli`) | | Scene dock | `res://addons/GdTimeMachine/ui/time_machine_dock.tscn` | | Settings prefix | `gd_time_machine/` |
 
 ## Future enhancements (not in v0.1 scope)
 

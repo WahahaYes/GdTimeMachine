@@ -7,7 +7,7 @@ ______________________________________________________________________
 ## Addon directory layout
 
 ```
-addons/gd-time-machine/
+addons/GdTimeMachine/
 ├── plugin.cfg                      # Addon metadata (name, version, author)
 ├── plugin.gd                       # EditorPlugin — lifecycle, dock, toolbar
 │

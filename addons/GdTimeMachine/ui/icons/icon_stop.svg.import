@@ -3,15 +3,15 @@
 importer="texture"
 type="CompressedTexture2D"
 uid="uid://1v3efifcdxdk"
-path="res://.godot/imported/icon_stop.svg-69b4714ca44e8277e519277423b81fc3.ctex"
+path="res://.godot/imported/icon_stop.svg-63f6bc40d93bb340f9139f4eccb9f605.ctex"
 metadata={
 "vram_texture": false
 }
 
 [deps]
 
-source_file="res://addons/gd-time-machine/ui/icons/icon_stop.svg"
-dest_files=["res://.godot/imported/icon_stop.svg-69b4714ca44e8277e519277423b81fc3.ctex"]
+source_file="res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
+dest_files=["res://.godot/imported/icon_stop.svg-63f6bc40d93bb340f9139f4eccb9f605.ctex"]
 
 [params]
 
