@@ -244,7 +244,7 @@ ______________________________________________________________________
 ## Open design questions to resolve later
 
 1. **OBS password storage**: Editor settings are plaintext. Should we warn users?
-1. **Audit output size**: Movie Maker produces .avi — user wants mp4? Transcode after?
+1. **Audit output size**: Movie Maker produces .avi — user wants mp4? Transcode after? — **Answered (2026-08-01)**: yes, transcode after, via the tier-2 ffmpeg hook — see `BRAINSTORM_tier2_ffmpeg_exports.md`. MP4 is not a native Movie Maker writer (the engine ships AVI/OGV/PNG only).
 1. **Progress indication**: OBS recording has no progress — we just wait. Show countdown timer?
 1. **Multi-scene batch**: Like our `capture_all_showcase.sh` but with a GUI manifest editor. Phase 2.
 1. **Replay buffer**: The "Record That" button (saves last N seconds) — cool but requires OBS replay buffer to be active.

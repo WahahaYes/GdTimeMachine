@@ -456,7 +456,7 @@ func _register_settings() -> void:
             })
 ```
 
-**Optional ffmpeg transcode:**
+**Optional ffmpeg transcode:** *(superseded as a standalone sketch — this is the Movie Maker + "tier 2" case of `BRAINSTORM_tier2_ffmpeg_exports.md`; a shared `ffmpeg_convert.gd` hook generalizes it to every backend. Keep the args below: `-c:v libx264 -crf 18`.)*
 
 - After recording stops, if the setting `recorder/transcode_to_mp4` is enabled:
   ```gdscript

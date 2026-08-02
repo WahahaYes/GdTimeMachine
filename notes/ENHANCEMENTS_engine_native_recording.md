@@ -66,7 +66,7 @@ On `stop()`, after frames + manifest are written:
    - OGV → `-c:v libtheora -q:v <q>` (video only for now — `-an`; no audio channel exists on this backend yet)
    - AVI → `-c:v mjpeg -q:v <q>` (mirrors the engine's MJPEG writer)
    - PNG → no conversion (the sequence dir IS the output, same as the engine's `.png` mode)
-   - Future: MP4/H.264, WebM/VP9 as dropdown additions — ffmpeg is not limited to the engine's three writers. Quality `<q>` reuses `ProjectSettings.editor/movie_writer/video_quality` so both backends honor one preference.
+   - Future: MP4/H.264, WebM/VP9 as dropdown additions — ffmpeg is not limited to the engine's three writers. Quality `<q>` reuses `ProjectSettings.editor/movie_writer/video_quality` so both backends honor one preference. **(This hook is the "tier 2" mechanism of `BRAINSTORM_tier2_ffmpeg_exports.md` — generalize it to run after *any* backend's `recording_stopped`, not just this one.)**
 1. **Never block the editor.** Run the encode on a `Thread` (blocking `OS.execute` inside, capturing stdout/stderr via the output array), then `call_deferred` back to the main thread: exit 0 → emit `recording_converted(backend_name, clip_path)` and clean up the frames dir; nonzero → keep frames + emit `recording_error` with the stderr tail. A `Thread` is preferred over `OS.create_process()` + PID polling because it captures ffmpeg's stderr cross-platform without shell redirection hacks. Lifecycle: the backend must `wait_to_finish()` the thread before free/`_exit_tree` (ffmpeg runs to completion; acceptable to wait).
 1. **Timing fidelity.** `-framerate` comes from the **manifest's measured average fps** (frame count / elapsed between first and last capture), not the configured target — the screenshot channel can't hold a steady rate. (v2 alternative: concat demuxer with per-frame durations from the manifest.)
 1. **Layout.** `config.output_path` = the final clip path; frames go to a sibling temp dir (`<output_path>.frames/`, zero-padded `frame_%05d.png` for globbability). The manifest is kept either way — it's the manual-convert fallback and future metadata.
@@ -76,7 +76,7 @@ Verify in the #3 spike: exact `OS.execute`/`Thread` signatures and whether a wor
 
 ## 5. `[ ]` Movie Maker output-format dropdown (OGV / AVI / PNG) + 4 GB guard
 
-The engine ships three writers; we currently hardcode AVI via `editor/movie_writer/movie_file`. Surface the choice in the dock. **The dropdown is backend-agnostic**: Movie Maker maps it to the engine's `editor/movie_writer/movie_file` extension; `BackendScreenshotCapture` maps it to an ffmpeg codec/container pair (see 4a). A single "output format" preference drives both backends.
+The engine ships three writers; we currently hardcode AVI via `editor/movie_writer/movie_file`. Surface the choice in the dock. **The dropdown is backend-agnostic**: Movie Maker maps it to the engine's `editor/movie_writer/movie_file` extension; `BackendScreenshotCapture` maps it to an ffmpeg codec/container pair (see 4a). A single "output format" preference drives both backends. Formats a backend can't write natively are produced by the shared tier-2 ffmpeg hook — per-backend tier-1 sets + the format matrix live in `BRAINSTORM_tier2_ffmpeg_exports.md`.
 
 - OGV (Theora + Vorbis): smaller files, has audio, editor-binaries only — good default for most captures.
 - AVI (MJPEG + uncompressed audio): current default; **capped at 4 GB** — a long/high-res recording can hit the cap and break the file. Add a size guard or a dock warning.
