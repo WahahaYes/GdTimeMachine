@@ -40,11 +40,11 @@ Recording starts when the scene plays. Press **Stop** to finalize the file — t
 
 ## Settings
 
-Default profile lives in `EditorSettings` (`Project > Editor Settings`) under `gd_time_machine/recorder/`:
+On first use, the default profile is seeded into `addons/gd-time-machine/config/state/profiles.cfg` (the `[default]` section) from `EditorSettings` (`Project > Editor Settings`, keys under `gd_time_machine/recorder/`):
 
 | Setting | Type | Purpose | |---|---|---| | `gd_time_machine/recorder/output_dir` | String | Directory recordings are written to | | `gd_time_machine/recorder/output_format` | String | Default format (`avi`, `ogv`, `png`) | | `gd_time_machine/recorder/default_duration` | float | Default recording duration in seconds (0 = record until stopped) | | `gd_time_machine/recorder/default_fps` | int | Default target FPS cap | | `gd_time_machine/recorder/default_backend` | String | Backend selected by default |
 
-Per-scene overrides live in `addons/gd-time-machine/config/state/profiles.cfg` (INI via ConfigFile):
+After seeding, the `[default]` section in `profiles.cfg` is the source of truth for the default profile — edit the file directly to change your global defaults, and any default saved from the dock is written back there. Per-scene overrides live in the same file (INI via ConfigFile):
 
 ```ini
 [default]
@@ -69,7 +69,7 @@ This file lives under `addons/gd-time-machine/config/state/` and is gitignored b
 
 - `RecordingProfile` — per-recording config, serializable via `to_dict()`/`from_dict()`.
 - `GdTMOutputFormat` — shared format enum → extension → display name → warning text.
-- `ConfigStore` interface — `EditorSettingsConfigStore` (user-wide defaults) + `ProjectLocalConfigStore` (`addons/gd-time-machine/config/state/profiles.cfg` per-scene overrides) + `CompositeConfigStore` (scene override > default).
+- `ConfigStore` interface — `EditorSettingsConfigStore` (first-run default seed) + `ProjectLocalConfigStore` (`addons/gd-time-machine/config/state/profiles.cfg` `[default]` + per-scene overrides, the source of truth) + `CompositeConfigStore` (scene override > local default > editor default).
 - `RecorderBackend` subclasses with `CaptureMode`.
 - `RecorderController` owns backend lifecycles and re-emits backend signals; dock talks only to the controller and the config store, never directly to a backend or ProjectSettings movie_writer keys.
 - `BackendMovieMaker` — snapshot/restore of `editor/movie_writer/*` without `ProjectSettings.save()`, removing the old `project.godot` pollution.

@@ -5,11 +5,11 @@ class_name CompositeConfigStore
 ## Combines an EditorSettings-backed default store with an optional per-scene
 ## local store (ConfigFile under addons/gd-time-machine/config/state/).
 ##
-## Resolution:
-##   get_default_profile() → local default (if present) merged over editor default,
-##   falling back to editor default alone.
-##   get_scene_profile() → local per-scene override (only place scene profiles live).
-##   resolve_profile(scene_path) → scene override > local default > editor default.
+## The local [default] section is the source of truth for the default profile:
+##   - First read with no local [default] seeds it from the EditorSettings default.
+##   - save_default_profile() writes through to both stores.
+##   - get_scene_profile() → local per-scene override (only place scene profiles live).
+##   - resolve_profile(scene_path) → scene override > local default > editor default.
 
 var _editor_store: ConfigStore
 var _local_store: ConfigStore
@@ -22,21 +22,16 @@ func _init(editor_store: ConfigStore = null, local_store: ConfigStore = null) ->
 
 func get_default_profile() -> RecordingProfile:
 	var editor_default := _editor_store.get_default_profile()
-	var local_default := _local_store.get_default_profile()
-	# Local default is considered present if its file exists / has a default section.
-	# We detect that by comparing against a blank profile: if loader returned null,
-	# get_default_profile() already returned a blank. Merge: local values override
-	# editor values only when they differ from blank defaults? Simpler: if local
-	# file has a default section, treat local_default as the authoritative default;
-	# otherwise use editor_default. Check existence via get_all_scene_paths presence
-	# of default section? ProjectLocalConfigStore.get_default_profile() returns blank
-	# when no file/section — we need to know. Use loader presence check:
-	# if local store has any default key persisted, local file had a section.
+	# Local default is the source of truth when its file has a default section.
 	if _local_store is ProjectLocalConfigStore:
-		var cf := (_local_store as ProjectLocalConfigStore)._load_config()
-		if cf != null and cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT):
-			return local_default
-	# EditorSettings fallback
+		var local_store := _local_store as ProjectLocalConfigStore
+		var cf := local_store._load_config()
+		if cf == null or not cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT):
+			# First run: seed the local [default] from the editor default so
+			# profiles.cfg becomes the single editable source of truth.
+			local_store.save_default_profile(editor_default)
+			return editor_default
+		return _local_store.get_default_profile()
 	return editor_default
 
 
@@ -46,6 +41,10 @@ func get_scene_profile(scene_path: String) -> RecordingProfile:
 
 func save_default_profile(profile: RecordingProfile) -> void:
 	_editor_store.save_default_profile(profile)
+	# Write through to the local file too: profiles.cfg [default] is the
+	# user-facing place for global defaults.
+	if _local_store is ProjectLocalConfigStore:
+		(_local_store as ProjectLocalConfigStore).save_default_profile(profile)
 
 
 func save_scene_profile(scene_path: String, profile: RecordingProfile) -> void:

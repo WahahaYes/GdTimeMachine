@@ -43,3 +43,13 @@ The manual Save/Clear buttons remain as "save now without switching" convenience
 ## Heads-up (now addressed)
 
 `add_control_to_bottom_panel()` / `add_control_to_dock()` are deprecated in 4.6+ in favor of `add_dock(EditorDock)` with `default_slot = DOCK_SLOT_BOTTOM`. **Migrated 2026-08-01** — see `SESSION_editordock_migration.md`.
+
+## Default source of truth: profiles.cfg `[default]` (2026-08-01)
+
+`CompositeConfigStore` now treats `profiles.cfg` `[default]` as the authoritative default profile:
+
+- **First run**: no local `[default]` section → `get_default_profile()` seeds it from the `EditorSettings` default (EditorSettings remains the seed source), then returns the editor values.
+- **After seeding**: the local `[default]` wins on every read — users hand-edit `profiles.cfg` to change global defaults.
+- **Write-through**: `save_default_profile()` writes to both stores, so dock edits materialize in `profiles.cfg` `[default]`.
+
+106/106 GUT green. README "Settings" + Architecture updated; `make sync-docs`/`check-docs` pass.

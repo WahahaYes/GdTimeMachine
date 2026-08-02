@@ -134,6 +134,67 @@ func test_project_local_store_default_profile() -> void:
 	assert_eq(d1.output_dir, "res://local_default")
 
 
+func test_composite_store_seeds_local_default_on_first_run() -> void:
+	var es := FakeEditorSettings.new()
+	es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR] = "res://editor_default"
+	var editor_store := EditorSettingsConfigStore.new(es)
+
+	var cf := ConfigFile.new()
+	var local_store := ProjectLocalConfigStore.new("res://test_local.cfg")
+	local_store._loader = func() -> ConfigFile: return cf
+	local_store._saver = func(_c: ConfigFile) -> void: pass
+
+	var composite := CompositeConfigStore.new(editor_store, local_store)
+
+	# No [default] section yet -> first read returns editor default AND seeds
+	# the local [default] section so profiles.cfg becomes the source of truth.
+	var def_profile := composite.get_default_profile()
+	assert_eq(def_profile.output_dir, "res://editor_default")
+	assert_true(cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT))
+	assert_eq(
+		cf.get_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_dir"), "res://editor_default"
+	)
+
+	# Second read: local [default] now exists -> comes from the local file.
+	# Change the local file directly to prove it is now authoritative.
+	cf.set_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_dir", "res://user_edited")
+	var def2 := composite.get_default_profile()
+	assert_eq(def2.output_dir, "res://user_edited")
+
+
+func test_composite_store_save_default_writes_through_to_local() -> void:
+	var es := FakeEditorSettings.new()
+	var editor_store := EditorSettingsConfigStore.new(es)
+
+	var cf := ConfigFile.new()
+	var local_store := ProjectLocalConfigStore.new("res://test_local.cfg")
+	local_store._loader = func() -> ConfigFile: return cf
+	local_store._saver = func(_c: ConfigFile) -> void: pass
+
+	var composite := CompositeConfigStore.new(editor_store, local_store)
+
+	var p := RecordingProfile.new()
+	p.output_dir = "res://my_defaults"
+	p.output_format = GdTMOutputFormat.Format.OGV
+	p.fps = 30
+	p.duration = 45.0
+	p.backend_name = "Godot Movie Maker"
+	composite.save_default_profile(p)
+
+	# Both stores get the default.
+	assert_eq(es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR], "res://my_defaults")
+	assert_true(cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT))
+	assert_eq(
+		cf.get_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_dir"), "res://my_defaults"
+	)
+	assert_eq(cf.get_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_format"), "ogv")
+
+	# And the composite reads it back as the authoritative default.
+	var loaded := composite.get_default_profile()
+	assert_eq(loaded.output_dir, "res://my_defaults")
+	assert_eq(loaded.output_format, GdTMOutputFormat.Format.OGV)
+
+
 func test_composite_store_resolves_scene_over_default() -> void:
 	var es := FakeEditorSettings.new()
 	es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR] = "res://editor_default"
