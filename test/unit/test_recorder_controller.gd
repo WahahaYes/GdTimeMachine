@@ -172,6 +172,36 @@ func test_recording_error_signal_routes_through_controller() -> void:
 	assert_eq(received[0], ["Mock", "boom"])
 
 
+func test_recording_notice_signal_routes_through_controller() -> void:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	var received: Array = []
+	controller.recording_notice.connect(func(name, message): received.append([name, message]))
+	backend.recording_notice.emit(
+		backend.get_backend_name(), "Saved 5 frames @ 14.2 fps (target 60)"
+	)
+	assert_eq(received.size(), 1)
+	assert_eq(received[0], ["Mock", "Saved 5 frames @ 14.2 fps (target 60)"])
+
+
+func test_recording_notice_not_routed_after_unregister() -> void:
+	# Disconnect-on-unregister must cover the notice signal too, so a
+	# deactivated backend cannot keep feeding the dock after removal.
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	var handler := Callable(controller, "_on_backend_recording_notice")
+	assert_true(backend.is_connected("recording_notice", handler))
+	controller.unregister_backend("Mock")
+	assert_false(backend.is_connected("recording_notice", handler))
+	# unregister_backend() queue_frees the backend; free immediately so GUT
+	# orphan counter (which only waits for its own autofree queue) does not
+	# see it as lingering after the test ends.
+	if is_instance_valid(backend) and backend.get_parent() == null:
+		backend.free()
+
+
 func test_stop_recording_returns_bool_and_stops_backend() -> void:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
 	var backend := _make_backend()

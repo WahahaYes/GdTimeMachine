@@ -165,7 +165,7 @@ func _apply_setup() -> void:
 	$SettingsGroup/DurationRow.tooltip_text = _duration_spin.tooltip_text
 	$SettingsGroup/DurationRow/DurationLabel.tooltip_text = _duration_spin.tooltip_text
 
-	_backend_option.tooltip_text = "Recording backend. Movie Maker restarts the scene; in-place backends record the running scene without restarting it."
+	_update_backend_tooltip()
 	_scene_edit.tooltip_text = "Scene to launch when recording starts. Follows the open scene automatically; empty uses the current or main scene."
 	_use_current_button.tooltip_text = "Re-sync the field to the currently open scene (the field follows it automatically)."
 	_fps_spin.tooltip_text = "Target frames per second for the recording."
@@ -186,11 +186,12 @@ func _apply_setup() -> void:
 	_controller.recording_started.connect(_on_recording_started)
 	_controller.recording_stopped.connect(_on_recording_stopped)
 	_controller.recording_error.connect(_on_recording_error)
+	_controller.recording_notice.connect(_on_recording_notice)
 	_populate_backends()
 	_populate_formats()
 	_load_settings()
 	_prefill_scene()
-	_update_scene_row_visibility()
+	_update_backend_visibility()
 	_refresh_per_scene_state()
 	_set_recording_ui(false)
 	_set_status("Ready", COLOR_IDLE)
@@ -394,16 +395,40 @@ func _refresh_per_scene_state() -> void:
 ## visibility/per-scene state.
 func _on_backend_changed(backend_name: String) -> void:
 	_select_backend_item(backend_name)
-	_update_scene_row_visibility()
+	_update_backend_visibility()
+	_update_backend_tooltip()
 	_persist_default_profile()
+
+
+## Backend dropdown tooltip: the generic behavior note plus the active
+## backend's own description (e.g. the screenshot backend's foreground/no-audio
+## limits come from get_description(), not the UI layer).
+func _update_backend_tooltip() -> void:
+	var note := (
+		"Recording backend. Movie Maker restarts the scene; in-place backends "
+		+ "record the running scene without restarting it."
+	)
+	var description := ""
+	if _controller != null and _controller.active_backend != null:
+		description = _controller.active_backend.get_description()
+	if description.is_empty():
+		_backend_option.tooltip_text = note
+	else:
+		_backend_option.tooltip_text = "%s\n%s" % [note, description]
 
 
 ## In-place backends record the running scene, so the "which scene to launch"
 ## row is meaningless for them — hide it rather than let it imply a restart.
-func _update_scene_row_visibility() -> void:
-	if _controller == null or _scene_row == null:
+## The only in-place backend today is PNG-only until Op 6 (ffmpeg auto-convert),
+## so the format row is hidden too — AVI/OGV are meaningless pre-convert.
+func _update_backend_visibility() -> void:
+	if _controller == null:
 		return
-	_scene_row.visible = _controller.get_capture_mode() != RecorderBackend.CaptureMode.IN_PLACE
+	var in_place := _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
+	if _scene_row != null:
+		_scene_row.visible = not in_place
+	if _format_row != null:
+		_format_row.visible = not in_place
 
 
 ## Handles the "Use Current" button: fills the scene field and refreshes
@@ -584,8 +609,16 @@ func _build_output_path_for_profile(profile: RecordingProfile, output_dir: Strin
 	if not scene_path.is_empty():
 		scene_name = scene_path.get_file().get_basename()
 	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
-	var ext := GdTMOutputFormat.to_extension(profile.output_format)
-	var path := "%s/%s_%s.%s" % [dir, scene_name, stamp, ext]
+	# In-place backends get a bare base path: the backend owns the output
+	# layout ("<base>.frames/…"), and a format extension would just pollute it.
+	var in_place := (
+		_controller != null
+		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
+	)
+	var path := "%s/%s_%s" % [dir, scene_name, stamp]
+	if not in_place:
+		var ext := GdTMOutputFormat.to_extension(profile.output_format)
+		path = "%s.%s" % [path, ext]
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
 	return path
 
@@ -612,6 +645,13 @@ func _on_recording_stopped(_backend_name: String, output_path: String) -> void:
 func _on_recording_error(_backend_name: String, message: String) -> void:
 	_set_recording_ui(false)
 	_set_status("Error: %s" % message, COLOR_ERROR)
+
+
+## Shows an info-level message from the active backend (capture statistics, a
+## zero/low-frame hint, …) in the status line. The backend composes the
+## message; this handler only prints it.
+func _on_recording_notice(_backend_name: String, message: String) -> void:
+	_set_status(message, COLOR_IDLE)
 
 
 ## Switches the record button between Record/Stop look and disables config.

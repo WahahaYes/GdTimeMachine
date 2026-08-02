@@ -25,6 +25,10 @@ signal recording_progress(backend_name: String, elapsed_sec: float)
 ## Emitted when recording fails (forwarded from the backend, or emitted
 ## directly when start_recording is called with no backend selected).
 signal recording_error(backend_name: String, error_message: String)
+## Emitted with an info-level message from the active backend, shown in the
+## dock status line (forwarded from the backend, e.g. capture statistics or a
+## zero/low-frame hint).
+signal recording_notice(backend_name: String, message: String)
 
 
 ## Registers a backend under its own name, connects its signals, reparents it
@@ -139,6 +143,7 @@ func _connect_backend_signals(backend: RecorderBackend) -> void:
 	backend.recording_stopped.connect(_on_backend_recording_stopped)
 	backend.recording_progress.connect(_on_backend_recording_progress)
 	backend.recording_error.connect(_on_backend_recording_error)
+	backend.recording_notice.connect(_on_backend_recording_notice)
 
 
 ## Disconnects a backend's signals from this controller's re-emit handlers.
@@ -147,6 +152,7 @@ func _disconnect_backend_signals(backend: RecorderBackend) -> void:
 	backend.recording_stopped.disconnect(_on_backend_recording_stopped)
 	backend.recording_progress.disconnect(_on_backend_recording_progress)
 	backend.recording_error.disconnect(_on_backend_recording_error)
+	backend.recording_notice.disconnect(_on_backend_recording_notice)
 
 
 ## Forwards a backend's recording_started as the controller's own signal.
@@ -167,3 +173,8 @@ func _on_backend_recording_progress(backend_name: String, elapsed_sec: float) ->
 ## Forwards a backend's recording_error as the controller's own signal.
 func _on_backend_recording_error(backend_name: String, error_message: String) -> void:
 	recording_error.emit(backend_name, error_message)
+
+
+## Forwards a backend's recording_notice as the controller's own signal.
+func _on_backend_recording_notice(backend_name: String, message: String) -> void:
+	recording_notice.emit(backend_name, message)

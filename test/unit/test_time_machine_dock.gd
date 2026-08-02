@@ -19,6 +19,7 @@ class MockBackend:
 	extends RecorderBackend
 	var display_name := "Godot Movie Maker"
 	var recording := false
+	var capture_mode := RecorderBackend.CaptureMode.RESTART_SCENE
 
 	func get_backend_name() -> String:
 		return display_name
@@ -33,7 +34,7 @@ class MockBackend:
 		return recording
 
 	func get_capture_mode() -> CaptureMode:
-		return RecorderBackend.CaptureMode.RESTART_SCENE
+		return capture_mode
 
 	func start(_config: Dictionary) -> void:
 		recording = true
@@ -77,6 +78,22 @@ class FakeStore:
 func _build_dock(store: FakeStore, scene_path: String) -> Dictionary:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
 	var backend := MockBackend.new()
+	controller.register_backend(backend)
+	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
+	dock.get_node("SettingsGroup/SceneRow/SceneEdit").text = scene_path
+	dock.setup(controller, store)
+	add_child_autofree(dock)
+	return {"dock": dock, "controller": controller, "backend": backend}
+
+
+## Like _build_dock but with a MockBackend preset to the given capture mode,
+## so IN_PLACE visibility/output-path behavior can be exercised.
+func _build_dock_with_mode(
+	store: FakeStore, scene_path: String, capture_mode: RecorderBackend.CaptureMode
+) -> Dictionary:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := MockBackend.new()
+	backend.capture_mode = capture_mode
 	controller.register_backend(backend)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
 	dock.get_node("SettingsGroup/SceneRow/SceneEdit").text = scene_path
@@ -350,3 +367,66 @@ func test_uncheck_untitled_scene_does_not_clear() -> void:
 	assert_false(check.button_pressed)
 	assert_true(check.disabled)
 	assert_eq(store.cleared_scene_calls.size(), 0)
+
+
+# --- IN_PLACE backend behavior (Op 5 screenshot backend) ---
+
+
+func test_in_place_backend_hides_scene_and_format_rows() -> void:
+	# In-place backends record the running scene, so "which scene to launch"
+	# is meaningless; and pre-Op-6 they are PNG-only, so the format row is
+	# meaningless too. Both must be hidden.
+	var store := FakeStore.new()
+	var ctx := _build_dock_with_mode(
+		store, "res://scenes/a.tscn", RecorderBackend.CaptureMode.IN_PLACE
+	)
+	var dock := ctx["dock"] as TimeMachineDock
+	assert_false(dock.get_node("SettingsGroup/SceneRow").visible)
+	assert_false(dock.get_node("SettingsGroup/FormatRow").visible)
+
+
+func test_restart_backend_shows_scene_and_format_rows() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	assert_true(dock.get_node("SettingsGroup/SceneRow").visible)
+	assert_true(dock.get_node("SettingsGroup/FormatRow").visible)
+
+
+func test_in_place_output_path_has_no_extension() -> void:
+	# The IN_PLACE backend owns the output layout ("<base>.frames/…"); a
+	# format extension would just pollute the base path.
+	var store := FakeStore.new()
+	store.default.output_dir = "res://media/captures"
+	store.default.output_format = GdTMOutputFormat.Format.PNG
+	var ctx := _build_dock_with_mode(
+		store, "res://scenes/demo.tscn", RecorderBackend.CaptureMode.IN_PLACE
+	)
+	var dock := ctx["dock"] as TimeMachineDock
+	var path: String = dock._build_output_path()
+	assert_false(path.ends_with(".png"))
+	assert_false(path.get_extension() == "png")
+	assert_true(path.contains("/demo_"), "expected scene-prefixed base path, got %s" % path)
+
+
+func test_restart_output_path_keeps_extension() -> void:
+	var store := FakeStore.new()
+	store.default.output_dir = "res://media/captures"
+	store.default.output_format = GdTMOutputFormat.Format.PNG
+	var ctx := _build_dock(store, "res://scenes/demo.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var path: String = dock._build_output_path()
+	assert_true(path.ends_with(".png"))
+	assert_true(path.contains("/demo_"), "expected scene-prefixed path, got %s" % path)
+
+
+func test_recording_notice_sets_status_line() -> void:
+	# The backend composes its own notice (capture statistics / zero-frame
+	# hint); the dock just prints it verbatim in the status line.
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("StatusRow/StatusLabel")
+	controller.recording_notice.emit("Mock", "Saved 5 frames @ 14.2 fps (target 60)")
+	assert_eq(label.text, "Saved 5 frames @ 14.2 fps (target 60)")

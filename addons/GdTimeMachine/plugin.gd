@@ -39,6 +39,9 @@ var _recorder_controller: RecorderController
 ## Movie Maker backend registered with the controller.
 var _movie_maker_backend: BackendMovieMaker
 
+## Screenshot (in-place) backend registered with the controller.
+var _screenshot_backend: BackendScreenshotCapture
+
 ## Registered debugger plugin; injected into the backend for graceful stop.
 var _debugger_plugin: EditorDebuggerPlugin = null
 
@@ -75,6 +78,11 @@ func _enter_tree() -> void:
 	_movie_maker_backend = BackendMovieMaker.new()
 	_movie_maker_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_movie_maker_backend)
+	# Registered after Movie Maker so Movie Maker stays the default backend
+	# (AVI remains the default format; no behavior change for existing users).
+	_screenshot_backend = BackendScreenshotCapture.new()
+	_screenshot_backend._debugger_plugin = _debugger_plugin
+	_recorder_controller.register_backend(_screenshot_backend)
 	_dock = preload("res://addons/GdTimeMachine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
 	# Bottom-panel placement via the EditorDock API (4.6+). The legacy
@@ -116,6 +124,8 @@ func _exit_tree() -> void:
 	if _debugger_plugin:
 		if _movie_maker_backend:
 			_movie_maker_backend._debugger_plugin = null
+		if _screenshot_backend:
+			_screenshot_backend._debugger_plugin = null
 		remove_debugger_plugin(_debugger_plugin)
 		_debugger_plugin = null
 	remove_autoload_singleton(AUTOLOAD_NAME)

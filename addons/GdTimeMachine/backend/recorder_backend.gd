@@ -87,3 +87,11 @@ signal recording_progress(backend_name: String, elapsed_sec: float)
 ## Emitted when a recording fails; carries the backend name and an error
 ## message describing what went wrong.
 signal recording_error(backend_name: String, error_message: String)
+
+## Info-level message shown in the dock status line. Optional per backend —
+## the dock falls back to its default "Saved …" line when none is sent. The
+## backend composes its own message (it owns the data and semantics); the UI
+## only prints strings. Ordering contract: emit after recording_stopped when
+## the message summarizes a finished capture, so the notice is the final
+## status line. Consumers that re-emit this signal must forward it verbatim.
+signal recording_notice(backend_name: String, message: String)

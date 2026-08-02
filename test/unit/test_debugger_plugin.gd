@@ -23,8 +23,18 @@ const PLUGIN_SOURCE_PATH := "res://addons/GdTimeMachine/editor/debugger_plugin.g
 
 const WIRE_MESSAGE := "gd_time_machine:graceful_stop"
 const CAPTURE_PREFIX := "gd_time_machine"
+const SCREENSHOT_REQUEST_MESSAGE := "scene:rq_screenshot"
+const SCREENSHOT_CAPTURE_PREFIX := "game_view"
+const SCREENSHOT_REPLY_PAYLOAD := "get_screenshot"
 const EXPECTED_METHODS := [
-	"_has_capture", "_capture", "_setup_session", "send_graceful_stop", "_send_to_session"
+	"_has_capture",
+	"_capture",
+	"_setup_session",
+	"send_graceful_stop",
+	"_send_to_session",
+	"set_screenshot_capture_active",
+	"send_screenshot_request",
+	"_send_screenshot_to_session"
 ]
 
 
@@ -46,13 +56,21 @@ class FakeSession:
 # literals as the real plugin so behavior is verifiable headlessly.
 class PluginBehaviorMirror:
 	extends RefCounted
+	signal screenshot_received(rq_id: int, width: int, height: int, path: String)
+
 	var sessions: Array = []
 	var fallback_session: Object = null
+	var _screenshot_capture_active := false
 
 	func _has_capture(capture: String) -> bool:
-		return capture == "gd_time_machine"
+		if capture == "gd_time_machine":
+			return true
+		return capture == "game_view" and _screenshot_capture_active
 
-	func _capture(message: String, data: Array, session_id: int) -> bool:
+	func _capture(message: String, data: Array, _session_id: int) -> bool:
+		if _screenshot_capture_active and message == "get_screenshot" and data.size() >= 4:
+			screenshot_received.emit(int(data[0]), int(data[1]), int(data[2]), str(data[3]))
+			return true
 		return false
 
 	func get_sessions() -> Array:
@@ -64,6 +82,9 @@ class PluginBehaviorMirror:
 		if idx == 0:
 			return fallback_session
 		return null
+
+	func set_screenshot_capture_active(active: bool) -> void:
+		_screenshot_capture_active = active
 
 	func send_graceful_stop() -> bool:
 		var all_sessions := get_sessions()
@@ -84,6 +105,24 @@ class PluginBehaviorMirror:
 		if session == null or not session.is_active():
 			return
 		session.send_message("gd_time_machine:graceful_stop", [])
+
+	func send_screenshot_request(rq_id: int) -> bool:
+		var all_sessions := get_sessions()
+		for i in range(all_sessions.size()):
+			if _send_screenshot_to_session(get_session(i), rq_id):
+				return true
+		if not all_sessions.is_empty():
+			return false
+		var fallback: Object = get_session(0)
+		if fallback != null:
+			return _send_screenshot_to_session(fallback, rq_id)
+		return false
+
+	func _send_screenshot_to_session(session: Object, rq_id: int) -> bool:
+		if session == null or not session.is_active():
+			return false
+		session.send_message("scene:rq_screenshot", [rq_id])
+		return true
 
 
 func _make_mirror() -> PluginBehaviorMirror:
@@ -122,6 +161,33 @@ func test_wire_contract_constants_present_in_source() -> void:
 		source.contains('"%s"' % CAPTURE_PREFIX),
 		"source must capture the '%s' prefix" % CAPTURE_PREFIX
 	)
+	assert_true(
+		source.contains(SCREENSHOT_REQUEST_MESSAGE),
+		"source must send the '%s' screenshot request message" % SCREENSHOT_REQUEST_MESSAGE
+	)
+	assert_true(
+		source.contains('"%s"' % SCREENSHOT_CAPTURE_PREFIX),
+		"source must capture the '%s' prefix" % SCREENSHOT_CAPTURE_PREFIX
+	)
+	assert_true(
+		source.contains('"%s"' % SCREENSHOT_REPLY_PAYLOAD),
+		"source must match the '%s' reply payload" % SCREENSHOT_REPLY_PAYLOAD
+	)
+	assert_true(
+		source.contains("screenshot_received.emit"),
+		"source must re-emit received frames as screenshot_received"
+	)
+
+
+func test_screenshot_capture_guard_present_in_source() -> void:
+	# The game_view capture must be claimed only while a screenshot recording
+	# is active, so the engine's GameViewDebugger keeps the embedded preview
+	# when idle (spike-verified).
+	var source := FileAccess.get_file_as_string(PLUGIN_SOURCE_PATH)
+	assert_true(source.contains("_screenshot_capture_active"))
+	assert_true(
+		source.contains("capture == SCREENSHOT_CAPTURE_PREFIX and _screenshot_capture_active")
+	)
 
 
 func test_send_guard_present_in_source() -> void:
@@ -135,7 +201,7 @@ func test_send_guard_present_in_source() -> void:
 # --- Behavior tests: the plugin logic via the mirror + fake sessions ---
 
 
-func test_has_capture_claims_gd_time_machine_only() -> void:
+func test_has_capture_claims_gd_time_machine_always() -> void:
 	var plugin := _make_mirror()
 	assert_true(plugin._has_capture("gd_time_machine"))
 	assert_false(plugin._has_capture("other"))
@@ -143,9 +209,87 @@ func test_has_capture_claims_gd_time_machine_only() -> void:
 	assert_false(plugin._has_capture("gd_time_machine_extra"))
 
 
-func test_capture_placeholder_returns_false() -> void:
+func test_has_capture_claims_game_view_only_when_capture_active() -> void:
+	# The game_view prefix must be claimed ONLY while a screenshot recording
+	# is active — claiming it while idle would shadow GameViewDebugger and
+	# break the embedded preview (spike-verified).
 	var plugin := _make_mirror()
+	assert_false(plugin._has_capture("game_view"))
+	plugin.set_screenshot_capture_active(true)
+	assert_true(plugin._has_capture("game_view"))
+	assert_true(plugin._has_capture("gd_time_machine"))  # graceful-stop is always claimed
+	plugin.set_screenshot_capture_active(false)
+	assert_false(plugin._has_capture("game_view"))
+
+
+func test_capture_ignored_when_capture_inactive() -> void:
+	var plugin := _make_mirror()
+	assert_false(plugin._capture("get_screenshot", [0, 800, 600, "user://x.png"], 0))
+
+
+func test_capture_ignored_for_other_messages() -> void:
+	var plugin := _make_mirror()
+	plugin.set_screenshot_capture_active(true)
 	assert_false(plugin._capture("graceful_stop", [], 0))
+	assert_false(plugin._capture("get_screenshot", [], 0))
+
+
+func test_capture_requires_four_data_fields() -> void:
+	var plugin := _make_mirror()
+	plugin.set_screenshot_capture_active(true)
+	assert_false(plugin._capture("get_screenshot", [0, 800], 0))
+	assert_false(plugin._capture("get_screenshot", [0, 800, 600], 0))
+
+
+func test_capture_emits_screenshot_received_when_active() -> void:
+	var plugin := _make_mirror()
+	plugin.set_screenshot_capture_active(true)
+	var received: Array = []
+	plugin.screenshot_received.connect(func(id, w, h, p): received.append([id, w, h, p]))
+	var handled := plugin._capture("get_screenshot", [7, 1280, 720, "user://frame.png"], 0)
+	assert_true(handled)
+	assert_eq(received, [[7, 1280, 720, "user://frame.png"]])
+
+
+func test_set_screenshot_capture_active_toggles_game_view_claim() -> void:
+	var plugin := _make_mirror()
+	assert_false(plugin._has_capture("game_view"))
+	plugin.set_screenshot_capture_active(true)
+	assert_true(plugin._has_capture("game_view"))
+	plugin.set_screenshot_capture_active(false)
+	assert_false(plugin._has_capture("game_view"))
+
+
+func test_send_screenshot_request_targets_first_active_session() -> void:
+	var plugin := _make_mirror()
+	var active: FakeSession = autofree(FakeSession.new())
+	var inactive: FakeSession = autofree(FakeSession.new())
+	inactive.active = false
+	plugin.sessions = [inactive, active]
+	assert_true(plugin.send_screenshot_request(3))
+	assert_eq(active.sent, [["scene:rq_screenshot", [3]]])
+	assert_eq(inactive.sent.size(), 0)
+
+
+func test_send_screenshot_request_falls_back_to_session_zero() -> void:
+	var plugin := _make_mirror()
+	var fallback: FakeSession = autofree(FakeSession.new())
+	plugin.fallback_session = fallback
+	assert_true(plugin.send_screenshot_request(9))
+	assert_eq(fallback.sent, [["scene:rq_screenshot", [9]]])
+
+
+func test_send_screenshot_request_returns_false_without_sessions() -> void:
+	var plugin := _make_mirror()
+	assert_false(plugin.send_screenshot_request(1))
+
+
+func test_send_screenshot_to_session_skips_inactive() -> void:
+	var plugin := _make_mirror()
+	var inactive: FakeSession = autofree(FakeSession.new())
+	inactive.active = false
+	assert_false(plugin._send_screenshot_to_session(inactive, 4))
+	assert_eq(inactive.sent.size(), 0)
 
 
 func test_send_to_session_sends_when_active() -> void:
