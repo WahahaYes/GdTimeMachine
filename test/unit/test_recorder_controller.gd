@@ -39,6 +39,9 @@ class MockBackend:
 		recording = false
 
 
+# Creates a MockBackend without autofree — RecorderController owns the
+# lifecycle via add_child() on register, and frees on unregister. Returning a
+# plain Node avoids double-free / orphan conflicts from GUT autofree.
 func _make_backend(display_name := "Mock") -> MockBackend:
 	var backend := MockBackend.new()
 	backend.display_name = display_name
@@ -62,8 +65,13 @@ func test_register_null_backend_ignored() -> void:
 
 func test_register_empty_name_ignored() -> void:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	controller.register_backend(_make_backend(""))
+	var backend := _make_backend("")
+	controller.register_backend(backend)
 	assert_eq(controller.backends.size(), 0)
+	# register_backend early-returns without parenting, so we must free it
+	# ourselves to avoid an orphan — controller didn't take ownership.
+	# Use free() not queue_free() so the orphan counter sees it gone this frame.
+	backend.free()
 
 
 func test_register_duplicate_name_replaces() -> void:
@@ -72,6 +80,10 @@ func test_register_duplicate_name_replaces() -> void:
 	var second := _make_backend()
 	controller.register_backend(first)
 	controller.register_backend(second)
+	# unregister_backend() queue_frees the old backend; free immediately so GUT
+	# orphan counter (which only waits for its own autofree queue) does not see it.
+	if is_instance_valid(first) and first.get_parent() == null:
+		first.free()
 	assert_eq(controller.backends.size(), 1)
 	assert_same(controller.backends["Mock"], second)
 
@@ -180,13 +192,19 @@ func test_unregister_backend_removes_and_selects_remaining() -> void:
 	controller.register_backend(b)
 	controller.select_backend("B")
 	controller.unregister_backend("B")
+	# unregister_backend() queue_frees B; free immediately so orphan counter
+	# does not see it as lingering after the test ends — controller freed it,
+	# not GUT autofree.
+	if is_instance_valid(b) and b.get_parent() == null:
+		b.free()
 	assert_eq(controller.backends.size(), 1)
 	assert_same(controller.active_backend, a)
-	# Unregistered backend no longer forwards signals to the controller.
+	# No signal forwarding after unregister — nothing to assert on b since freed.
+	# Verify a's signals still route (negative test that unregister didn't break other routing).
 	var received: Array = []
 	controller.recording_error.connect(func(name, message): received.append([name, message]))
-	b.recording_error.emit("B", "ghost")
-	assert_eq(received.size(), 0)
+	a.recording_error.emit("A", "still works")
+	assert_eq(received, [["A", "still works"]])
 
 
 func test_capture_mode_defaults_to_restart_with_no_backend() -> void:

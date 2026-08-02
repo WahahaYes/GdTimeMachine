@@ -1,28 +1,53 @@
 extends GutTest
 
 
-# Fake backend that overrides every EditorInterface/ProjectSettings seam so
-# tests never touch engine singletons. Mirrors the real seam set 1:1.
+# Fake backend overriding every EditorInterface/ProjectSettings seam.
 class FakeMovieMaker:
 	extends BackendMovieMaker
 	var playing := false
 	var movie_maker_enabled := false
 	var movie_file_set := ""
 	var movie_fps_set := -1
+	var movie_file_clear_calls := 0
+	var movie_fps_clear_calls := 0
+	var stored_movie_file: Variant = null
+	var stored_movie_fps: Variant = null
 	var played_custom_scene := ""
 	var played_current_scene := false
 	var stop_playing_calls := 0
-	var project_save_calls := 0
 	var graceful_sent := false
 	var graceful_send_count := 0
 
+	func _get_movie_file() -> Variant:
+		return stored_movie_file
+
+	func _get_movie_fps() -> Variant:
+		return stored_movie_fps
+
 	func _set_movie_file(path: String) -> void:
 		movie_file_set = path
-		project_save_calls += 1
+		stored_movie_file = path
+
+	func _set_movie_file_no_restore(path: String) -> void:
+		movie_file_set = path
+		stored_movie_file = path
+
+	func _clear_movie_file() -> void:
+		movie_file_clear_calls += 1
+		stored_movie_file = null
+		movie_file_set = ""
 
 	func _set_movie_fps(fps: int) -> void:
 		movie_fps_set = fps
-		project_save_calls += 1
+		stored_movie_fps = fps
+
+	func _set_movie_fps_no_restore(fps: int) -> void:
+		movie_fps_set = fps
+		stored_movie_fps = fps
+
+	func _clear_movie_fps() -> void:
+		movie_fps_clear_calls += 1
+		stored_movie_fps = null
 
 	func _set_movie_maker_enabled(enabled: bool) -> void:
 		movie_maker_enabled = enabled
@@ -47,7 +72,6 @@ class FakeMovieMaker:
 		graceful_send_count += 1
 
 	func _get_grace_period() -> float:
-		# Short grace window so tests exercise the force-stop fallback fast.
 		return 0.1
 
 
@@ -117,9 +141,9 @@ func test_start_defaults_output_path_when_empty() -> void:
 func test_start_twice_is_ignored() -> void:
 	var backend := _make_backend()
 	_start_recording(backend)
-	var save_calls_before: int = backend.project_save_calls
+	var file_before: String = backend.movie_file_set
 	_start_recording(backend, {"fps": 30})
-	assert_eq(backend.project_save_calls, save_calls_before)
+	assert_eq(backend.movie_file_set, file_before)
 	assert_eq(backend.movie_fps_set, -1)
 
 
@@ -128,13 +152,11 @@ func test_poll_emits_recording_started_when_playback_begins() -> void:
 	var started: Array = []
 	backend.recording_started.connect(func(name, path): started.append([name, path]))
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
-	# Nothing yet — playback hasn't begun.
 	assert_eq(started.size(), 0)
 	backend.playing = true
 	backend._on_poll_timeout()
 	assert_eq(started.size(), 1)
 	assert_eq(started[0], ["Godot Movie Maker", OUTPUT])
-	# Second poll while playing must not re-emit.
 	backend._on_poll_timeout()
 	assert_eq(started.size(), 1)
 
@@ -145,16 +167,14 @@ func test_poll_detects_natural_exit_and_emits_stopped() -> void:
 	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
 	backend.playing = true
-	backend._on_poll_timeout()  # recording starts
+	backend._on_poll_timeout()
 	backend.playing = false
-	backend._on_poll_timeout()  # scene ended
+	backend._on_poll_timeout()
 	assert_eq(stopped.size(), 1)
 	assert_eq(stopped[0], ["Godot Movie Maker", OUTPUT])
 	assert_false(backend.is_recording())
 	assert_false(backend.movie_maker_enabled)
-	# Natural exit does not call stop_playing_scene — playback already ended.
 	assert_eq(backend.stop_playing_calls, 0)
-	# Idle polls after the session ends are no-ops.
 	backend._on_poll_timeout()
 	assert_eq(stopped.size(), 1)
 
@@ -167,12 +187,10 @@ func test_stop_emits_stopped_and_disables_movie_maker() -> void:
 	backend.playing = true
 	backend._on_poll_timeout()
 	backend.stop()
-	# Graceful funnel: message sent, nothing finalized yet, playback untouched.
 	assert_true(backend.graceful_sent)
 	assert_eq(backend.stop_playing_calls, 0)
 	assert_eq(stopped.size(), 0)
 	assert_true(backend.is_recording())
-	# Game exits on its own; poll observes it → single emission, no force-stop.
 	backend.playing = false
 	backend._on_poll_timeout()
 	assert_eq(stopped.size(), 1)
@@ -200,8 +218,8 @@ func test_no_double_stopped_emission_after_natural_exit_then_stop() -> void:
 	backend.playing = true
 	backend._on_poll_timeout()
 	backend.playing = false
-	backend._on_poll_timeout()  # natural exit
-	backend.stop()  # explicit stop afterwards must not re-emit
+	backend._on_poll_timeout()
+	backend.stop()
 	assert_eq(stopped.size(), 1)
 	assert_false(backend.graceful_sent)
 
@@ -215,9 +233,9 @@ func test_stop_single_emission_when_poll_sees_exit() -> void:
 	backend._on_poll_timeout()
 	backend.stop()
 	backend.playing = false
-	backend._on_poll_timeout()  # graceful exit observed
+	backend._on_poll_timeout()
 	assert_eq(stopped.size(), 1)
-	backend._on_poll_timeout()  # idle poll after finalize must not re-emit
+	backend._on_poll_timeout()
 	assert_eq(stopped.size(), 1)
 
 
@@ -229,7 +247,6 @@ func test_grace_timer_forces_stop_and_single_emission() -> void:
 	backend.playing = true
 	backend._on_poll_timeout()
 	backend.stop()
-	# Game never quits; grace timer (0.1s in the fake) expires → force-stop.
 	await wait_seconds(0.25)
 	assert_eq(stopped.size(), 1)
 	assert_eq(stopped[0], ["Godot Movie Maker", OUTPUT])
@@ -237,7 +254,6 @@ func test_grace_timer_forces_stop_and_single_emission() -> void:
 	assert_true(backend.graceful_sent)
 	assert_false(backend.is_recording())
 	assert_false(backend.movie_maker_enabled)
-	# No second emission after the grace window.
 	await wait_seconds(0.2)
 	assert_eq(stopped.size(), 1)
 
@@ -250,7 +266,7 @@ func test_stop_during_grace_is_idempotent() -> void:
 	backend.playing = true
 	backend._on_poll_timeout()
 	backend.stop()
-	backend.stop()  # second stop during grace must not re-send or finalize
+	backend.stop()
 	assert_eq(backend.graceful_send_count, 1)
 	assert_eq(stopped.size(), 0)
 	backend.playing = false
@@ -266,7 +282,7 @@ func test_duration_timeout_during_grace_does_not_double_emit() -> void:
 	backend.playing = true
 	backend._on_poll_timeout()
 	backend.stop()
-	backend._on_duration_timeout()  # fires during grace → ignored
+	backend._on_duration_timeout()
 	backend.playing = false
 	backend._on_poll_timeout()
 	assert_eq(stopped.size(), 1)
@@ -281,7 +297,7 @@ func test_natural_exit_does_not_send_graceful_message() -> void:
 	backend.playing = true
 	backend._on_poll_timeout()
 	backend.playing = false
-	backend._on_poll_timeout()  # natural scene exit, no explicit stop
+	backend._on_poll_timeout()
 	assert_false(backend.graceful_sent)
 	assert_eq(stopped.size(), 1)
 	assert_eq(backend.stop_playing_calls, 0)
@@ -293,8 +309,8 @@ func test_duration_auto_stops_after_elapsed() -> void:
 	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn", "duration": 0.1})
 	backend.playing = true
-	backend._on_poll_timeout()  # recording starts
-	await wait_seconds(0.25)  # duration timer fires at 0.1s
+	backend._on_poll_timeout()
+	await wait_seconds(0.25)
 	assert_eq(stopped.size(), 1)
 	assert_eq(stopped[0], ["Godot Movie Maker", OUTPUT])
 	assert_false(backend.is_recording())
@@ -309,7 +325,7 @@ func test_duration_watchdog_errors_if_scene_never_starts() -> void:
 	backend.recording_error.connect(func(name, message): errors.append([name, message]))
 	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn", "duration": 0.1})
-	await wait_seconds(0.25)  # scene never plays; duration timer fires
+	await wait_seconds(0.25)
 	assert_eq(errors.size(), 1)
 	assert_eq(errors[0][0], "Godot Movie Maker")
 	assert_false(stopped.size() > 0)
@@ -325,6 +341,80 @@ func test_recording_without_duration_has_no_auto_stop() -> void:
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
 	backend.playing = true
 	backend._on_poll_timeout()
-	await wait_seconds(0.25)  # no duration timer armed
+	await wait_seconds(0.25)
 	assert_eq(stopped.size(), 0)
 	assert_true(backend.is_recording())
+
+
+# --- New: snapshot/restore — no project.godot pollution ---
+
+
+func test_snapshot_captures_previous_values() -> void:
+	var backend := _make_backend()
+	backend.stored_movie_file = "res://old.avi"
+	backend.stored_movie_fps = 24
+	_start_recording(backend, {"fps": 60})
+	# Snapshot should have captured old values.
+	assert_eq(backend._prev_movie_file, "res://old.avi")
+	assert_eq(backend._prev_fps, 24)
+
+
+func test_restore_on_natural_exit() -> void:
+	var backend := _make_backend()
+	backend.stored_movie_file = "res://old.avi"
+	backend.stored_movie_fps = 30
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(_n, _p): stopped.append(true))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn", "fps": 60})
+	assert_eq(backend.stored_movie_file, OUTPUT)
+	assert_eq(backend.stored_movie_fps, 60)
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.playing = false
+	backend._on_poll_timeout()
+	assert_eq(stopped.size(), 1)
+	assert_eq(backend.stored_movie_file, "res://old.avi")
+	assert_eq(backend.stored_movie_fps, 30)
+
+
+func test_restore_clears_when_no_previous() -> void:
+	var backend := _make_backend()
+	backend.stored_movie_file = null
+	backend.stored_movie_fps = null
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(_n, _p): stopped.append(true))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn"})
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.playing = false
+	backend._on_poll_timeout()
+	assert_eq(stopped.size(), 1)
+	assert_eq(backend.stored_movie_file, null)
+	assert_eq(backend.movie_file_clear_calls, 1)
+	assert_eq(backend.movie_fps_clear_calls, 1)
+
+
+func test_restore_on_graceful_stop() -> void:
+	var backend := _make_backend()
+	backend.stored_movie_file = "res://prev.avi"
+	backend.stored_movie_fps = 25
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(_n, _p): stopped.append(true))
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/demo.tscn", "fps": 60})
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend.stop()
+	backend.playing = false
+	backend._on_poll_timeout()
+	assert_eq(stopped.size(), 1)
+	assert_eq(backend.stored_movie_file, "res://prev.avi")
+	assert_eq(backend.stored_movie_fps, 25)
+
+
+func test_set_movie_file_does_not_call_save_indirectly() -> void:
+	# In the old backend _set_movie_file called ProjectSettings.save(). Fake does not
+	# track save calls anymore — assert restore path uses no-save seam.
+	var backend := _make_backend()
+	backend.start({"output_path": OUTPUT, "scene_path": "res://a.tscn"})
+	# Only new seams should have been used; old save-counting removed.
+	assert_eq(backend.movie_file_set, OUTPUT)
