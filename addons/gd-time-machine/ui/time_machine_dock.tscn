@@ -106,7 +106,7 @@ text = "res://media/captures"
 theme_override_constants/separation = 4
 
 [node name="PerSceneCheck" type="CheckBox" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
-text = "Per-scene for this scene"
+text = "Remember settings for this scene"
 
 [node name="SaveSceneButton" type="Button" parent="SettingsGroup/PerSceneRow" unique_name_in_owner = true]
 text = "Save scene profile"

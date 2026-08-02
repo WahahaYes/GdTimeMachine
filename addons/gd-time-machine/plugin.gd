@@ -75,6 +75,12 @@ func _enter_tree() -> void:
 	_dock = preload("res://addons/gd-time-machine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
 	add_control_to_bottom_panel(_dock, "GdTimeMachine")
+	# Follow the edited scene: the engine emits scene_changed on this plugin
+	# whenever the active scene tab changes, with the new scene root as arg.
+	scene_changed.connect(_on_scene_changed)
+	# Flush the current scene's profile when its tab is closed — the one path
+	# (e.g. closing the last scene) where no scene_changed fires.
+	scene_closed.connect(_on_scene_closed)
 	# The run bar and game view are constructed during editor init, after
 	# plugin _enter_tree (and after end-of-frame deferred calls). Wait for the
 	# first process frame so the traversals reliably find them.
@@ -88,6 +94,10 @@ func _enter_tree() -> void:
 func _exit_tree() -> void:
 	if _recorder_controller:
 		_recorder_controller.stop_recording_if_active()
+	if scene_changed.is_connected(_on_scene_changed):
+		scene_changed.disconnect(_on_scene_changed)
+	if scene_closed.is_connected(_on_scene_closed):
+		scene_closed.disconnect(_on_scene_closed)
 	# Drop the backend's reference to the debugger plugin before removal so
 	# teardown is clean; EditorDebuggerPlugin is RefCounted, so
 	# remove_debugger_plugin() is enough — no queue_free() needed.
@@ -318,3 +328,31 @@ func _connect_game_view_signals() -> void:
 		_recorder_controller.recording_stopped.connect(_on_game_view_refresh_triggered)
 	if not _recorder_controller.backend_changed.is_connected(_on_game_view_refresh_triggered):
 		_recorder_controller.backend_changed.connect(_on_game_view_refresh_triggered)
+
+
+# --- Scene-change tracking ---------------------------------------------------
+#
+# The engine emits EditorPlugin.scene_changed(scene_root) on this plugin
+# whenever the active scene tab changes (EditorData::notify_edited_scene_changed
+# -> EditorPlugin::notify_scene_changed), and EditorPlugin.scene_closed(filepath)
+# when a scene tab is closed. We forward both to the dock, which auto-saves the
+# previous scene's profile (when per-scene mode is on) and auto-loads the new
+# scene's profile.
+
+
+## EditorPlugin.scene_changed handler: forwards the newly active scene root's
+## path to the dock. The argument is null for a new/untitled scene.
+func _on_scene_changed(scene_root: Node) -> void:
+	if _dock == null:
+		return
+	var path := scene_root.scene_file_path if scene_root != null else ""
+	_dock.on_editor_scene_changed(path)
+
+
+## EditorPlugin.scene_closed handler: forwards the closed scene's path to the
+## dock so it can flush that scene's per-scene profile (covers closing the
+## last/active tab, where no scene_changed follows).
+func _on_scene_closed(filepath: String) -> void:
+	if _dock == null:
+		return
+	_dock.on_editor_scene_closed(filepath)

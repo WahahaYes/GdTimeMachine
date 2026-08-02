@@ -13,6 +13,11 @@ class_name TimeMachineDock
 ## - Defaults in EditorSettings under gd_time_machine/* (user-wide).
 ## - Per-scene overrides in addons/gd-time-machine/config/state/profiles.cfg
 ##   (project-local, localized under the addon).
+##
+## The scene field follows the open scene automatically (plugin forwards
+## EditorPlugin.scene_changed). On a scene switch the previous scene's profile
+## is saved when per-scene mode is on, then the new scene's profile (scene
+## override > default) is loaded.
 
 ## Fallback output directory when no setting is stored.
 const DEFAULT_OUTPUT_DIR := "res://media/captures"
@@ -55,6 +60,10 @@ var _setup_applied := false
 
 ## True while _load_profile_into_ui is applying values, to suppress _persist.
 var _applying_profile := false
+
+## Scene path whose per-scene profile was just flushed by on_editor_scene_closed.
+## The scene_changed that follows a tab close must not re-save it.
+var _flushed_on_close := ""
 
 ## Dock title icon (shows the record icon).
 @onready var _title_icon: TextureRect = $TitleBar/TitleIcon
@@ -153,8 +162,8 @@ func _apply_setup() -> void:
 	$SettingsGroup/DurationRow/DurationLabel.tooltip_text = _duration_spin.tooltip_text
 
 	_backend_option.tooltip_text = "Recording backend. Movie Maker restarts the scene; in-place backends record the running scene without restarting it."
-	_scene_edit.tooltip_text = "Scene to launch when recording starts. Empty uses the current or main scene."
-	_use_current_button.tooltip_text = "Fill with the currently open scene."
+	_scene_edit.tooltip_text = "Scene to launch when recording starts. Follows the open scene automatically; empty uses the current or main scene."
+	_use_current_button.tooltip_text = "Re-sync the field to the currently open scene (the field follows it automatically)."
 	_fps_spin.tooltip_text = "Target frames per second for the recording."
 	$SettingsGroup/FpsRow.tooltip_text = _fps_spin.tooltip_text
 	$SettingsGroup/FpsRow/FpsLabel.tooltip_text = _fps_spin.tooltip_text
@@ -163,8 +172,8 @@ func _apply_setup() -> void:
 	$SettingsGroup/FormatRow.tooltip_text = "Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless sequence."
 	_format_option.tooltip_text = "Output format for recordings."
 	_format_warning_label.tooltip_text = "Format-specific notice."
-	_per_scene_check.tooltip_text = "When checked, save a separate profile for this scene."
-	_save_scene_button.tooltip_text = "Save the current settings as a per-scene profile for this scene."
+	_per_scene_check.tooltip_text = "When checked, this scene's settings are saved as its own profile when you switch away, and reloaded when you come back."
+	_save_scene_button.tooltip_text = "Save the current settings as this scene's profile now. Switching scenes also saves automatically when the checkbox is on."
 	_clear_scene_button.tooltip_text = "Remove the per-scene profile for this scene."
 	_record_button.tooltip_text = "Start or stop recording with the settings above."
 
@@ -437,6 +446,67 @@ func _use_current_scene_path() -> void:
 	var main: Variant = ProjectSettings.get_setting("application/run/main_scene")
 	if main != null and not str(main).is_empty():
 		_scene_edit.text = str(main)
+
+
+## Called by plugin.gd when the editor's active scene changes (scene tab
+## switch). The scene field always follows the open scene:
+##   1. Auto-save: the current UI is saved as the per-scene profile of the
+##      scene being left — but only when per-scene mode is checked (opt-in).
+##   2. Sync: the scene field is set to the newly open scene.
+##   3. Auto-load: the new scene's resolved profile (scene override > default)
+##      is loaded into the UI, and per-scene state is refreshed.
+## No-op while recording, so a scene switch never disturbs an active session.
+func on_editor_scene_changed(new_path: String) -> void:
+	if not _setup_applied:
+		return
+	if _controller != null and _controller.is_recording():
+		return
+	_auto_save_current_scene_profile()
+	_scene_edit.text = new_path
+	_load_settings()
+	_refresh_per_scene_state()
+
+
+## Called by plugin.gd when a scene tab is closed (EditorPlugin.scene_closed).
+## If the closed scene is the one currently reflected in the field, the
+## current UI is saved as its per-scene profile — covering the close paths
+## where no scene_changed follows (e.g. closing the last open scene). The
+## _flushed_on_close guard stops the immediately following scene_changed (the
+## editor switches to the next tab after a close) from re-saving the same
+## values.
+func on_editor_scene_closed(closed_path: String) -> void:
+	if not _setup_applied:
+		return
+	if _controller != null and _controller.is_recording():
+		return
+	var sp := _scene_edit.text.strip_edges()
+	if sp != closed_path.strip_edges():
+		return
+	_auto_save_current_scene_profile()
+	_flushed_on_close = sp
+
+
+## Saves the current UI values as the per-scene profile for the scene in the
+## field — the "auto-save on switch" half of scene tracking. Only fires when
+## per-scene mode is checked and the scene has a saved path (untitled scenes
+## have no stable profile key). Saving here makes the Save button a
+## convenience ("save now") rather than a requirement.
+func _auto_save_current_scene_profile() -> void:
+	if not _per_scene_check.button_pressed:
+		return
+	var sp := _scene_edit.text.strip_edges()
+	if sp.is_empty():
+		return
+	if sp == _flushed_on_close:
+		# The scene was just flushed by on_editor_scene_closed; the switch
+		# that follows a tab close must not write it a second time.
+		_flushed_on_close = ""
+		return
+	_ensure_config_store()
+	var profile := _build_profile_from_ui()
+	# The store key carries the scene path; never embed it in the values.
+	profile.scene_path = ""
+	_config_store.save_scene_profile(sp, profile)
 
 
 ## Loads persisted settings into the UI. Uses the config store's default and

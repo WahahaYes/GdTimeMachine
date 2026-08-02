@@ -15,6 +15,7 @@ What works today:
 - **Graceful stop** — Stop asks the running game to quit cleanly so Movie Maker finalizes the file, instead of killing the process mid-write.
 - **No project.godot pollution** — Movie Maker settings are set in-memory for the recording and restored afterwards; nothing is written to `project.godot` on disk.
 - **Local config store** — default profile in `EditorSettings` under `gd_time_machine/recorder/*`, per-scene overrides in `addons/gd-time-machine/config/state/profiles.cfg` (gitignored by default, localized under the addon, opt-in to commit).
+- **Scene-aware profiles** — the dock tracks the open scene automatically (`EditorPlugin.scene_changed`) and auto-loads/saves per-scene settings on scene switch.
 
 ## Backends
 
@@ -26,8 +27,8 @@ What works today:
 
 1. Enable the plugin (see [Installation](#installation)).
 1. Open the **GdTimeMachine** tab in the editor's bottom panel.
-1. Set the backend, scene, output directory, format, FPS, and duration.
-1. Press **Record**. Per-scene checkbox: when checked, you can save a separate profile for the current scene into `addons/gd-time-machine/config/state/profiles.cfg`; switching scenes reloads any existing scene profile.
+1. Set the backend, output directory, format, FPS, and duration. The scene field follows the currently open scene automatically.
+1. Press **Record**. "Remember settings for this scene": when checked, this scene's settings are saved to its own profile in `addons/gd-time-machine/config/state/profiles.cfg` when you switch scenes, and reloaded when you come back. When unchecked, settings use the default profile.
 
 Recording starts when the scene plays. Press **Stop** to finalize the file — the running game is asked to quit gracefully, then the clip is closed out.
 
