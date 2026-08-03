@@ -432,16 +432,19 @@ func _update_backend_tooltip() -> void:
 		_backend_option.tooltip_text = "%s\n%s" % [note, description]
 
 
-## In-place backends record the running scene, so the "which scene to launch"
-## row is meaningless for them — hide it rather than let it imply a restart.
-## The only in-place backend today is PNG-only until Op 6 (ffmpeg auto-convert),
-## so the format row is hidden too — AVI/OGV are meaningless pre-convert.
+## In-place backends record the running scene and stop without killing it,
+## but they still honor the scene picker when no scene is playing: pressing
+## Record launches the requested scene first (same UX as Movie Maker),
+## then starts screenshot capture. Keep the scene row visible for both
+## modes. Format is PNG-only for screenshot until Op 6, so that row stays
+## hidden for in-place.
 func _update_backend_visibility() -> void:
 	if _controller == null:
 		return
 	var in_place := _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
+	# Scene picker is always visible — used as launch target when idle.
 	if _scene_row != null:
-		_scene_row.visible = not in_place
+		_scene_row.visible = true
 	if _format_row != null:
 		_format_row.visible = not in_place
 

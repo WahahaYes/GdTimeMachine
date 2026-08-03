@@ -409,15 +409,14 @@ func test_uncheck_untitled_scene_does_not_clear() -> void:
 
 
 func test_in_place_backend_hides_scene_and_format_rows() -> void:
-	# In-place backends record the running scene, so "which scene to launch"
-	# is meaningless; and pre-Op-6 they are PNG-only, so the format row is
-	# meaningless too. Both must be hidden.
+	# Scene row is now always visible (IN_PLACE launches scene when idle, then
+	# captures in place). Format row stays hidden pre-Op-6 (PNG-only).
 	var store := FakeStore.new()
 	var ctx := _build_dock_with_mode(
 		store, "res://scenes/a.tscn", RecorderBackend.CaptureMode.IN_PLACE
 	)
 	var dock := ctx["dock"] as TimeMachineDock
-	assert_false(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow").visible)
+	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow").visible)
 	assert_false(dock.get_node("Split/RightColumn/SettingsGroup/FormatRow").visible)
 
 

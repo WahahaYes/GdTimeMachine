@@ -64,6 +64,7 @@ class PluginBehaviorMirror:
 	var sessions: Array = []
 	var fallback_session: Object = null
 	var _screenshot_capture_active := false
+	var _last_screenshot_rq_id := -1
 
 	func _has_capture(capture: String) -> bool:
 		if capture == "gd_time_machine":
@@ -71,9 +72,35 @@ class PluginBehaviorMirror:
 		return capture == "game_view" and _screenshot_capture_active
 
 	func _capture(message: String, data: Array, _session_id: int) -> bool:
-		if _screenshot_capture_active and message == "get_screenshot" and data.size() >= 4:
-			screenshot_received.emit(int(data[0]), int(data[1]), int(data[2]), str(data[3]))
-			return true
+		if not _screenshot_capture_active:
+			return false
+		if message != "get_screenshot":
+			return false
+		if data.size() >= 4 and data[0] is int and data[1] is int:
+			var p2 := str(data[3])
+			if not p2.is_empty():
+				screenshot_received.emit(int(data[0]), int(data[1]), int(data[2]), p2)
+				return true
+		if data.size() >= 1:
+			var path := ""
+			for elem in data:
+				if elem is String and not str(elem).is_empty():
+					if (
+						str(elem).ends_with(".png")
+						or str(elem).contains("://")
+						or str(elem).contains("/")
+					):
+						path = str(elem)
+						break
+			if path.is_empty():
+				if data[0] is String and not str(data[0]).is_empty():
+					path = str(data[0])
+			if not path.is_empty():
+				var emit_id := _last_screenshot_rq_id
+				if emit_id < 0:
+					emit_id = 0
+				screenshot_received.emit(emit_id, 0, 0, path)
+				return true
 		return false
 
 	func get_sessions() -> Array:
@@ -110,6 +137,7 @@ class PluginBehaviorMirror:
 		session.send_message("gd_time_machine:graceful_stop", [])
 
 	func send_screenshot_request(rq_id: int) -> bool:
+		_last_screenshot_rq_id = rq_id
 		var all_sessions := get_sessions()
 		for i in range(all_sessions.size()):
 			if _send_screenshot_to_session(get_session(i), rq_id):
@@ -124,6 +152,7 @@ class PluginBehaviorMirror:
 	func _send_screenshot_to_session(session: Object, rq_id: int) -> bool:
 		if session == null or not session.is_active():
 			return false
+		_last_screenshot_rq_id = rq_id
 		session.send_message("scene:rq_screenshot", [rq_id])
 		return true
 
@@ -262,8 +291,27 @@ func test_capture_ignored_for_other_messages() -> void:
 func test_capture_requires_four_data_fields() -> void:
 	var plugin := _make_mirror()
 	plugin.set_screenshot_capture_active(true)
+	# Enriched guard wants 4 ints+string, but legacy [path,size] is accepted;
+	# so a 2-field non-string or empty payload is still rejected.
 	assert_false(plugin._capture("get_screenshot", [0, 800], 0))
 	assert_false(plugin._capture("get_screenshot", [0, 800, 600], 0))
+	assert_false(plugin._capture("get_screenshot", [123, 456], 0))
+
+
+func test_capture_accepts_legacy_engine_reply() -> void:
+	var plugin := _make_mirror()
+	plugin.set_screenshot_capture_active(true)
+	plugin._last_screenshot_rq_id = 42
+	var received: Array = []
+	plugin.screenshot_received.connect(func(id, w, h, p): received.append([id, w, h, p]))
+	# Engine's real reply: [path, size] — no id, no dimensions.
+	var handled := plugin._capture(
+		"get_screenshot", ["user://tmp/game_view_0.png", Vector2i(800, 600)], 0
+	)
+	assert_true(handled)
+	assert_eq(received.size(), 1)
+	assert_eq(received[0][0], 42, "legacy reply should reuse last rq id")
+	assert_eq(received[0][3], "user://tmp/game_view_0.png")
 
 
 func test_capture_emits_screenshot_received_when_active() -> void:

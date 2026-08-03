@@ -19,6 +19,10 @@ class FakeScreenshotBackend:
 	var duration_timer_starts := 0
 	var no_reply_starts := 0
 	var no_reply_restarts := 0
+	var poll_starts := 0
+	var poll_stops := 0
+	var played_scenes: Array = []
+	var next_dims := {"width": 1280, "height": 720}
 
 	func _is_playing_scene() -> bool:
 		return playing
@@ -46,6 +50,18 @@ class FakeScreenshotBackend:
 
 	func _write_json_file(path: String, data: Dictionary) -> void:
 		manifests.append([path, data])
+
+	func _get_image_dimensions(_path: String) -> Dictionary:
+		return next_dims
+
+	func _play_scene(scene_path: String) -> void:
+		played_scenes.append(scene_path)
+
+	func _start_polling() -> void:
+		poll_starts += 1
+
+	func _stop_polling() -> void:
+		poll_stops += 1
 
 	func _start_pacing() -> void:
 		pacing_starts += 1
@@ -121,20 +137,21 @@ func test_is_recording_false_by_default() -> void:
 
 
 func test_start_without_running_scene_emits_error() -> void:
+	# Without duration, should launch then wait, not error immediately.
+	# We still keep a fast-path for launch-less error? Now it launches.
+	# So this test becomes: without duration it goes pending, no error.
 	var backend := _make_backend()
 	var errors: Array = []
 	var started: Array = []
 	backend.recording_error.connect(func(name, message): errors.append([name, message]))
 	backend.recording_started.connect(func(name, path): started.append([name, path]))
-	backend.start({"output_path": OUTPUT})
-	assert_eq(errors.size(), 1)
-	assert_eq(errors[0][0], "Screenshot")
-	assert_true(errors[0][1].contains("Play a scene first"))
-	assert_false(backend.is_recording())
+	backend.playing = false
+	backend.start({"output_path": OUTPUT, "scene_path": "", "fps": 60})
+	assert_eq(errors.size(), 0, "no immediate error without duration — waits for scene")
 	assert_eq(started.size(), 0)
-	assert_eq(backend.frames_dirs_made.size(), 0)
-	assert_eq(backend.capture_active_calls.size(), 0)
-	assert_eq(backend.requests.size(), 0)
+	assert_true(backend.is_recording(), "active while pending")
+	assert_eq(backend.frames_dirs_made.size(), 1)
+	assert_eq(backend.played_scenes.size(), 1)
 
 
 func test_start_claims_capture_and_sends_first_request() -> void:
@@ -198,6 +215,31 @@ func test_stale_reply_is_ignored() -> void:
 	backend._on_screenshot_received(99, 1280, 720, "user://tmp/frame.png")
 	assert_eq(backend.copies.size(), 0)
 	assert_eq(backend.no_reply_restarts, 0)
+
+
+func test_legacy_zero_dim_reply_accepted_when_in_flight() -> void:
+	# Engine's real reply has 0×0 dims; accepted as long as something is in
+	# flight (legacy compatibility — see debugger_plugin.gd fix).
+	var backend := _make_backend()
+	_start_capture(backend)
+	backend.next_dims = {"width": 800, "height": 600}
+	# id 99 would be stale for enriched, but legacy 0×0 is accepted.
+	backend._on_screenshot_received(99, 0, 0, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 1)
+	assert_eq(backend.copies[0], ["user://tmp/frame.png", OUTPUT + ".frames/frame_00001.png"])
+	assert_eq(backend.manifests.size(), 0)  # not finalized yet — just copied.
+
+
+func test_legacy_zero_dim_populates_dimensions_via_seam() -> void:
+	var backend := _make_backend()
+	_start_capture(backend)
+	backend.next_dims = {"width": 1920, "height": 1080}
+	backend._on_screenshot_received(0, 0, 0, "user://tmp/frame.png")
+	backend.stop()
+	assert_eq(backend.manifests.size(), 1)
+	var data: Dictionary = backend.manifests[0][1]
+	assert_eq(data["width"], 1920)
+	assert_eq(data["height"], 1080)
 
 
 func test_frame_copied_on_receipt() -> void:
@@ -373,3 +415,66 @@ func _default_start(backend: FakeScreenshotBackend) -> void:
 func test_no_reply_timeout_default_is_five_seconds() -> void:
 	var backend := _make_backend()
 	assert_eq(backend._get_no_reply_timeout(), 5.0)
+
+
+func test_pending_start_launches_scene_and_waits() -> void:
+	var backend := _make_backend()
+	var started: Array = []
+	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	backend.playing = false
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/a.tscn", "fps": 60})
+	assert_eq(started.size(), 0)
+	assert_true(backend.is_recording())
+	assert_eq(backend.played_scenes, ["res://scenes/a.tscn"])
+	assert_eq(backend.poll_starts, 1)
+	assert_eq(backend.capture_active_calls.size(), 0, "no capture claim while pending")
+	assert_eq(backend.requests.size(), 0, "no screenshot requests while pending")
+
+
+func test_poll_transitions_to_recording_when_scene_starts() -> void:
+	var backend := _make_backend()
+	var started: Array = []
+	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	backend.playing = false
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/a.tscn"})
+	assert_eq(started.size(), 0)
+	backend.playing = true
+	backend._on_poll_timeout()
+	assert_eq(started.size(), 1)
+	assert_eq(started[0], ["Screenshot", OUTPUT])
+	assert_eq(backend.capture_active_calls, [true])
+	assert_true(backend.signal_connected)
+	assert_eq(backend.requests, [0])
+
+
+func test_duration_expiry_while_pending_emits_error() -> void:
+	var backend := _make_backend()
+	var errors: Array = []
+	var started: Array = []
+	backend.recording_error.connect(func(name, msg): errors.append([name, msg]))
+	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	backend.playing = false
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/a.tscn", "duration": 1.0})
+	assert_eq(started.size(), 0)
+	backend._on_duration_timeout()
+	assert_eq(errors.size(), 1)
+	assert_eq(errors[0][0], "Screenshot")
+	assert_true(errors[0][1].contains("Scene did not start"))
+	assert_false(backend.is_recording())
+	assert_eq(started.size(), 0)
+
+
+func test_stop_while_pending_cancels_and_finalizes() -> void:
+	var backend := _make_backend()
+	var stopped: Array = []
+	var notices: Array = []
+	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.recording_notice.connect(func(name, msg): notices.append([name, msg]))
+	backend.playing = false
+	backend.start({"output_path": OUTPUT})
+	backend.stop()
+	assert_eq(stopped.size(), 1)
+	assert_eq(stopped[0], ["Screenshot", OUTPUT])
+	assert_eq(notices.size(), 1)
+	assert_false(backend.is_recording())
+	assert_eq(backend.poll_stops, 1)

@@ -32,6 +32,11 @@ const SCREENSHOT_CAPTURE_PREFIX := "game_view"
 ## Whether a screenshot recording currently owns the game_view capture prefix.
 var _screenshot_capture_active := false
 
+## Last screenshot request id handed to the game; attached to legacy
+## engine replies that only send [path, size]. Updated in
+## send_screenshot_request() / _send_screenshot_to_session() path.
+var _last_screenshot_rq_id := -1
+
 ## Emitted when the game replies to a scene:rq_screenshot request with a
 ## frame: [rq_id, width, height, path-to-png]. Only emitted while
 ## _screenshot_capture_active is true (the capture is claimed during a
@@ -53,10 +58,50 @@ func _has_capture(capture: String) -> bool:
 ## Routes game→editor messages. Only screenshot replies are consumed (and
 ## only while a screenshot recording is active); everything else falls
 ## through so other plugins keep their captures.
+##
+## Engine reality: SceneDebugger::_msg_rq_screenshot replies
+## game_view:get_screenshot [path, size] (2 fields) — the spike doc is
+## authoritative. Our enriched autoload future adds [id, w, h, path] (4
+## fields). Accept both: 4-field enriched, and 2-field legacy using
+## _last_screenshot_rq_id + 0×0 dimensions (backend fills via Image load).
 func _capture(message: String, data: Array, _session_id: int) -> bool:
-	if _screenshot_capture_active and message == "get_screenshot" and data.size() >= 4:
-		screenshot_received.emit(int(data[0]), int(data[1]), int(data[2]), str(data[3]))
-		return true
+	if not _screenshot_capture_active:
+		return false
+	if message != "get_screenshot":
+		return false
+	if data.size() >= 4 and data[0] is int and data[1] is int:
+		# Enriched path: [rq_id, width, height, path]
+		# data[0] typed int in Godot 4.7's debugger reply, but be defensive.
+		var w2 := int(data[1])
+		var h2 := int(data[2])
+		var p2 := str(data[3])
+		if not p2.is_empty():
+			screenshot_received.emit(int(data[0]), w2, h2, p2)
+			return true
+	# Legacy engine path: [path, size] — first string is the png path.
+	if data.size() >= 1:
+		var path := ""
+		for elem in data:
+			if elem is String and not str(elem).is_empty():
+				# Heuristic: real reply always contains a .png path, but any
+				# non-empty string is the path in the legacy format.
+				if (
+					str(elem).ends_with(".png")
+					or str(elem).contains("://")
+					or str(elem).contains("/")
+				):
+					path = str(elem)
+					break
+		if path.is_empty():
+			# Fallback: first element if it's a string (legacy doc [path,size]).
+			if data[0] is String and not str(data[0]).is_empty():
+				path = str(data[0])
+		if not path.is_empty():
+			var emit_id := _last_screenshot_rq_id
+			if emit_id < 0:
+				emit_id = 0
+			screenshot_received.emit(emit_id, 0, 0, path)
+			return true
 	return false
 
 
@@ -113,6 +158,7 @@ func _send_to_session(session: EditorDebuggerSession) -> void:
 ## request was sent. Falls back to the canonical session 0 when
 ## get_sessions() is empty, mirroring send_graceful_stop.
 func send_screenshot_request(rq_id: int) -> bool:
+	_last_screenshot_rq_id = rq_id
 	var sessions := get_sessions()
 	for i in range(sessions.size()):
 		if _send_screenshot_to_session(get_session(i), rq_id):
@@ -130,6 +176,7 @@ func send_screenshot_request(rq_id: int) -> bool:
 func _send_screenshot_to_session(session: EditorDebuggerSession, rq_id: int) -> bool:
 	if session == null or not session.is_active():
 		return false
+	_last_screenshot_rq_id = rq_id
 	session.send_message(SCREENSHOT_REQUEST_MESSAGE, [rq_id])
 	return true
 

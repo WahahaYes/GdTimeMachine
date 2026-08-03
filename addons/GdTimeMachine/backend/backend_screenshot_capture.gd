@@ -16,17 +16,26 @@ class_name BackendScreenshotCapture
 ## game window is backgrounded/occluded Godot throttles it to ~1 fps — the
 ## window must stay visible and focused.
 
-## State machine: idle → start() → recording → stopped. All stop paths —
-## manual stop(), duration expiry, and the no-reply timeout — converge on
-## _finalize_stopped(), the single recording_stopped emission site. start()
-## fails with recording_error when no scene is running (never auto-launches;
-## that is RESTART_SCENE behavior). The no-reply timeout finalizes with the
-## frames received so far; zero frames still emits recording_stopped + a
-## notice — recording_error stays reserved for the no-game case.
+## State machine: idle → start() → [pending-start] → recording → stopped.
+## start() normally begins capturing immediately when a scene is already
+## playing (IN_PLACE). When no scene is playing, it launches the requested
+## scene (scene_path from the dock) first and waits for playback to begin
+## — same UX as Movie Maker — polling for is_playing_scene() before
+## transitioning into recording. All stop paths — manual stop(), duration
+## expiry, natural scene exit, and the no-reply timeout — converge on
+## _finalize_stopped(), the single recording_stopped emission site. If the
+## scene never starts before the duration elapses, recording_error is emitted
+## instead (mirrors BackendMovieMaker). The no-reply timeout finalizes with
+## the frames received so far; zero frames still emits recording_stopped + a
+## notice — recording_error stays reserved for the no-game / never-started
+## case.
 
 ## Default recording base path when the config provides no output_path; the
 ## frames land in "<this>.frames/".
 const DEFAULT_OUTPUT_PATH := "res://media/captures/screenshot"
+
+## Seconds between playback-state checks while pending start.
+const POLL_INTERVAL := 0.5
 
 ## Seconds without any frame reply before the capture finalizes with the
 ## frames received so far (game hung, occluded, or crashed mid-capture).
@@ -43,6 +52,9 @@ const LOW_RATE_FRACTION := 0.25
 
 ## Whether a recording session is in progress (from start() until finalize).
 var _active := false
+
+## True after start() while waiting for playback to begin.
+var _pending_start := false
 
 ## True while the capture is being closed out (stop requested, finalize
 ## pending).
@@ -79,6 +91,9 @@ var _last_frame_height := 0
 ## Timestamps (seconds, via _now) of the first and last received frames.
 var _first_frame_time := 0.0
 var _last_frame_time := 0.0
+
+## Periodically checks whether the scene is still/now playing.
+var _poll_timer: Timer
 
 ## Paces requests toward the target fps (one-in-flight bounds the actual rate).
 var _pacing_timer: Timer
@@ -119,10 +134,13 @@ func get_capture_mode() -> CaptureMode:
 	return CaptureMode.IN_PLACE
 
 
-## Begins a recording: requires a running game, claims the game_view capture
-## prefix, starts the paced one-in-flight request loop, and emits
-## recording_started. Fails with recording_error (no game launched) when
-## nothing is playing.
+## Begins a recording: if a scene is already playing, starts capturing
+## immediately; otherwise launches the requested scene (from config
+## scene_path) and waits for playback to begin before starting capture.
+## Mirrors BackendMovieMaker's pending-start UX so the scene picker is
+## meaningful for this backend too. Duration timer starts even while
+## pending, so a scene that never starts is treated as an error only when a
+## duration is set (same contract as movie maker).
 func start(config: Dictionary) -> void:
 	if _active:
 		push_warning("Backend '%s' is already recording" % get_backend_name())
@@ -132,19 +150,26 @@ func start(config: Dictionary) -> void:
 		_output_path = DEFAULT_OUTPUT_PATH
 	_duration = float(config.get("duration", 0.0))
 	_target_fps = int(config.get("fps", 0))
-	if not _is_playing_scene():
-		(
-			recording_error
-			. emit(
-				get_backend_name(),
-				"Play a scene first — screenshot capture records the running scene",
-			)
-		)
-		return
 	_active = true
 	_stopping = false
+	_pending_start = false
 	_frames_dir = "%s.frames" % _output_path
 	_make_frames_dir(_frames_dir)
+	if _is_playing_scene():
+		_begin_capture()
+		return
+	# No scene playing — launch the requested scene and wait (same as Movie Maker).
+	_pending_start = true
+	if _duration > 0.0:
+		_start_duration_timer()
+	_start_polling()
+	_play_scene(str(config.get("scene_path", "")))
+
+
+## Shared capture start: claims the game_view prefix, starts timers, and
+## emits recording_started. Single site for the transition into recording.
+func _begin_capture() -> void:
+	_pending_start = false
 	_set_screenshot_capture_active(true)
 	_connect_screenshot_signal()
 	_start_pacing()
@@ -155,6 +180,20 @@ func start(config: Dictionary) -> void:
 	_send_next_request()
 
 
+## Poll tick while pending-start: waits for playback to begin.
+func _on_poll_timeout() -> void:
+	if not _active:
+		return
+	if _pending_start:
+		if _is_playing_scene():
+			_begin_capture()
+		return
+	# Should never reach here outside pending-start — poll is only
+	# supposed to run while pending. Kept as no-op.
+	if not _active or _stopping:
+		return
+
+
 ## Stops the capture: closes out the session (manifest + stopped + notice).
 ## The game keeps running — nothing is sent to it and nothing is killed.
 func stop() -> void:
@@ -163,6 +202,16 @@ func stop() -> void:
 	if _stopping:
 		# Already closing out — the no-reply/duration path will finalize.
 		return
+	if _pending_start:
+		# Stop pressed while waiting for the scene to start.
+		_pending_start = false
+		_active = false
+		_stop_polling()
+		_stop_duration_timer()
+		recording_stopped.emit(get_backend_name(), _output_path)
+		_write_manifest()
+		_emit_summary_notice()
+		return
 	_stopping = true
 	_finalize_stopped()
 
@@ -170,14 +219,26 @@ func stop() -> void:
 ## Pacing tick: sends the next request when none is in flight (the loop never
 ## issues a second request before the game replies to the first).
 func _on_pacing_timeout() -> void:
-	if not _active or _stopping:
+	if not _active or _stopping or _pending_start:
 		return
 	_send_next_request()
 
 
-## Duration expiry: closes out the capture with the frames received so far.
+## Duration expiry: if still pending-start, treat as failure; otherwise close
+## out the capture with the frames received so far.
 func _on_duration_timeout() -> void:
-	if not _active or _stopping:
+	if not _active:
+		return
+	if _stopping:
+		return
+	if _pending_start:
+		_pending_start = false
+		_active = false
+		_stop_polling()
+		_stop_duration_timer()
+		recording_error.emit(
+			get_backend_name(), "Scene did not start playing before the duration elapsed"
+		)
 		return
 	stop()
 
@@ -185,7 +246,7 @@ func _on_duration_timeout() -> void:
 ## No-reply expiry: the game stopped answering (hung/occluded/crashed) —
 ## finalize with the frames received so far.
 func _on_no_reply_timeout() -> void:
-	if not _active or _stopping:
+	if not _active or _stopping or _pending_start:
 		return
 	_stopping = true
 	_finalize_stopped()
@@ -193,13 +254,25 @@ func _on_no_reply_timeout() -> void:
 
 ## Handles a frame reply from the plugin: validates the request id, copies the
 ## PNG into the frames dir, updates stats, and restarts the no-reply timer.
+## Accepts the legacy engine reply (width==0,height==0, id may be stale) as
+## long as something is in flight — the engine's SceneDebugger only sends
+## [path,size], so the id echo is synthetic via _last_screenshot_rq_id.
 func _on_screenshot_received(rq_id: int, width: int, height: int, path: String) -> void:
-	if not _active or _stopping:
+	if not _active or _stopping or _pending_start:
+		return
+	if _in_flight_rq_id == -1:
 		return
 	if rq_id != _in_flight_rq_id:
-		# Stale or duplicate reply — nothing is in flight for this id anymore.
-		return
+		# Enriched path (real w/h) must match exactly; legacy path (0×0)
+		# is accepted as long as something is in flight — the id is
+		# synthetic and may lag by one tick.
+		if width != 0 or height != 0:
+			return
 	_in_flight_rq_id = -1
+	if width == 0 or height == 0:
+		var dims := _get_image_dimensions(path)
+		width = int(dims.get("width", width))
+		height = int(dims.get("height", height))
 	_last_frame_width = width
 	_last_frame_height = height
 	var now := _now()
@@ -209,6 +282,20 @@ func _on_screenshot_received(rq_id: int, width: int, height: int, path: String) 
 	_frame_count += 1
 	_copy_frame(path, _frames_dir.path_join("frame_%05d.png" % _frame_count))
 	_restart_no_reply_timer()
+
+
+## Returns image dimensions for the given png path. Isolated seam so tests
+## don't touch the filesystem; real implementation loads the image header.
+func _get_image_dimensions(path: String) -> Dictionary:
+	var abs_path := ProjectSettings.globalize_path(path)
+	var img := Image.new()
+	var err := img.load(abs_path)
+	if err != OK:
+		# Fallback: try as-is if already absolute / editor temp.
+		err = img.load(path)
+		if err != OK:
+			return {"width": _last_frame_width, "height": _last_frame_height}
+	return {"width": img.get_width(), "height": img.get_height()}
 
 
 ## Sends the next screenshot request unless one is already in flight.
@@ -231,6 +318,8 @@ func _finalize_stopped() -> void:
 		return
 	_active = false
 	_stopping = false
+	_pending_start = false
+	_stop_polling()
 	_stop_pacing()
 	_stop_duration_timer()
 	_stop_no_reply_timer()
@@ -321,6 +410,14 @@ func _send_screenshot_request(rq_id: int) -> void:
 ## Whether a scene is currently playing in the editor.
 func _is_playing_scene() -> bool:
 	return EditorInterface.is_playing_scene()
+
+
+## Launches the given scene, or the current scene when the path is empty.
+func _play_scene(scene_path: String) -> void:
+	if scene_path.is_empty():
+		EditorInterface.play_current_scene()
+	else:
+		EditorInterface.play_custom_scene(scene_path)
 
 
 ## Monotonic seconds for frame timing.
@@ -422,6 +519,13 @@ func _stop_no_reply_timer() -> void:
 ## Lazily creates all three timers on first use (requires being inside the
 ## scene tree) and wires their timeout callbacks.
 func _ensure_timers() -> void:
+	if _poll_timer == null and is_inside_tree():
+		_poll_timer = Timer.new()
+		_poll_timer.wait_time = POLL_INTERVAL
+		_poll_timer.one_shot = false
+		_poll_timer.autostart = false
+		_poll_timer.timeout.connect(_on_poll_timeout)
+		add_child(_poll_timer)
 	if _pacing_timer == null and is_inside_tree():
 		_pacing_timer = Timer.new()
 		_pacing_timer.wait_time = _get_frame_interval()
@@ -441,3 +545,16 @@ func _ensure_timers() -> void:
 		_no_reply_timer.autostart = false
 		_no_reply_timer.timeout.connect(_on_no_reply_timeout)
 		add_child(_no_reply_timer)
+
+
+## Starts the playback poll timer.
+func _start_polling() -> void:
+	_ensure_timers()
+	if _poll_timer:
+		_poll_timer.start(POLL_INTERVAL)
+
+
+## Stops the playback poll timer.
+func _stop_polling() -> void:
+	if _poll_timer:
+		_poll_timer.stop()

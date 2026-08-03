@@ -84,6 +84,7 @@ func _enter_tree() -> void:
 	_screenshot_backend = BackendScreenshotCapture.new()
 	_screenshot_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_screenshot_backend)
+	_connect_controller_feedback()
 	_dock = preload("res://addons/GdTimeMachine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
 	# Bottom-panel placement via the EditorDock API (4.6+). The legacy
@@ -114,6 +115,7 @@ func _enter_tree() -> void:
 ## and controller.
 func _exit_tree() -> void:
 	if _recorder_controller:
+		_disconnect_controller_feedback()
 		_recorder_controller.stop_recording_if_active()
 	if scene_changed.is_connected(_on_scene_changed):
 		scene_changed.disconnect(_on_scene_changed)
@@ -366,6 +368,55 @@ func _connect_game_view_signals() -> void:
 # when a scene tab is closed. We forward both to the dock, which auto-saves the
 # previous scene's profile (when per-scene mode is on) and auto-loads the new
 # scene's profile.
+
+
+## Wires unconditional console feedback for users not looking at the dock.
+## The dock's status line is great, but the run-bar / game-view record
+## buttons have no status label. Printing to Output alongside icons gives
+## those users a signal without touching the button plumbing.
+func _connect_controller_feedback() -> void:
+	if _recorder_controller == null:
+		return
+	if not _recorder_controller.recording_started.is_connected(_on_feedback_started):
+		_recorder_controller.recording_started.connect(_on_feedback_started)
+	if not _recorder_controller.recording_stopped.is_connected(_on_feedback_stopped):
+		_recorder_controller.recording_stopped.connect(_on_feedback_stopped)
+	if not _recorder_controller.recording_error.is_connected(_on_feedback_error):
+		_recorder_controller.recording_error.connect(_on_feedback_error)
+	if not _recorder_controller.recording_notice.is_connected(_on_feedback_notice):
+		_recorder_controller.recording_notice.connect(_on_feedback_notice)
+
+
+func _disconnect_controller_feedback() -> void:
+	if _recorder_controller == null:
+		return
+	if _recorder_controller.recording_started.is_connected(_on_feedback_started):
+		_recorder_controller.recording_started.disconnect(_on_feedback_started)
+	if _recorder_controller.recording_stopped.is_connected(_on_feedback_stopped):
+		_recorder_controller.recording_stopped.disconnect(_on_feedback_stopped)
+	if _recorder_controller.recording_error.is_connected(_on_feedback_error):
+		_recorder_controller.recording_error.disconnect(_on_feedback_error)
+	if _recorder_controller.recording_notice.is_connected(_on_feedback_notice):
+		_recorder_controller.recording_notice.disconnect(_on_feedback_notice)
+
+
+func _on_feedback_started(backend_name: String, output_path: String) -> void:
+	print("[GdTM] %s recording → %s" % [backend_name, output_path])
+
+
+func _on_feedback_stopped(backend_name: String, output_path: String) -> void:
+	print("[GdTM] %s stopped: %s" % [backend_name, output_path])
+
+
+func _on_feedback_error(backend_name: String, message: String) -> void:
+	var label := backend_name if not backend_name.is_empty() else "GdTimeMachine"
+	push_warning("[GdTM] %s error: %s" % [label, message])
+
+
+func _on_feedback_notice(backend_name: String, message: String) -> void:
+	# Notice is info-level (stats / hints) — print, not warning, so it
+	# doesn't spam the Errors panel. Mirrors the dock status line.
+	print("[GdTM] %s: %s" % [backend_name, message])
 
 
 ## EditorPlugin.scene_changed handler: forwards the newly active scene root's
