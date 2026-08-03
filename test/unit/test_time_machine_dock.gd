@@ -80,7 +80,7 @@ func _build_dock(store: FakeStore, scene_path: String) -> Dictionary:
 	var backend := MockBackend.new()
 	controller.register_backend(backend)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
-	dock.get_node("SettingsGroup/SceneRow/SceneEdit").text = scene_path
+	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
 	dock.setup(controller, store)
 	add_child_autofree(dock)
 	return {"dock": dock, "controller": controller, "backend": backend}
@@ -96,7 +96,7 @@ func _build_dock_with_mode(
 	backend.capture_mode = capture_mode
 	controller.register_backend(backend)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
-	dock.get_node("SettingsGroup/SceneRow/SceneEdit").text = scene_path
+	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
 	dock.setup(controller, store)
 	add_child_autofree(dock)
 	return {"dock": dock, "controller": controller, "backend": backend}
@@ -107,23 +107,29 @@ func test_setup_loads_default_profile_into_ui() -> void:
 	store.default.output_dir = "res://my_default"
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://my_default")
-	assert_false(dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck").button_pressed)
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit").text,
+		"res://my_default"
+	)
+	assert_false(dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck").button_pressed)
 
 
 func test_scene_switch_saves_previous_profile_when_per_scene_on() -> void:
 	var store := FakeStore.new()
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
-	var output: LineEdit = dock.get_node("SettingsGroup/OutputRow/OutputEdit")
+	var output: LineEdit = dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit")
 	output.text = "res://a_specific"
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_eq(store.saved_scene_calls.size(), 1)
 	assert_eq(store.saved_scene_calls[0][0], "res://scenes/a.tscn")
 	assert_eq((store.saved_scene_calls[0][1] as RecordingProfile).output_dir, "res://a_specific")
-	assert_eq(dock.get_node("SettingsGroup/SceneRow/SceneEdit").text, "res://scenes/b.tscn")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text,
+		"res://scenes/b.tscn"
+	)
 
 
 func test_scene_switch_does_not_save_when_per_scene_off() -> void:
@@ -132,7 +138,10 @@ func test_scene_switch_does_not_save_when_per_scene_off() -> void:
 	var dock := ctx["dock"] as TimeMachineDock
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_eq(store.saved_scene_calls.size(), 0)
-	assert_eq(dock.get_node("SettingsGroup/SceneRow/SceneEdit").text, "res://scenes/b.tscn")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text,
+		"res://scenes/b.tscn"
+	)
 
 
 func test_scene_switch_does_not_save_untitled_previous_scene() -> void:
@@ -141,12 +150,15 @@ func test_scene_switch_does_not_save_untitled_previous_scene() -> void:
 	var dock := ctx["dock"] as TimeMachineDock
 	# Simulate an untitled previous scene: clear the field after setup (an
 	# empty seed at build time would hit EditorInterface in _prefill_scene).
-	dock.get_node("SettingsGroup/SceneRow/SceneEdit").text = ""
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = ""
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_eq(store.saved_scene_calls.size(), 0)
-	assert_eq(dock.get_node("SettingsGroup/SceneRow/SceneEdit").text, "res://scenes/b.tscn")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text,
+		"res://scenes/b.tscn"
+	)
 
 
 func test_scene_switch_loads_new_scene_override() -> void:
@@ -159,10 +171,13 @@ func test_scene_switch_loads_new_scene_override() -> void:
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
-	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://scene_specific")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit").text,
+		"res://scene_specific"
+	)
 	assert_eq(dock._get_selected_format(), GdTMOutputFormat.Format.OGV)
-	assert_eq(dock.get_node("SettingsGroup/FpsRow/FpsSpin").value, 30.0)
-	assert_true(dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck").button_pressed)
+	assert_eq(dock.get_node("Split/RightColumn/SettingsGroup/FpsRow/FpsSpin").value, 30.0)
+	assert_true(dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck").button_pressed)
 
 
 func test_scene_switch_loads_defaults_when_no_override() -> void:
@@ -171,8 +186,11 @@ func test_scene_switch_loads_defaults_when_no_override() -> void:
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
-	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://my_default")
-	assert_false(dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck").button_pressed)
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit").text,
+		"res://my_default"
+	)
+	assert_false(dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck").button_pressed)
 
 
 func test_scene_switch_from_override_scene_to_unchecked_scene_loads_defaults() -> void:
@@ -188,14 +206,20 @@ func test_scene_switch_from_override_scene_to_unchecked_scene_loads_defaults() -
 	store.scenes["res://scenes/a.tscn"] = override
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	# Scene a has an override → checkbox on, override loaded into the UI.
 	assert_true(check.button_pressed)
-	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://a_specific")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit").text,
+		"res://a_specific"
+	)
 	# Moving to b (no override, unchecked): falls back to the default profile.
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_false(check.button_pressed)
-	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://my_default")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit").text,
+		"res://my_default"
+	)
 
 
 func test_scene_switch_to_untitled_saves_previous_and_loads_defaults() -> void:
@@ -203,13 +227,16 @@ func test_scene_switch_to_untitled_saves_previous_and_loads_defaults() -> void:
 	store.default.output_dir = "res://my_default"
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
 	dock.on_editor_scene_changed("")
 	assert_eq(store.saved_scene_calls.size(), 1)
 	assert_eq(store.saved_scene_calls[0][0], "res://scenes/a.tscn")
-	assert_eq(dock.get_node("SettingsGroup/SceneRow/SceneEdit").text, "")
-	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://my_default")
+	assert_eq(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text, "")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit").text,
+		"res://my_default"
+	)
 	assert_true(check.disabled)
 	assert_false(check.button_pressed)
 
@@ -219,19 +246,22 @@ func test_scene_switch_ignored_while_recording() -> void:
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
 	var backend := ctx["backend"] as MockBackend
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
 	backend.recording = true
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_eq(store.saved_scene_calls.size(), 0)
-	assert_eq(dock.get_node("SettingsGroup/SceneRow/SceneEdit").text, "res://scenes/a.tscn")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text,
+		"res://scenes/a.tscn"
+	)
 
 
 func test_scene_close_saves_profile_when_matching_field() -> void:
 	var store := FakeStore.new()
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
 	dock.on_editor_scene_closed("res://scenes/a.tscn")
 	assert_eq(store.saved_scene_calls.size(), 1)
@@ -250,7 +280,7 @@ func test_scene_close_skips_when_field_is_other_scene() -> void:
 	var store := FakeStore.new()
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
 	# Closing a background tab (b) while a is reflected in the field: the UI
 	# never showed b's settings, so nothing should be saved to b.
@@ -263,7 +293,7 @@ func test_scene_close_skipped_while_recording() -> void:
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
 	var backend := ctx["backend"] as MockBackend
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
 	backend.recording = true
 	dock.on_editor_scene_closed("res://scenes/a.tscn")
@@ -274,7 +304,7 @@ func test_close_then_switch_does_not_double_save() -> void:
 	var store := FakeStore.new()
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	check.button_pressed = true
 	# Closing the active tab flushes a; the editor then switches to b, which
 	# would normally re-save a. The _flushed_on_close guard must prevent it.
@@ -282,7 +312,10 @@ func test_close_then_switch_does_not_double_save() -> void:
 	assert_eq(store.saved_scene_calls.size(), 1)
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_eq(store.saved_scene_calls.size(), 1)
-	assert_eq(dock.get_node("SettingsGroup/SceneRow/SceneEdit").text, "res://scenes/b.tscn")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text,
+		"res://scenes/b.tscn"
+	)
 
 
 func test_uncheck_clears_override_and_falls_back_to_defaults() -> void:
@@ -297,8 +330,8 @@ func test_uncheck_clears_override_and_falls_back_to_defaults() -> void:
 	store.scenes["res://scenes/a.tscn"] = override
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
-	var output: LineEdit = dock.get_node("SettingsGroup/OutputRow/OutputEdit")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
+	var output: LineEdit = dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit")
 	# Override exists → checkbox on, override loaded into the UI.
 	assert_true(check.button_pressed)
 	assert_eq(output.text, "res://a_specific")
@@ -317,8 +350,8 @@ func test_uncheck_without_override_falls_back_to_defaults() -> void:
 	var store := FakeStore.new()
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
-	var output: LineEdit = dock.get_node("SettingsGroup/OutputRow/OutputEdit")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
+	var output: LineEdit = dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit")
 	assert_false(check.button_pressed)
 	assert_eq(output.text, "res://media/captures")
 	# Change the store's default after setup: the UI must not pick it up until
@@ -341,12 +374,15 @@ func test_programmatic_uncheck_via_scene_switch_does_not_clear() -> void:
 	store.scenes["res://scenes/a.tscn"] = override
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	assert_true(check.button_pressed)
 	dock.on_editor_scene_changed("res://scenes/b.tscn")
 	assert_false(check.button_pressed)
 	assert_eq(store.cleared_scene_calls.size(), 0)
-	assert_eq(dock.get_node("SettingsGroup/OutputRow/OutputEdit").text, "res://my_default")
+	assert_eq(
+		dock.get_node("Split/RightColumn/SettingsGroup/OutputRow/OutputEdit").text,
+		"res://my_default"
+	)
 
 
 func test_uncheck_untitled_scene_does_not_clear() -> void:
@@ -361,7 +397,7 @@ func test_uncheck_untitled_scene_does_not_clear() -> void:
 	store.scenes["res://scenes/a.tscn"] = override
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	var check: CheckBox = dock.get_node("SettingsGroup/PerSceneRow/PerSceneCheck")
+	var check: CheckBox = dock.get_node("Split/LeftColumn/PerSceneRow/PerSceneCheck")
 	assert_true(check.button_pressed)
 	dock.on_editor_scene_changed("")
 	assert_false(check.button_pressed)
@@ -381,16 +417,16 @@ func test_in_place_backend_hides_scene_and_format_rows() -> void:
 		store, "res://scenes/a.tscn", RecorderBackend.CaptureMode.IN_PLACE
 	)
 	var dock := ctx["dock"] as TimeMachineDock
-	assert_false(dock.get_node("SettingsGroup/SceneRow").visible)
-	assert_false(dock.get_node("SettingsGroup/FormatRow").visible)
+	assert_false(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow").visible)
+	assert_false(dock.get_node("Split/RightColumn/SettingsGroup/FormatRow").visible)
 
 
 func test_restart_backend_shows_scene_and_format_rows() -> void:
 	var store := FakeStore.new()
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
-	assert_true(dock.get_node("SettingsGroup/SceneRow").visible)
-	assert_true(dock.get_node("SettingsGroup/FormatRow").visible)
+	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow").visible)
+	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/FormatRow").visible)
 
 
 func test_in_place_output_path_has_no_extension() -> void:
@@ -427,6 +463,6 @@ func test_recording_notice_sets_status_line() -> void:
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
 	var controller := ctx["controller"] as RecorderController
-	var label: Label = dock.get_node("StatusRow/StatusLabel")
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
 	controller.recording_notice.emit("Mock", "Saved 5 frames @ 14.2 fps (target 60)")
 	assert_eq(label.text, "Saved 5 frames @ 14.2 fps (target 60)")

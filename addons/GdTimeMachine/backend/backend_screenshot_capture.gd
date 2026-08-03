@@ -147,6 +147,7 @@ func start(config: Dictionary) -> void:
 	_make_frames_dir(_frames_dir)
 	_set_screenshot_capture_active(true)
 	_connect_screenshot_signal()
+	_request_window_focus()
 	_start_pacing()
 	if _duration > 0.0:
 		_start_duration_timer()

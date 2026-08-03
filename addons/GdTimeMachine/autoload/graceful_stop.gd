@@ -28,11 +28,15 @@ func _exit_tree() -> void:
 
 
 ## Handles messages dispatched to the gd_time_machine capture. On
-## "graceful_stop", quits the game and reports the message handled; other
+## "graceful_stop", quits the game and reports the message handled; on
+## "focus_window", brings the game's own window to the foreground. Other
 ## messages are left unhandled.
 func _on_debug_message(message: String, data: Array) -> bool:
 	if message == "graceful_stop":
 		_quit_game()
+		return true
+	if message == "focus_window":
+		_focus_window()
 		return true
 	return false
 
@@ -41,3 +45,11 @@ func _on_debug_message(message: String, data: Array) -> bool:
 ## without exiting.
 func _quit_game() -> void:
 	get_tree().quit()
+
+
+## Brings the game's own OS window to focus. Called when the editor starts a
+## screenshot recording, so the game window (which Godot throttles to ~1 fps
+## when occluded) comes to the front for full capture rate. Seam for GUT:
+## tests override this to observe the focus without touching windowing.
+func _focus_window() -> void:
+	get_window().grab_focus()

@@ -48,11 +48,17 @@ const ICON_RECORD_PATH := "res://addons/GdTimeMachine/ui/icons/icon_record.svg"
 ## Icon path for the stop state.
 const ICON_STOP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
 
-## Loaded record icon (lazy-loaded — see _ready()).
+## Icon path for the dock's brand logo (title bar).
+const ICON_LOGO_PATH := "res://addons/GdTimeMachine/ui/icons/icon_logo.svg"
+
+## Loaded record icon (scaled to button height — see _ready()).
 var _icon_record: Texture2D
 
-## Loaded stop icon (lazy-loaded — see _ready()).
+## Loaded stop icon (scaled to button height — see _ready()).
 var _icon_stop: Texture2D
+
+## Loaded brand logo (full-size; the TitleIcon TextureRect scales it to fit).
+var _icon_logo: Texture2D
 
 ## Controller the dock talks to; injected via setup() before _ready().
 var _controller: RecorderController
@@ -75,50 +81,51 @@ var _syncing_scene_state := false
 ## The scene_changed that follows a tab close must not re-save it.
 var _flushed_on_close := ""
 
-## Dock title icon (shows the record icon).
-@onready var _title_icon: TextureRect = $TitleBar/TitleIcon
+## Dock title icon (shows the brand logo).
+@onready var _title_icon: TextureRect = $Split/LeftColumn/TitleIcon
 
 ## Backend selector dropdown.
-@onready var _backend_option: OptionButton = $BackendRow/BackendOption
+@onready var _backend_option: OptionButton = $Split/RightColumn/BackendRow/BackendOption
 
 ## Row holding the scene picker (hidden for in-place backends).
-@onready var _scene_row: HBoxContainer = $SettingsGroup/SceneRow
+@onready var _scene_row: HBoxContainer = $Split/RightColumn/SettingsGroup/SceneRow
 
 ## Scene path to record.
-@onready var _scene_edit: LineEdit = $SettingsGroup/SceneRow/SceneEdit
+@onready var _scene_edit: LineEdit = $Split/RightColumn/SettingsGroup/SceneRow/SceneEdit
 
 ## Fills _scene_edit with the currently open scene.
-@onready var _use_current_button: Button = $SettingsGroup/SceneRow/UseCurrentButton
+@onready var _use_current_button: Button = $Split/RightColumn/SettingsGroup/SceneRow/UseCurrentButton
 
 ## Row holding the format picker.
-@onready var _format_row: HBoxContainer = $SettingsGroup/FormatRow
+@onready var _format_row: HBoxContainer = $Split/RightColumn/SettingsGroup/FormatRow
 
 ## Format selector dropdown.
-@onready var _format_option: OptionButton = $SettingsGroup/FormatRow/FormatOption
+@onready var _format_option: OptionButton = $Split/RightColumn/SettingsGroup/FormatRow/FormatOption
 
 ## Warning label for formats that need a notice (e.g. AVI 4GB).
-@onready var _format_warning_label: Label = $SettingsGroup/FormatWarningRow/FormatWarningLabel
+@onready
+var _format_warning_label: Label = $Split/RightColumn/SettingsGroup/FormatWarningRow/FormatWarningLabel
 
 ## Recording duration in seconds (0 = manual).
-@onready var _duration_spin: SpinBox = $SettingsGroup/DurationRow/DurationSpin
+@onready var _duration_spin: SpinBox = $Split/RightColumn/SettingsGroup/DurationRow/DurationSpin
 
 ## Capture FPS.
-@onready var _fps_spin: SpinBox = $SettingsGroup/FpsRow/FpsSpin
+@onready var _fps_spin: SpinBox = $Split/RightColumn/SettingsGroup/FpsRow/FpsSpin
 
 ## Output directory for recordings.
-@onready var _output_edit: LineEdit = $SettingsGroup/OutputRow/OutputEdit
+@onready var _output_edit: LineEdit = $Split/RightColumn/SettingsGroup/OutputRow/OutputEdit
 
 ## Per-scene override checkbox.
-@onready var _per_scene_check: CheckBox = $SettingsGroup/PerSceneRow/PerSceneCheck
+@onready var _per_scene_check: CheckBox = $Split/LeftColumn/PerSceneRow/PerSceneCheck
 
 ## Status indicator light.
-@onready var _status_light: ColorRect = $StatusRow/StatusLight
+@onready var _status_light: ColorRect = $Split/RightColumn/StatusRow/StatusLight
 
 ## Status text label.
-@onready var _status_label: Label = $StatusRow/StatusLabel
+@onready var _status_label: Label = $Split/RightColumn/StatusRow/StatusLabel
 
 ## Record/Stop toggle button.
-@onready var _record_button: Button = $RecordButton
+@onready var _record_button: Button = $Split/LeftColumn/RecordButton
 
 
 ## Called by plugin.gd before the dock enters the tree; stores the
@@ -135,10 +142,16 @@ func setup(controller: RecorderController, config_store: ConfigStore = null) -> 
 func _ready() -> void:
 	# Icons are loaded lazily (not preloaded): during the editor's first
 	# import scan the SVG files are not yet imported, and a parse-time
-	# preload would fail. After import they resolve on the next load.
-	_icon_record = load(ICON_RECORD_PATH) as Texture2D
-	_icon_stop = load(ICON_STOP_PATH) as Texture2D
-	_title_icon.texture = _icon_record
+	# preload would fail. After import they resolve on the next load. The
+	# record/stop glyphs are large non-square SVGs, so they're scaled down to
+	# button height via GdTMIconFactory; the logo needs no pre-scale (the
+	# TitleIcon TextureRect fits it into the title bar).
+	_icon_record = GdTMIconFactory.scaled_texture(
+		ICON_RECORD_PATH, GdTMIconFactory.DOCKS_BUTTON_HEIGHT
+	)
+	_icon_stop = GdTMIconFactory.scaled_texture(ICON_STOP_PATH, GdTMIconFactory.DOCKS_BUTTON_HEIGHT)
+	_icon_logo = load(ICON_LOGO_PATH) as Texture2D
+	_title_icon.texture = _icon_logo
 	_record_button.icon = _icon_record
 	_record_button.text = "Record"
 	_backend_option.item_selected.connect(_on_backend_selected)
@@ -162,18 +175,20 @@ func _apply_setup() -> void:
 	_ensure_config_store()
 	_duration_spin.min_value = 0.0
 	_duration_spin.tooltip_text = "0 = record until Stop is pressed. Positive value auto-stops after that many seconds."
-	$SettingsGroup/DurationRow.tooltip_text = _duration_spin.tooltip_text
-	$SettingsGroup/DurationRow/DurationLabel.tooltip_text = _duration_spin.tooltip_text
+	$Split/RightColumn/SettingsGroup/DurationRow.tooltip_text = _duration_spin.tooltip_text
+	$Split/RightColumn/SettingsGroup/DurationRow/DurationLabel.tooltip_text = (
+		_duration_spin.tooltip_text
+	)
 
 	_update_backend_tooltip()
 	_scene_edit.tooltip_text = "Scene to launch when recording starts. Follows the open scene automatically; empty uses the current or main scene."
 	_use_current_button.tooltip_text = "Re-sync the field to the currently open scene (the field follows it automatically)."
 	_fps_spin.tooltip_text = "Target frames per second for the recording."
-	$SettingsGroup/FpsRow.tooltip_text = _fps_spin.tooltip_text
-	$SettingsGroup/FpsRow/FpsLabel.tooltip_text = _fps_spin.tooltip_text
-	$SettingsGroup/SceneRow.tooltip_text = _scene_edit.tooltip_text
-	$SettingsGroup/OutputRow.tooltip_text = _output_edit.tooltip_text
-	$SettingsGroup/FormatRow.tooltip_text = "Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless sequence."
+	$Split/RightColumn/SettingsGroup/FpsRow.tooltip_text = _fps_spin.tooltip_text
+	$Split/RightColumn/SettingsGroup/FpsRow/FpsLabel.tooltip_text = _fps_spin.tooltip_text
+	$Split/RightColumn/SettingsGroup/SceneRow.tooltip_text = _scene_edit.tooltip_text
+	$Split/RightColumn/SettingsGroup/OutputRow.tooltip_text = _output_edit.tooltip_text
+	$Split/RightColumn/SettingsGroup/FormatRow.tooltip_text = "Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless sequence."
 	_format_option.tooltip_text = "Output format for recordings."
 	_format_warning_label.tooltip_text = "Format-specific notice."
 	_per_scene_check.tooltip_text = "When checked, this scene's settings are saved as its own profile when you switch away, and reloaded when you come back.\nWhen unchecked, the default profile is used and any stored per-scene profile for this scene is cleared."

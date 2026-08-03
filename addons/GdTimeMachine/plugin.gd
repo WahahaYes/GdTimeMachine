@@ -292,10 +292,12 @@ func _apply_button_state(button: Button, recording: bool) -> void:
 		return
 	if recording:
 		button.text = "Stop"
-		button.icon = load(ICON_STOP_PATH) as Texture2D
+		button.icon = GdTMIconFactory.scaled_texture(ICON_STOP_PATH, GdTMIconFactory.BUTTON_HEIGHT)
 	else:
 		button.text = "Record"
-		button.icon = load(ICON_RECORD_PATH) as Texture2D
+		button.icon = GdTMIconFactory.scaled_texture(
+			ICON_RECORD_PATH, GdTMIconFactory.BUTTON_HEIGHT
+		)
 
 
 # --- Game-view button grey-out ---------------------------------------------

@@ -21,6 +21,11 @@ class_name GdTMDebuggerPlugin
 ## Wire message sent to the running game to request a screenshot frame.
 const SCREENSHOT_REQUEST_MESSAGE := "scene:rq_screenshot"
 
+## Wire message that asks the running game to bring its own window to focus.
+## Sent when a screenshot recording starts, so an occluded/unfocused game
+## window (which Godot throttles to ~1 fps) comes to the front for full rate.
+const FOCUS_WINDOW_MESSAGE := "gd_time_machine:focus_window"
+
 ## Capture prefix for screenshot replies (game_view:get_screenshot).
 const SCREENSHOT_CAPTURE_PREFIX := "game_view"
 
@@ -126,4 +131,30 @@ func _send_screenshot_to_session(session: EditorDebuggerSession, rq_id: int) -> 
 	if session == null or not session.is_active():
 		return false
 	session.send_message(SCREENSHOT_REQUEST_MESSAGE, [rq_id])
+	return true
+
+
+## Asks the FIRST active debugger session's game to bring its window to
+## focus (multi-session editors target the first live game, same as
+## screenshot requests). Returns true when the message was sent; false when
+## no live session exists (e.g. no game running).
+func send_focus_request() -> bool:
+	var sessions := get_sessions()
+	for i in range(sessions.size()):
+		if _send_focus_to_session(get_session(i)):
+			return true
+	if not sessions.is_empty():
+		return false
+	var fallback := get_session(0)
+	if fallback != null:
+		return _send_focus_to_session(fallback)
+	return false
+
+
+## Sends the focus-window message to a session. Returns true when the
+## message was sent to a live session. Overridable seam for tests.
+func _send_focus_to_session(session: EditorDebuggerSession) -> bool:
+	if session == null or not session.is_active():
+		return false
+	session.send_message(FOCUS_WINDOW_MESSAGE, [])
 	return true
