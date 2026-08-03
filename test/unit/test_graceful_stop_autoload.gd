@@ -18,12 +18,16 @@ const GracefulStopScript := preload("res://addons/GdTimeMachine/autoload/gracefu
 class GracefulStopHarness:
 	extends GracefulStopScript
 	var quit_called := false
+	var focus_called := false
 
 	func _ready() -> void:
 		pass  # Skip EngineDebugger.register_message_capture — not a unit-test concern.
 
 	func _quit_game() -> void:
 		quit_called = true
+
+	func _focus_window() -> void:
+		focus_called = true
 
 
 func _make_autoload() -> GracefulStopHarness:
@@ -35,6 +39,24 @@ func test_on_debug_message_graceful_stop_calls_quit_and_returns_true() -> void:
 	var handled: bool = autoload._on_debug_message("graceful_stop", [])
 	assert_true(handled)
 	assert_true(autoload.quit_called)
+	assert_false(autoload.focus_called)
+
+
+func test_on_debug_message_focus_window_calls_focus_and_returns_true() -> void:
+	var autoload := _make_autoload()
+	var handled: bool = autoload._on_debug_message("focus_window", [])
+	assert_true(handled)
+	assert_true(autoload.focus_called)
+	assert_false(autoload.quit_called)
+
+
+func test_focus_window_payload_data_ignored() -> void:
+	# The editor sends an empty payload for focus_window, but any data must
+	# not break dispatch or suppress the focus request.
+	var autoload := _make_autoload()
+	var handled: bool = autoload._on_debug_message("focus_window", ["ignored", 42])
+	assert_true(handled)
+	assert_true(autoload.focus_called)
 
 
 func test_on_debug_message_other_returns_false_no_quit() -> void:

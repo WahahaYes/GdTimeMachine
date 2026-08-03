@@ -74,6 +74,7 @@ func _enter_tree() -> void:
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
 	_config_store = CompositeConfigStore.new()
 	_recorder_controller = RecorderController.new()
+	_recorder_controller._debugger_plugin = _debugger_plugin
 	add_child(_recorder_controller)
 	_movie_maker_backend = BackendMovieMaker.new()
 	_movie_maker_backend._debugger_plugin = _debugger_plugin
@@ -126,6 +127,8 @@ func _exit_tree() -> void:
 			_movie_maker_backend._debugger_plugin = null
 		if _screenshot_backend:
 			_screenshot_backend._debugger_plugin = null
+		if _recorder_controller:
+			_recorder_controller._debugger_plugin = null
 		remove_debugger_plugin(_debugger_plugin)
 		_debugger_plugin = null
 	remove_autoload_singleton(AUTOLOAD_NAME)

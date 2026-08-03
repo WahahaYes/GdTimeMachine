@@ -48,6 +48,24 @@ func _make_backend(display_name := "Mock") -> MockBackend:
 	return backend
 
 
+# Duck-typed debugger plugin exposing only the send_focus_request() surface
+# the controller calls. Records calls so tests can assert the focus request
+# fires unconditionally on start.
+func _make_focus_probe() -> Object:
+	var probe := FocusProbe.new()
+	probe = autofree(probe)
+	return probe
+
+
+class FocusProbe:
+	extends RefCounted
+	var focus_calls := 0
+
+	func send_focus_request() -> bool:
+		focus_calls += 1
+		return true
+
+
 func test_register_backend_sets_active_when_none() -> void:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
 	var backend := _make_backend()
@@ -117,6 +135,57 @@ func test_start_recording_routes_config_to_backend() -> void:
 	assert_true(backend.recording)
 	assert_eq(backend.started_config.get("output_path"), "res://media/captures/x.avi")
 	assert_true(controller.is_recording())
+
+
+func test_start_recording_requests_window_focus_via_plugin() -> void:
+	# The focus request is backend-agnostic and unconditional: any backend
+	# (RESTART_SCENE or IN_PLACE) asks the running game to bring its window
+	# to focus so the capture runs at full rate.
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var plugin := _make_focus_probe()
+	controller._debugger_plugin = plugin
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	controller.start_recording({"output_path": "res://media/captures/x.avi"})
+	assert_eq(plugin.focus_calls, 1)
+
+
+func test_start_recording_requests_focus_before_backend_start() -> void:
+	# Focus must be requested before the backend's start() runs so the game
+	# window is foregrounded by the time the first frame is requested.
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var plugin := _make_focus_probe()
+	controller._debugger_plugin = plugin
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	controller.start_recording({})
+	assert_true(plugin.focus_calls >= 1)
+	assert_true(backend.recording)
+
+
+func test_start_recording_without_plugin_does_not_crash() -> void:
+	# No debugger plugin injected (e.g. not running the game under the
+	# debugger) — focus request must be a harmless no-op.
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	controller.start_recording({"output_path": "res://media/captures/x.avi"})
+	assert_true(backend.recording)
+
+
+func test_focus_probe_calls_for_every_start() -> void:
+	# Two start/stop cycles request focus both times (unconditional).
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var plugin := _make_focus_probe()
+	controller._debugger_plugin = plugin
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	controller.start_recording({})
+	controller.stop_recording()
+	controller.start_recording({})
+	assert_eq(plugin.focus_calls, 2)
+	if is_instance_valid(backend) and backend.get_parent() == null:
+		backend.free()
 
 
 func test_start_recording_with_no_backend_emits_error() -> void:

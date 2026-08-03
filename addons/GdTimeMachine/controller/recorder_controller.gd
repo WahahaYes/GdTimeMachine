@@ -13,6 +13,10 @@ var backends: Dictionary = {}
 ## Currently selected backend; null when none is registered yet.
 var active_backend: RecorderBackend = null
 
+## Injected by plugin.gd; hosts the debugger message channel used to ask the
+## running game to bring its own window to focus when a recording starts.
+var _debugger_plugin: Object = null
+
 ## Emitted when the active backend changes (explicit selection, or the
 ## previously active backend being unregistered).
 signal backend_changed(backend_name: String)
@@ -102,9 +106,12 @@ func get_capture_mode() -> RecorderBackend.CaptureMode:
 	return active_backend.get_capture_mode()
 
 
-## Starts recording on the active backend with the given config. Warns and
-## emits recording_error when no backend is selected; warns and skips when
-## the backend is already recording.
+## Starts recording on the active backend with the given config. Before
+## starting, asks the running game to bring its own window to focus so a
+## backgrounded game window (which Godot throttles) doesn't starve the
+## capture; this is backend-agnostic and unconditional. Warns and emits
+## recording_error when no backend is selected; warns and skips when the
+## backend is already recording.
 func start_recording(config: Dictionary) -> void:
 	if active_backend == null:
 		push_warning("No backend selected; cannot start recording")
@@ -113,7 +120,16 @@ func start_recording(config: Dictionary) -> void:
 	if active_backend.is_recording():
 		push_warning("Backend '%s' is already recording" % active_backend.get_backend_name())
 		return
+	_request_window_focus()
 	active_backend.start(config)
+
+
+## Asks the running game to bring its own window to focus via the debugger
+## plugin, so the capture runs at full rate (an occluded game window
+## throttles to ~1 fps). No-op when the plugin is not injected or not running.
+func _request_window_focus() -> void:
+	if _debugger_plugin != null and _debugger_plugin.has_method("send_focus_request"):
+		_debugger_plugin.send_focus_request()
 
 
 ## Stops the active backend if it is recording. Returns whether a stop was

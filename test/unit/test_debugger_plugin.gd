@@ -22,6 +22,7 @@ const PluginScript := preload("res://addons/GdTimeMachine/editor/debugger_plugin
 const PLUGIN_SOURCE_PATH := "res://addons/GdTimeMachine/editor/debugger_plugin.gd"
 
 const WIRE_MESSAGE := "gd_time_machine:graceful_stop"
+const FOCUS_MESSAGE := "gd_time_machine:focus_window"
 const CAPTURE_PREFIX := "gd_time_machine"
 const SCREENSHOT_REQUEST_MESSAGE := "scene:rq_screenshot"
 const SCREENSHOT_CAPTURE_PREFIX := "game_view"
@@ -34,7 +35,9 @@ const EXPECTED_METHODS := [
 	"_send_to_session",
 	"set_screenshot_capture_active",
 	"send_screenshot_request",
-	"_send_screenshot_to_session"
+	"_send_screenshot_to_session",
+	"send_focus_request",
+	"_send_focus_to_session"
 ]
 
 
@@ -124,6 +127,24 @@ class PluginBehaviorMirror:
 		session.send_message("scene:rq_screenshot", [rq_id])
 		return true
 
+	func send_focus_request() -> bool:
+		var all_sessions := get_sessions()
+		for i in range(all_sessions.size()):
+			if _send_focus_to_session(get_session(i)):
+				return true
+		if not all_sessions.is_empty():
+			return false
+		var fallback: Object = get_session(0)
+		if fallback != null:
+			return _send_focus_to_session(fallback)
+		return false
+
+	func _send_focus_to_session(session: Object) -> bool:
+		if session == null or not session.is_active():
+			return false
+		session.send_message("gd_time_machine:focus_window", [])
+		return true
+
 
 func _make_mirror() -> PluginBehaviorMirror:
 	return autofree(PluginBehaviorMirror.new())
@@ -176,6 +197,10 @@ func test_wire_contract_constants_present_in_source() -> void:
 	assert_true(
 		source.contains("screenshot_received.emit"),
 		"source must re-emit received frames as screenshot_received"
+	)
+	assert_true(
+		source.contains(FOCUS_MESSAGE),
+		"source must send the '%s' focus-window message" % FOCUS_MESSAGE
 	)
 
 
@@ -338,3 +363,47 @@ func test_send_graceful_stop_falls_back_to_session_zero() -> void:
 func test_send_graceful_stop_returns_false_without_sessions() -> void:
 	var plugin := _make_mirror()
 	assert_false(plugin.send_graceful_stop())
+
+
+func test_send_focus_request_targets_first_active_session() -> void:
+	var plugin := _make_mirror()
+	var active: FakeSession = autofree(FakeSession.new())
+	var inactive: FakeSession = autofree(FakeSession.new())
+	inactive.active = false
+	plugin.sessions = [inactive, active]
+	assert_true(plugin.send_focus_request())
+	assert_eq(active.sent, [["gd_time_machine:focus_window", []]])
+	assert_eq(inactive.sent.size(), 0)
+
+
+func test_send_focus_request_falls_back_to_session_zero() -> void:
+	var plugin := _make_mirror()
+	var fallback: FakeSession = autofree(FakeSession.new())
+	plugin.fallback_session = fallback
+	assert_true(plugin.send_focus_request())
+	assert_eq(fallback.sent, [["gd_time_machine:focus_window", []]])
+
+
+func test_send_focus_request_returns_false_without_sessions() -> void:
+	var plugin := _make_mirror()
+	assert_false(plugin.send_focus_request())
+
+
+func test_send_focus_to_session_sends_when_active() -> void:
+	var plugin := _make_mirror()
+	var session: FakeSession = autofree(FakeSession.new())
+	assert_true(plugin._send_focus_to_session(session))
+	assert_eq(session.sent, [["gd_time_machine:focus_window", []]])
+
+
+func test_send_focus_to_session_skips_inactive() -> void:
+	var plugin := _make_mirror()
+	var session: FakeSession = autofree(FakeSession.new())
+	session.active = false
+	assert_false(plugin._send_focus_to_session(session))
+	assert_eq(session.sent.size(), 0)
+
+
+func test_send_focus_to_session_null_is_noop() -> void:
+	var plugin := _make_mirror()
+	assert_false(plugin._send_focus_to_session(null))
