@@ -6,9 +6,11 @@ class_name BackendScreenshotCapture
 ## debugger screenshot channel (scene:rq_screenshot → game_view:get_screenshot)
 ## on the Op-2 debugger plugin. The game keeps running — no restart, no
 ## graceful quit. Received PNGs are copied into `<output_path>.frames/` on
-## receipt (the game may clean up its temp files at any point) and a
-## manifest.json records the measured statistics for the dock notice and for
-## Op 6's converter.
+## receipt (the game may clean up its temp files at any point) — optionally
+## lossily re-encoded as JPG (config output_format "jpg") to cut storage — and
+## a manifest.json records the measured statistics for the dock notice and for
+## Op 6's converter. Frames smaller than MIN_FRAME_DIMENSION in either axis
+## (e.g. the debugger channel's occasional 1×1 first-frame stub) are scrubbed.
 ##
 ## The loop paces at the configured target fps with one request in flight at
 ## a time; the achievable rate is machine-bound (spike: ~16-18 fps @720p
@@ -39,9 +41,10 @@ const POLL_INTERVAL := 0.5
 
 ## Seconds without any frame reply before the capture finalizes with the
 ## frames received so far (game hung, occluded, or crashed mid-capture).
-## Restarted on every reply, so a healthy-but-slow capture (e.g. 1 fps
-## occluded) never trips it.
-const NO_REPLY_TIMEOUT := 5.0
+## Restarted on every reply AND on every successful send so a slow debugger
+## handshake (session not yet active at launch) doesn't trip it prematurely.
+## Increased to 15s — covers slow launches and first-frame PNG encode cost.
+const NO_REPLY_TIMEOUT := 15.0
 
 ## Pacing fallback when the config provides no fps: ~15 fps.
 const DEFAULT_FRAME_INTERVAL := 1.0 / 15.0
@@ -49,6 +52,11 @@ const DEFAULT_FRAME_INTERVAL := 1.0 / 15.0
 ## A measured fps below this fraction of the target is flagged as low (the
 ## foreground hint fires).
 const LOW_RATE_FRACTION := 0.25
+
+## Frames smaller than this (in either dimension) are discarded as invalid
+## placeholder stubs — the debugger screenshot channel occasionally returns a
+## 1×1 frame on the first request. Anything below this is not a real frame.
+const MIN_FRAME_DIMENSION := 8
 
 ## Whether a recording session is in progress (from start() until finalize).
 var _active := false
@@ -80,6 +88,10 @@ var _next_rq_id := 0
 
 ## Id of the request currently awaiting a reply; -1 when none is in flight.
 var _in_flight_rq_id := -1
+
+## Frame file extension and output kind: "png" (default, straight copy) or
+## "jpg" (lossy re-encode on receipt). Set from config output_format in start().
+var _image_format := "png"
 
 ## Number of frames copied so far (also the next frame index, 1-based).
 var _frame_count := 0
@@ -150,6 +162,10 @@ func start(config: Dictionary) -> void:
 		_output_path = DEFAULT_OUTPUT_PATH
 	_duration = float(config.get("duration", 0.0))
 	_target_fps = int(config.get("fps", 0))
+	# The engine always delivers PNGs; "jpg"/"jpeg" requests a lossy re-encode
+	# on receipt, anything else stays PNG.
+	var out_format := str(config.get("output_format", "png")).to_lower()
+	_image_format = "jpg" if ("jpg" in out_format or "jpeg" in out_format) else "png"
 	_active = true
 	_stopping = false
 	_pending_start = false
@@ -168,6 +184,9 @@ func start(config: Dictionary) -> void:
 
 ## Shared capture start: claims the game_view prefix, starts timers, and
 ## emits recording_started. Single site for the transition into recording.
+## The debugger session may not be active instantly after launch (the
+## game→editor handshake is asynchronous), so the first screenshot request
+## may be deferred — the no-reply timer bounds that eventuality.
 func _begin_capture() -> void:
 	_pending_start = false
 	_set_screenshot_capture_active(true)
@@ -176,6 +195,7 @@ func _begin_capture() -> void:
 	if _duration > 0.0:
 		_start_duration_timer()
 	_start_no_reply_timer()
+	_stop_polling()
 	recording_started.emit(get_backend_name(), _output_path)
 	_send_next_request()
 
@@ -252,20 +272,18 @@ func _on_no_reply_timeout() -> void:
 	_finalize_stopped()
 
 
-## Handles a frame reply from the plugin: validates the request id, copies the
-## PNG into the frames dir, updates stats, and restarts the no-reply timer.
-## Accepts the legacy engine reply (width==0,height==0, id may be stale) as
-## long as something is in flight — the engine's SceneDebugger only sends
-## [path,size], so the id echo is synthetic via _last_screenshot_rq_id.
+## Handles a frame reply from the plugin: validates the request id, scrubs
+## undersized placeholder frames, copies (or JPG re-encodes) the frame into the
+## frames dir, updates stats, and restarts the no-reply timer. Accepts legacy
+## 0×0 replies as long as something is in flight.
 func _on_screenshot_received(rq_id: int, width: int, height: int, path: String) -> void:
 	if not _active or _stopping or _pending_start:
 		return
 	if _in_flight_rq_id == -1:
-		return
-	if rq_id != _in_flight_rq_id:
-		# Enriched path (real w/h) must match exactly; legacy path (0×0)
-		# is accepted as long as something is in flight — the id is
-		# synthetic and may lag by one tick.
+		# When in_flight is -1 (e.g. session-not-ready retry race), accept
+		# any reply while active so first frame isn't lost.
+		pass
+	elif rq_id != _in_flight_rq_id:
 		if width != 0 or height != 0:
 			return
 	_in_flight_rq_id = -1
@@ -273,6 +291,15 @@ func _on_screenshot_received(rq_id: int, width: int, height: int, path: String) 
 		var dims := _get_image_dimensions(path)
 		width = int(dims.get("width", width))
 		height = int(dims.get("height", height))
+	# Scrub invalid placeholder frames (the debugger screenshot channel
+	# sometimes returns a 1×1 stub for the first request). Anything below
+	# MIN_FRAME_DIMENSION is not a real frame: skip the copy and the stats
+	# update, but keep the loop moving by immediately issuing the next
+	# request.
+	if width < MIN_FRAME_DIMENSION or height < MIN_FRAME_DIMENSION:
+		_restart_no_reply_timer()
+		_send_next_request()
+		return
 	_last_frame_width = width
 	_last_frame_height = height
 	var now := _now()
@@ -280,7 +307,7 @@ func _on_screenshot_received(rq_id: int, width: int, height: int, path: String) 
 		_first_frame_time = now
 	_last_frame_time = now
 	_frame_count += 1
-	_copy_frame(path, _frames_dir.path_join("frame_%05d.png" % _frame_count))
+	_copy_frame(path, _frames_dir.path_join("frame_%05d.%s" % [_frame_count, _image_format]))
 	_restart_no_reply_timer()
 
 
@@ -300,13 +327,17 @@ func _get_image_dimensions(path: String) -> Dictionary:
 
 ## Sends the next screenshot request unless one is already in flight.
 func _send_next_request() -> void:
-	if not _active or _stopping:
+	if not _active or _stopping or _pending_start:
 		return
 	if _in_flight_rq_id != -1:
 		return
-	_in_flight_rq_id = _next_rq_id
+	var rq_id := _next_rq_id
+	if not _send_screenshot_request(rq_id):
+		_restart_no_reply_timer()
+		return
+	_in_flight_rq_id = rq_id
 	_next_rq_id += 1
-	_send_screenshot_request(_in_flight_rq_id)
+	_restart_no_reply_timer()
 
 
 ## Ends the session and emits recording_stopped exactly once, then the
@@ -397,11 +428,19 @@ func _disconnect_screenshot_signal() -> void:
 		_debugger_plugin.disconnect("screenshot_received", _on_screenshot_received)
 
 
-## Requests a frame from the running game via the plugin. No-op when the
-## plugin is not injected.
-func _send_screenshot_request(rq_id: int) -> void:
+## Requests a frame from the running game via the plugin. Returns true when
+## the request was dispatched to a live debugger session. No-op/false when
+## the plugin is not injected or no session is active yet (e.g. just after
+## launching — the pacing loop will retry).
+func _send_screenshot_request(rq_id: int) -> bool:
 	if _debugger_plugin != null and _debugger_plugin.has_method("send_screenshot_request"):
-		_debugger_plugin.send_screenshot_request(rq_id)
+		var res: Variant = _debugger_plugin.send_screenshot_request(rq_id)
+		if res is bool:
+			return res
+		# Legacy seam that didn't return bool (test double) — treat as sent
+		# when the method exists, unless it explicitly returned false.
+		return true
+	return false
 
 
 # --- Environment seams (isolated for testability) ----------------------------
@@ -425,25 +464,90 @@ func _now() -> float:
 	return Time.get_ticks_msec() / 1000.0
 
 
-## Creates the frames directory (absolute path).
+## Creates the frames directory (absolute path) and ensures the parent
+## output dir carries a .gdignore so Godot doesn't import the captured PNGs.
 func _make_frames_dir(path: String) -> void:
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path))
+	_ensure_gdignore_in_dir(path.get_base_dir())
 
 
-## Copies a received PNG into the frames dir. The game writes temp files, so
-## the copy happens on receipt — a batch copy at stop would race the game's
-## side cleanup.
+## Creates an empty .gdignore in the given directory (if not already present)
+## so Godot skips importing any PNG/JPG frames written there. Handles both
+## res:// and absolute paths.
+func _ensure_gdignore_in_dir(dir_path: String) -> void:
+	var abs_dir := ProjectSettings.globalize_path(dir_path)
+	var gdignore_path := abs_dir.path_join(".gdignore")
+	if FileAccess.file_exists(gdignore_path):
+		return
+	var file := FileAccess.open(gdignore_path, FileAccess.WRITE)
+	if file == null:
+		push_warning(
+			"Backend '%s': could not create .gdignore in %s" % [get_backend_name(), abs_dir]
+		)
+		return
+	file.close()
+
+
+## Copies a received frame into the frames dir. The game writes temp files,
+## so the copy happens on receipt — a batch copy at stop would race the game's
+## side cleanup. In JPG mode the received PNG is decoded and re-encoded as a
+## lossy JPG (quality 0.85) to cut storage for footage destined for video
+## stitching; any decode/encode failure falls back to a straight copy so no
+## frame is ever lost. The straight copy tries the globalized path first, then
+## as-is, then a file-by-file stream copy (the game temp may be outside res://
+## and copy_absolute can fail on cross-device in some envs).
 func _copy_frame(src: String, dst: String) -> void:
-	var err := DirAccess.copy_absolute(
-		ProjectSettings.globalize_path(src), ProjectSettings.globalize_path(dst)
-	)
-	if err != OK:
+	var src_abs := ProjectSettings.globalize_path(src)
+	var dst_abs := ProjectSettings.globalize_path(dst)
+	# JPG mode: decode the received PNG and re-encode it lossily.
+	if _image_format == "jpg":
+		var img := Image.new()
+		var load_err := img.load(src_abs)
+		if load_err != OK:
+			load_err = img.load(src)
+		if load_err == OK:
+			var save_err := img.save_jpg(dst_abs, 0.85)
+			if save_err != OK:
+				save_err = img.save_jpg(dst, 0.85)
+			if save_err == OK:
+				return
+			push_warning(
+				(
+					"Backend '%s': JPG encode failed for %s → %s (%s); copying as-is"
+					% [get_backend_name(), src, dst, error_string(save_err)]
+				)
+			)
+	# PNG (default) or JPG fallback: try DirAccess.copy_absolute first (fast path).
+	var err := DirAccess.copy_absolute(src_abs, dst_abs)
+	if err == OK:
+		return
+	# Retry with original src (could already be absolute OS temp path).
+	err = DirAccess.copy_absolute(src, dst_abs)
+	if err == OK:
+		return
+	# Stream fallback.
+	var src_file := FileAccess.open(src, FileAccess.READ)
+	if src_file == null:
+		src_file = FileAccess.open(src_abs, FileAccess.READ)
+	if src_file == null:
 		push_warning(
 			(
-				"Backend '%s': could not copy frame %s → %s (%s)"
-				% [get_backend_name(), src, dst, error_string(err)]
+				"Backend '%s': could not open source frame %s (%s) — will retry copy later if needed"
+				% [get_backend_name(), src, src_abs]
 			)
 		)
+		return
+	var dst_file := FileAccess.open(dst, FileAccess.WRITE)
+	if dst_file == null:
+		dst_file = FileAccess.open(dst_abs, FileAccess.WRITE)
+	if dst_file == null:
+		push_warning(
+			"Backend '%s': could not open dest %s → %s" % [get_backend_name(), dst, dst_abs]
+		)
+		return
+	dst_file.store_buffer(src_file.get_buffer(src_file.get_length()))
+	src_file.close()
+	dst_file.close()
 
 
 ## Writes the manifest JSON to the given path.

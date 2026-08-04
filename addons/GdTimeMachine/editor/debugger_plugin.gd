@@ -32,9 +32,8 @@ const SCREENSHOT_CAPTURE_PREFIX := "game_view"
 ## Whether a screenshot recording currently owns the game_view capture prefix.
 var _screenshot_capture_active := false
 
-## Last screenshot request id handed to the game; attached to legacy
-## engine replies that only send [path, size]. Updated in
-## send_screenshot_request() / _send_screenshot_to_session() path.
+## Last screenshot request id handed to the game; used as fallback when
+## the reply shape doesn't include an id.
 var _last_screenshot_rq_id := -1
 
 ## Emitted when the game replies to a scene:rq_screenshot request with a
@@ -59,50 +58,101 @@ func _has_capture(capture: String) -> bool:
 ## only while a screenshot recording is active); everything else falls
 ## through so other plugins keep their captures.
 ##
-## Engine reality: SceneDebugger::_msg_rq_screenshot replies
-## game_view:get_screenshot [path, size] (2 fields) — the spike doc is
-## authoritative. Our enriched autoload future adds [id, w, h, path] (4
-## fields). Accept both: 4-field enriched, and 2-field legacy using
-## _last_screenshot_rq_id + 0×0 dimensions (backend fills via Image load).
+## Engine reality (verified 4.7 source):
+##   SceneDebugger::_msg_rq_screenshot saves viewport PNG to OS temp and replies
+##   game_view:get_screenshot [p_args[0], width, height, path] (4 fields).
+##   GameViewDebugger::capture() checks message == "game_view:get_screenshot"
+##   (full prefixed), so EditorDebuggerPlugin._capture receives full form:
+##   typically "game_view:get_screenshot" or stripped "get_screenshot".
+##   Be aggressively tolerant: accept StringName, handle int-as-string, and
+##   always try to find a png path.
 func _capture(message: String, data: Array, _session_id: int) -> bool:
 	if not _screenshot_capture_active:
 		return false
-	if message != "get_screenshot":
+	var m := str(message)
+	if m != "get_screenshot" and not m.ends_with("get_screenshot"):
 		return false
-	if data.size() >= 4 and data[0] is int and data[1] is int:
-		# Enriched path: [rq_id, width, height, path]
-		# data[0] typed int in Godot 4.7's debugger reply, but be defensive.
-		var w2 := int(data[1])
-		var h2 := int(data[2])
-		var p2 := str(data[3])
-		if not p2.is_empty():
-			screenshot_received.emit(int(data[0]), w2, h2, p2)
+	# Fast path: exact engine shape [id, w, h, path] — engine always
+	# sends .png, but accept .jpg too for forward compat.
+	if data.size() >= 4:
+		var path_candidate := str(data[3])
+		if (
+			path_candidate.ends_with(".png")
+			or path_candidate.contains(".png")
+			or path_candidate.ends_with(".jpg")
+			or path_candidate.ends_with(".jpeg")
+			or path_candidate.contains(".jpg")
+		):
+			var id_val := _last_screenshot_rq_id if _last_screenshot_rq_id >= 0 else 0
+			var w_val := 0
+			var h_val := 0
+			# id may be int or float Variant, or even StringName numeric
+			if data[0] is int or data[0] is float:
+				id_val = int(data[0])
+			else:
+				var s0 := str(data[0])
+				if s0.is_valid_int():
+					id_val = s0.to_int()
+				elif s0.is_valid_float():
+					id_val = int(s0.to_float())
+			if data[1] is int or data[1] is float:
+				w_val = int(data[1])
+			elif str(data[1]).is_valid_int():
+				w_val = str(data[1]).to_int()
+			if data[2] is int or data[2] is float:
+				h_val = int(data[2])
+			elif str(data[2]).is_valid_int():
+				h_val = str(data[2]).to_int()
+			screenshot_received.emit(id_val, w_val, h_val, path_candidate)
 			return true
-	# Legacy engine path: [path, size] — first string is the png path.
-	if data.size() >= 1:
-		var path := ""
+	# Fallback permissive: find any png path and up to 3 numeric values
+	var png_path := ""
+	var found_id := -1
+	var found_w := 0
+	var found_h := 0
+	var numeric: Array = []
+	for elem in data:
+		var s := str(elem)
+		if s.ends_with(".png") or s.ends_with(".jpg") or s.ends_with(".jpeg"):
+			png_path = s
+			continue
+		if (
+			png_path.is_empty()
+			and s.contains("/")
+			and (
+				s.contains("scr-")
+				or s.contains("tmp")
+				or s.contains("Temp")
+				or s.contains(".png")
+				or s.contains(".jpg")
+			)
+		):
+			png_path = s
+			continue
+		if s.is_valid_int() or s.is_valid_float():
+			# Avoid treating a pure path that happens to parse as int — but
+			# our png_path already captured, so remaining numerics are dims/id
+			numeric.append(int(float(s)))
+		elif elem is int or elem is float:
+			numeric.append(int(elem))
+	if png_path.is_empty():
 		for elem in data:
-			if elem is String and not str(elem).is_empty():
-				# Heuristic: real reply always contains a .png path, but any
-				# non-empty string is the path in the legacy format.
-				if (
-					str(elem).ends_with(".png")
-					or str(elem).contains("://")
-					or str(elem).contains("/")
-				):
-					path = str(elem)
-					break
-		if path.is_empty():
-			# Fallback: first element if it's a string (legacy doc [path,size]).
-			if data[0] is String and not str(data[0]).is_empty():
-				path = str(data[0])
-		if not path.is_empty():
-			var emit_id := _last_screenshot_rq_id
-			if emit_id < 0:
-				emit_id = 0
-			screenshot_received.emit(emit_id, 0, 0, path)
-			return true
-	return false
+			var s2 := str(elem)
+			if s2.contains("/"):
+				png_path = s2
+				break
+	if png_path.is_empty():
+		return false
+	if numeric.size() >= 3:
+		found_id = int(numeric[0])
+		found_w = int(numeric[1])
+		found_h = int(numeric[2])
+	elif numeric.size() >= 1:
+		found_id = int(numeric[0])
+	if found_id < 0:
+		found_id = _last_screenshot_rq_id if _last_screenshot_rq_id >= 0 else 0
+	screenshot_received.emit(found_id, found_w, found_h, png_path)
+	return true
 
 
 ## Sets up per-session wiring. Session lifecycle is driven by the engine

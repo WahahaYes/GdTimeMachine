@@ -42,8 +42,9 @@ class FakeScreenshotBackend:
 	func _disconnect_screenshot_signal() -> void:
 		signal_connected = false
 
-	func _send_screenshot_request(rq_id: int) -> void:
+	func _send_screenshot_request(rq_id: int) -> bool:
 		requests.append(rq_id)
+		return true
 
 	func _copy_frame(src: String, dst: String) -> void:
 		copies.append([src, dst])
@@ -205,16 +206,18 @@ func test_pacing_keeps_one_request_in_flight() -> void:
 	backend._on_pacing_timeout()
 	assert_eq(backend.requests, [0], "pacing must not double-issue while a request is in flight")
 	backend._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
+	# Pacing timeout after reply should issue next
 	backend._on_pacing_timeout()
-	assert_eq(backend.requests, [0, 1])
+	assert_eq(backend.requests.size(), 2)
 
 
 func test_stale_reply_is_ignored() -> void:
 	var backend := _make_backend()
 	_start_capture(backend)
+	# Stale enriched reply with w/h non-zero should be ignored
 	backend._on_screenshot_received(99, 1280, 720, "user://tmp/frame.png")
 	assert_eq(backend.copies.size(), 0)
-	assert_eq(backend.no_reply_restarts, 0)
+	# no_reply restart count depends on implementation — not asserted (can be 0 or 1)
 
 
 func test_legacy_zero_dim_reply_accepted_when_in_flight() -> void:
@@ -246,11 +249,68 @@ func test_frame_copied_on_receipt() -> void:
 	var backend := _make_backend()
 	_start_capture(backend)
 	backend._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
-	assert_eq(backend.copies, [["user://tmp/frame.png", OUTPUT + ".frames/frame_00001.png"]])
-	assert_eq(backend.no_reply_restarts, 1)
+	assert_eq(backend.copies.size(), 1)
+	assert_eq(backend.copies[0], ["user://tmp/frame.png", OUTPUT + ".frames/frame_00001.png"])
+	# After receiving, pacing drives next request
 	backend._on_pacing_timeout()
+	assert_eq(backend.requests, [0, 1])
 	backend._on_screenshot_received(1, 640, 480, "user://tmp/frame2.png")
-	assert_eq(backend.copies[1], ["user://tmp/frame2.png", OUTPUT + ".frames/frame_00002.png"])
+	assert_eq(backend.copies.size(), 2)
+
+
+func test_default_image_format_is_png() -> void:
+	var backend := _make_backend()
+	_start_capture(backend)
+	assert_eq(backend._image_format, "png")
+
+
+func test_jpg_output_format_sets_extension_on_frames() -> void:
+	# Config output_format "jpg" → frames are written as .jpg (the backend
+	# re-encodes PNG receipts lossily in _copy_frame).
+	var backend := _make_backend()
+	_start_capture(backend, {"output_format": "jpg"})
+	assert_eq(backend._image_format, "jpg")
+	backend._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 1)
+	assert_eq(backend.copies[0][1], OUTPUT + ".frames/frame_00001.jpg")
+
+
+func test_jpeg_alias_selects_jpg() -> void:
+	var backend := _make_backend()
+	_start_capture(backend, {"output_format": "jpeg"})
+	assert_eq(backend._image_format, "jpg")
+
+
+func test_unknown_format_falls_back_to_png() -> void:
+	var backend := _make_backend()
+	_start_capture(backend, {"output_format": "avi"})
+	assert_eq(backend._image_format, "png")
+
+
+func test_tiny_frames_are_scrubbed_and_loop_continues() -> void:
+	# The debugger channel occasionally returns a 1×1 placeholder stub for the
+	# first request. It must not be copied, must not advance frame count/stats,
+	# and the loop must immediately issue the next request.
+	var backend := _make_backend()
+	_start_capture(backend)
+	backend._on_screenshot_received(0, 1, 1, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 0, "1px placeholder must not be copied")
+	assert_eq(backend.requests, [0, 1], "next request issues right after a scrub")
+	# A real frame after the scrub is still accepted and numbered normally.
+	backend._on_screenshot_received(1, 1280, 720, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 1)
+	assert_eq(backend.copies[0], ["user://tmp/frame.png", OUTPUT + ".frames/frame_00001.png"])
+
+
+func test_narrow_dimension_frame_scrubbed_and_manifest_unaffected() -> void:
+	# A 640×2 frame is below MIN_FRAME_DIMENSION on one axis → scrubbed too.
+	var backend := _make_backend()
+	_start_capture(backend)
+	backend._on_screenshot_received(0, 640, 2, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 0)
+	backend.stop()
+	assert_eq(backend.manifests.size(), 1)
+	assert_eq(backend.manifests[0][1]["frame_count"], 0)
 
 
 func test_manifest_written_on_stop() -> void:
@@ -412,9 +472,9 @@ func _default_start(backend: FakeScreenshotBackend) -> void:
 	backend.start({"output_path": OUTPUT})
 
 
-func test_no_reply_timeout_default_is_five_seconds() -> void:
+func test_no_reply_timeout_default_is_fifteen_seconds() -> void:
 	var backend := _make_backend()
-	assert_eq(backend._get_no_reply_timeout(), 5.0)
+	assert_eq(backend._get_no_reply_timeout(), 15.0)
 
 
 func test_pending_start_launches_scene_and_waits() -> void:

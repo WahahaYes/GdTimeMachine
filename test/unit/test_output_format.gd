@@ -5,26 +5,34 @@ func test_output_format_to_extension() -> void:
 	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.AVI), "avi")
 	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.OGV), "ogv")
 	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.PNG), "png")
+	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.JPG), "jpg")
 
 
 func test_output_format_display_name() -> void:
 	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.AVI).contains("AVI"))
 	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.OGV).contains("OGV"))
 	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.PNG).contains("PNG"))
+	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.JPG).contains("JPG"))
+	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.JPG).contains(".jpg"))
 
 
 func test_output_format_from_string_bare() -> void:
 	assert_eq(GdTMOutputFormat.from_string("avi"), GdTMOutputFormat.Format.AVI)
 	assert_eq(GdTMOutputFormat.from_string("ogv"), GdTMOutputFormat.Format.OGV)
 	assert_eq(GdTMOutputFormat.from_string("png"), GdTMOutputFormat.Format.PNG)
+	assert_eq(GdTMOutputFormat.from_string("jpg"), GdTMOutputFormat.Format.JPG)
+	assert_eq(GdTMOutputFormat.from_string("jpeg"), GdTMOutputFormat.Format.JPG)
 	assert_eq(GdTMOutputFormat.from_string(".avi"), GdTMOutputFormat.Format.AVI)
 	assert_eq(GdTMOutputFormat.from_string(".ogv"), GdTMOutputFormat.Format.OGV)
 	assert_eq(GdTMOutputFormat.from_string(".png"), GdTMOutputFormat.Format.PNG)
+	assert_eq(GdTMOutputFormat.from_string(".jpg"), GdTMOutputFormat.Format.JPG)
+	assert_eq(GdTMOutputFormat.from_string("jpg sequence"), GdTMOutputFormat.Format.JPG)
 
 
 func test_output_format_from_string_case_insensitive() -> void:
 	assert_eq(GdTMOutputFormat.from_string("AVI"), GdTMOutputFormat.Format.AVI)
 	assert_eq(GdTMOutputFormat.from_string("Ogv"), GdTMOutputFormat.Format.OGV)
+	assert_eq(GdTMOutputFormat.from_string("JpEg"), GdTMOutputFormat.Format.JPG)
 
 
 func test_output_format_from_string_unknown_defaults_to_avi() -> void:
@@ -34,19 +42,22 @@ func test_output_format_from_string_unknown_defaults_to_avi() -> void:
 
 func test_output_format_all_formats() -> void:
 	var all := GdTMOutputFormat.all_formats()
-	assert_eq(all.size(), 3)
+	assert_eq(all.size(), 4)
 	assert_true(all.has(GdTMOutputFormat.Format.AVI))
 	assert_true(all.has(GdTMOutputFormat.Format.OGV))
 	assert_true(all.has(GdTMOutputFormat.Format.PNG))
+	assert_true(all.has(GdTMOutputFormat.Format.JPG))
 
 
 func test_output_format_warning() -> void:
 	assert_true(GdTMOutputFormat.needs_size_warning(GdTMOutputFormat.Format.AVI))
 	assert_false(GdTMOutputFormat.needs_size_warning(GdTMOutputFormat.Format.OGV))
 	assert_false(GdTMOutputFormat.needs_size_warning(GdTMOutputFormat.Format.PNG))
+	assert_false(GdTMOutputFormat.needs_size_warning(GdTMOutputFormat.Format.JPG))
 	assert_false(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.AVI).is_empty())
 	assert_false(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.OGV).is_empty())
 	assert_true(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.PNG).is_empty())
+	assert_true(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.JPG).is_empty())
 
 
 func test_recording_profile_roundtrip() -> void:

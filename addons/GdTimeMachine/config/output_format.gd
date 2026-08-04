@@ -10,6 +10,7 @@ enum Format {
 	AVI,  ## .avi — MJPEG. Largest files, 4 GB cap.
 	OGV,  ## .ogv — Theora+Vorbis. Smaller, editor binaries only.
 	PNG,  ## .png — PNG sequence + WAV. Lossless master for external encode.
+	JPG,  ## .jpg — JPG sequence. Compact lossy frames (screenshot backend).
 }
 
 ## Default format. Kept as AVI so existing users see no behavior change.
@@ -25,6 +26,8 @@ static func to_extension(format: Format) -> String:
 			return "ogv"
 		Format.PNG:
 			return "png"
+		Format.JPG:
+			return "jpg"
 	return "avi"
 
 
@@ -37,11 +40,13 @@ static func display_name(format: Format) -> String:
 			return "OGV (.ogv)"
 		Format.PNG:
 			return "PNG sequence (.png)"
+		Format.JPG:
+			return "JPG sequence (.jpg)"
 	return "AVI (.avi)"
 
 
-## Parses a stored string ("avi", "ogv", "png", or full display name) into a Format.
-## Unknown values fall back to DEFAULT.
+## Parses a stored string ("avi", "ogv", "png", "jpg"/"jpeg", or full
+## display name) into a Format. Unknown values fall back to DEFAULT.
 static func from_string(s: String) -> Format:
 	var t := s.strip_edges().to_lower()
 	if t.begins_with("."):
@@ -53,12 +58,19 @@ static func from_string(s: String) -> Format:
 		return Format.OGV
 	if t in ["png", "png sequence", "png sequence (.png)"] or t.begins_with("png"):
 		return Format.PNG
+	if (
+		t in ["jpg", "jpeg", "jpg sequence", "jpg sequence (.jpg)"]
+		or t.begins_with("jpg")
+		or t.begins_with("jpeg")
+	):
+		return Format.JPG
 	return DEFAULT
 
 
-## All format values in dropdown order.
+## All format values in dropdown order. The dock filters this per-backend
+## (Movie Maker offers AVI/OGV/PNG; the screenshot backend offers PNG/JPG).
 static func all_formats() -> Array:
-	return [Format.AVI, Format.OGV, Format.PNG]
+	return [Format.AVI, Format.OGV, Format.PNG, Format.JPG]
 
 
 ## Whether this format has known size limits that warrant a warning.

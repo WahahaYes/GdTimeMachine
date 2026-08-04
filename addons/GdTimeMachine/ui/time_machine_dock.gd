@@ -188,7 +188,10 @@ func _apply_setup() -> void:
 	$Split/RightColumn/SettingsGroup/FpsRow/FpsLabel.tooltip_text = _fps_spin.tooltip_text
 	$Split/RightColumn/SettingsGroup/SceneRow.tooltip_text = _scene_edit.tooltip_text
 	$Split/RightColumn/SettingsGroup/OutputRow.tooltip_text = _output_edit.tooltip_text
-	$Split/RightColumn/SettingsGroup/FormatRow.tooltip_text = "Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless sequence."
+	$Split/RightColumn/SettingsGroup/FormatRow.tooltip_text = (
+		"Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless "
+		+ "sequence, JPG is a compact lossy sequence."
+	)
 	_format_option.tooltip_text = "Output format for recordings."
 	_format_warning_label.tooltip_text = "Format-specific notice."
 	_per_scene_check.tooltip_text = "When checked, this scene's settings are saved as its own profile when you switch away, and reloaded when you come back.\nWhen unchecked, the default profile is used and any stored per-scene profile for this scene is cleared."
@@ -205,6 +208,9 @@ func _apply_setup() -> void:
 	_populate_backends()
 	_populate_formats()
 	_load_settings()
+	# Guarantee a valid format selection for the active backend (a stored
+	# format the backend doesn't support falls back to its first allowed one).
+	_repopulate_formats_for_backend()
 	_prefill_scene()
 	_update_backend_visibility()
 	_refresh_per_scene_state()
@@ -228,10 +234,22 @@ func _populate_backends() -> void:
 	)
 
 
-## Fills the format dropdown from GdTMOutputFormat.
+## Formats the active backend actually supports: the screenshot (IN_PLACE)
+## backend owns the frames layout and writes PNG or JPG frames; Movie Maker
+## (RESTART_SCENE) drives the engine writer, which only handles AVI/OGV/PNG.
+func _get_allowed_formats() -> Array:
+	if (
+		_controller != null
+		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
+	):
+		return [GdTMOutputFormat.Format.PNG, GdTMOutputFormat.Format.JPG]
+	return [GdTMOutputFormat.Format.AVI, GdTMOutputFormat.Format.OGV, GdTMOutputFormat.Format.PNG]
+
+
+## Fills the format dropdown from the formats the active backend supports.
 func _populate_formats() -> void:
 	_format_option.clear()
-	for fmt in GdTMOutputFormat.all_formats():
+	for fmt in _get_allowed_formats():
 		_format_option.add_item(GdTMOutputFormat.display_name(fmt))
 
 
@@ -243,19 +261,21 @@ func _select_backend_item(backend_name: String) -> void:
 			return
 
 
-## Selects the format dropdown item matching the given format enum.
-func _select_format_item(format: GdTMOutputFormat.Format) -> void:
+## Selects the format dropdown item matching the given format enum. Returns
+## true when a matching item was found and selected.
+func _select_format_item(format: GdTMOutputFormat.Format) -> bool:
 	var target := GdTMOutputFormat.display_name(format)
 	for i in _format_option.item_count:
 		if _format_option.get_item_text(i) == target:
 			_format_option.select(i)
-			return
+			return true
 	# Fallback: match by extension substring.
 	var ext := GdTMOutputFormat.to_extension(format)
 	for i in _format_option.item_count:
 		if _format_option.get_item_text(i).to_lower().contains(ext):
 			_format_option.select(i)
-			return
+			return true
+	return false
 
 
 ## Returns the currently selected output format from the dropdown.
@@ -406,13 +426,27 @@ func _refresh_per_scene_state() -> void:
 	_update_format_warning()
 
 
-## Reacts to a backend change made elsewhere: re-selects dropdown and updates
+## Reacts to a backend change made elsewhere: re-selects dropdown, re-fills
+## the format list for the new backend's supported formats, and updates
 ## visibility/per-scene state.
 func _on_backend_changed(backend_name: String) -> void:
 	_select_backend_item(backend_name)
 	_update_backend_visibility()
 	_update_backend_tooltip()
+	_repopulate_formats_for_backend()
 	_persist_default_profile()
+
+
+## Rebuilds the format dropdown for the active backend, keeping the current
+## selection when the backend still supports it and falling back to the first
+## allowed format otherwise (so the dropdown always has a valid selection).
+func _repopulate_formats_for_backend() -> void:
+	var current := _get_selected_format()
+	_populate_formats()
+	if not _select_format_item(current):
+		if _format_option.item_count > 0:
+			_format_option.select(0)
+	_update_format_warning()
 
 
 ## Backend dropdown tooltip: the generic behavior note plus the active
@@ -435,9 +469,10 @@ func _update_backend_tooltip() -> void:
 ## In-place backends record the running scene and stop without killing it,
 ## but they still honor the scene picker when no scene is playing: pressing
 ## Record launches the requested scene first (same UX as Movie Maker),
-## then starts screenshot capture. Keep the scene row visible for both
-## modes. Format is PNG-only for screenshot until Op 6, so that row stays
-## hidden for in-place.
+## then starts screenshot capture. The scene row stays visible for both
+## modes; the format row is visible too, filtered to the backend's supported
+## formats by _get_allowed_formats() (PNG/JPG for screenshot, AVI/OGV/PNG for
+## Movie Maker).
 func _update_backend_visibility() -> void:
 	if _controller == null:
 		return
@@ -446,7 +481,7 @@ func _update_backend_visibility() -> void:
 	if _scene_row != null:
 		_scene_row.visible = true
 	if _format_row != null:
-		_format_row.visible = not in_place
+		_format_row.visible = true
 
 
 ## Handles the "Use Current" button: fills the scene field and refreshes
@@ -638,7 +673,23 @@ func _build_output_path_for_profile(profile: RecordingProfile, output_dir: Strin
 		var ext := GdTMOutputFormat.to_extension(profile.output_format)
 		path = "%s.%s" % [path, ext]
 	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(dir))
+	_ensure_gdignore(dir)
 	return path
+
+
+## Creates an empty .gdignore in the given output dir (if not already present)
+## so Godot skips importing any PNG/JPG frames written there. Handles both
+## res:// and absolute paths.
+func _ensure_gdignore(dir: String) -> void:
+	var abs_dir := ProjectSettings.globalize_path(dir)
+	var gdignore_path := abs_dir.path_join(".gdignore")
+	if FileAccess.file_exists(gdignore_path):
+		return
+	var file := FileAccess.open(gdignore_path, FileAccess.WRITE)
+	if file == null:
+		push_warning("GdTimeMachine: could not create .gdignore in %s" % abs_dir)
+		return
+	file.close()
 
 
 ## Builds the full output file path (back-compat): dir + scene + timestamp.

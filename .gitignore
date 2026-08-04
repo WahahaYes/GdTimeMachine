@@ -38,5 +38,6 @@ __pycache__/
 # GdTimeMachine local state (per-scene recording profiles, etc.)
 addons/GdTimeMachine/config/state/*.cfg
 
-# Captures
-media/captures/
+# Captures (keep .gdignore so Godot doesn't import PNG/JPG frames)
+media/captures/*
+!media/captures/.gdignore

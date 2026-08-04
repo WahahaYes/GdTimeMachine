@@ -408,16 +408,22 @@ func test_uncheck_untitled_scene_does_not_clear() -> void:
 # --- IN_PLACE backend behavior (Op 5 screenshot backend) ---
 
 
-func test_in_place_backend_hides_scene_and_format_rows() -> void:
-	# Scene row is now always visible (IN_PLACE launches scene when idle, then
-	# captures in place). Format row stays hidden pre-Op-6 (PNG-only).
+func test_in_place_backend_shows_format_row_with_png_jpg() -> void:
+	# The format row is visible for the screenshot backend and only offers
+	# PNG/JPG — Movie Maker's AVI/OGV would be meaningless for frame output.
 	var store := FakeStore.new()
 	var ctx := _build_dock_with_mode(
 		store, "res://scenes/a.tscn", RecorderBackend.CaptureMode.IN_PLACE
 	)
 	var dock := ctx["dock"] as TimeMachineDock
 	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow").visible)
-	assert_false(dock.get_node("Split/RightColumn/SettingsGroup/FormatRow").visible)
+	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/FormatRow").visible)
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	assert_eq(option.item_count, 2)
+	assert_eq(option.get_item_text(0), "PNG sequence (.png)")
+	assert_eq(option.get_item_text(1), "JPG sequence (.jpg)")
 
 
 func test_restart_backend_shows_scene_and_format_rows() -> void:
@@ -426,6 +432,21 @@ func test_restart_backend_shows_scene_and_format_rows() -> void:
 	var dock := ctx["dock"] as TimeMachineDock
 	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow").visible)
 	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/FormatRow").visible)
+
+
+func test_restart_backend_format_row_offers_avi_ogv_png() -> void:
+	# Movie Maker drives the engine writer, which only handles AVI/OGV/PNG —
+	# JPG must not appear in its format dropdown.
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	assert_eq(option.item_count, 3)
+	assert_eq(option.get_item_text(0), "AVI (.avi)")
+	assert_eq(option.get_item_text(1), "OGV (.ogv)")
+	assert_eq(option.get_item_text(2), "PNG sequence (.png)")
 
 
 func test_in_place_output_path_has_no_extension() -> void:
