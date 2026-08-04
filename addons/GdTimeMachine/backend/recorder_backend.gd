@@ -95,3 +95,8 @@ signal recording_error(backend_name: String, error_message: String)
 ## the message summarizes a finished capture, so the notice is the final
 ## status line. Consumers that re-emit this signal must forward it verbatim.
 signal recording_notice(backend_name: String, message: String)
+
+## Emitted when ffmpeg auto-conversion succeeds; carries the backend name and
+## the converted clip path. Dock shows the converted path; the frames dir may
+## be cleaned per the backend's policy.
+signal recording_converted(backend_name: String, clip_path: String)

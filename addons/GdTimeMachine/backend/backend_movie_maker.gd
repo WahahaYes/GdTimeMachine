@@ -37,7 +37,9 @@ var _pending_start := false
 ## the grace timer.
 var _stopping := false
 
-## Where the recording is written; resolved to DEFAULT_OUTPUT_PATH when unset.
+## Where the engine actually writes; for tier-2 targets this is the AVI
+## intermediate. For native targets it's the final path. Consumers observe it
+## via recording_stopped; converted targets are signaled separately.
 var _output_path := ""
 
 ## Recording duration in seconds; 0 = record until stopped manually.
@@ -60,6 +62,24 @@ var _grace_timer: Timer
 
 ## Injected by plugin.gd; used to send the graceful-stop request to the game.
 var _debugger_plugin: Object = null
+
+## ffmpeg converter for tier-2 MP4/WebM targets — created lazily.
+var _ffmpeg_converter: GdTMFFmpegConvert = null
+
+## Target output extension/format from build_config(): e.g. "avi" vs "mp4".
+## Stored so _finalize_stopped can decide whether to transcode.
+var _target_output_format: String = ""
+
+## Final desired path when tier-2 conversion is active (mp4/webm).
+## _output_path always points to what the engine writers actually wrote
+## (avi intermediate for tier-2, native path otherwise).
+var _final_output_path: String = ""
+
+## Absolute/ res path to the engine intermediate file that ffmpeg reads.
+var _intermediate_path: String = ""
+
+## Whether to auto-convert AVI→MP4 via ffmpeg when target is MP4/WEBM.
+var _auto_convert_enabled: bool = true
 
 
 ## Human-readable backend name shown in the UI.
@@ -91,7 +111,9 @@ func get_capture_mode() -> CaptureMode:
 
 ## Begins a recording: captures previous ProjectSettings, configures Movie Maker
 ## settings without persisting to disk, enables Movie Maker, starts the poll
-## and duration timer, then launches the scene.
+## and duration timer, then launches the scene. When the target format is a
+## tier-2 type (MP4/WebM) the engine still writes AVI as intermediate; final
+## transcoding happens in _finalize_stopped().
 func start(config: Dictionary) -> void:
 	if _active:
 		push_warning("Backend '%s' is already recording" % get_backend_name())
@@ -99,10 +121,26 @@ func start(config: Dictionary) -> void:
 	_active = true
 	_pending_start = true
 	_stopping = false
-	_output_path = str(config.get("output_path", ""))
-	if _output_path.is_empty():
-		_output_path = DEFAULT_OUTPUT_PATH
+	var raw_path := str(config.get("output_path", ""))
+	if raw_path.is_empty():
+		raw_path = DEFAULT_OUTPUT_PATH
 	_duration = float(config.get("duration", 0.0))
+	_target_output_format = str(config.get("output_format", "")).to_lower()
+	_auto_convert_enabled = _get_auto_convert_setting(config)
+	_output_path = raw_path
+	_final_output_path = raw_path
+	_intermediate_path = raw_path
+	var fmt := GdTMOutputFormat.from_string(_target_output_format)
+	if GdTMOutputFormat.is_tier2_format(fmt):
+		# Final is mp4/webm as requested; engine intermediate is avi beside it.
+		var base := raw_path
+		var ext := base.get_extension().to_lower()
+		if ext in ["mp4", "webm"]:
+			base = base.substr(0, base.length() - ext.length() - 1)
+		_intermediate_path = "%s.avi" % base
+		# _output_path stays as engine intermediate for recording_stopped compat,
+		# but _final_output_path is the ultimate target handed over after conversion.
+		_output_path = _intermediate_path
 	var fps: int = int(config.get("fps", 0))
 	_prev_movie_file = _get_movie_file()
 	_prev_fps = _get_movie_fps()
@@ -197,6 +235,7 @@ func _on_grace_timeout() -> void:
 
 ## Ends the session and emits recording_stopped exactly once: restores
 ## previous ProjectSettings, disables Movie Maker and stops all timers.
+## For tier-2 targets (MP4/WebM) triggers async ffmpeg conversion after stopped.
 func _finalize_stopped() -> void:
 	# Single-emission guard: after the first finalize both flags are false, so
 	# any later call (idle poll, grace timer, explicit stop) is a no-op.
@@ -211,6 +250,10 @@ func _finalize_stopped() -> void:
 	recording_stopped.emit(get_backend_name(), _output_path)
 	_set_movie_maker_enabled(false)
 	_restore_settings()
+	# Tier-2: AVI just finalized, now transcode to MP4/WebM if requested.
+	var fmt := GdTMOutputFormat.from_string(_target_output_format)
+	if _auto_convert_enabled and GdTMOutputFormat.is_tier2_format(fmt):
+		_trigger_ffmpeg_convert()
 
 
 # --- Settings snapshot/restore (no ProjectSettings.save()) -------------------
@@ -311,6 +354,70 @@ func _send_graceful_stop_message() -> void:
 ## Returns the grace period; overridable so tests can shorten the window.
 func _get_grace_period() -> float:
 	return GRACE_PERIOD
+
+
+# --- ffmpeg tier-2 conversion (Op6) ------------------------------------------
+
+
+func _get_auto_convert_setting(config: Dictionary) -> bool:
+	if config.has("auto_convert"):
+		return bool(config["auto_convert"])
+	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
+		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
+	if Engine.has_singleton("EditorSettings"):
+		var es: Object = Engine.get_singleton("EditorSettings")
+		if es != null and es.has_method("get_setting"):
+			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
+			if v != null:
+				return bool(v)
+	return true
+
+
+func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+	return GdTMFFmpegConvert.new()
+
+
+func _ensure_ffmpeg_converter() -> void:
+	if _ffmpeg_converter != null:
+		return
+	_ffmpeg_converter = _create_ffmpeg_converter()
+	if is_inside_tree():
+		add_child(_ffmpeg_converter)
+	_ffmpeg_converter.conversion_succeeded.connect(_on_ffmpeg_convert_succeeded)
+	_ffmpeg_converter.conversion_failed.connect(_on_ffmpeg_convert_failed)
+	_ffmpeg_converter.ffmpeg_not_found.connect(_on_ffmpeg_not_found)
+
+
+func _trigger_ffmpeg_convert() -> void:
+	_ensure_ffmpeg_converter()
+	recording_notice.emit(
+		get_backend_name(), "Converting to %s…" % _target_output_format.to_lower()
+	)
+	_ffmpeg_converter.convert_file_async(_intermediate_path, _final_output_path, false)
+
+
+func _on_ffmpeg_convert_succeeded(clip_path: String) -> void:
+	recording_converted.emit(get_backend_name(), clip_path)
+	recording_notice.emit(
+		get_backend_name(),
+		"Converted to %s" % clip_path.get_file() if not clip_path.is_empty() else "Converted"
+	)
+
+
+func _on_ffmpeg_not_found(message: String) -> void:
+	recording_notice.emit(get_backend_name(), message)
+
+
+func _on_ffmpeg_convert_failed(error_message: String, stderr_tail: String) -> void:
+	var detail := error_message
+	if not stderr_tail.is_empty():
+		detail = "%s\n%s" % [error_message, stderr_tail]
+	recording_error.emit(get_backend_name(), detail)
+
+
+func _exit_tree() -> void:
+	if _ffmpeg_converter != null:
+		_ffmpeg_converter.wait_for_completion()
 
 
 # --- Timer plumbing ----------------------------------------------------------

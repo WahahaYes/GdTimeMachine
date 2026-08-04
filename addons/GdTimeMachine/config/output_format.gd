@@ -11,6 +11,8 @@ enum Format {
 	OGV,  ## .ogv — Theora+Vorbis. Smaller, editor binaries only.
 	PNG,  ## .png — PNG sequence + WAV. Lossless master for external encode.
 	JPG,  ## .jpg — JPG sequence. Compact lossy frames (screenshot backend).
+	MP4,  ## .mp4 — H.264 via ffmpeg tier-2. No native engine writer.
+	WEBM,  ## .webm — VP9 via ffmpeg tier-2.
 }
 
 ## Default format. Kept as AVI so existing users see no behavior change.
@@ -28,7 +30,30 @@ static func to_extension(format: Format) -> String:
 			return "png"
 		Format.JPG:
 			return "jpg"
+		Format.MP4:
+			return "mp4"
+		Format.WEBM:
+			return "webm"
 	return "avi"
+
+
+## Whether a format requires ffmpeg conversion (tier-2).
+static func is_tier2_format(format: Format) -> bool:
+	return format == Format.MP4 or format == Format.WEBM
+
+
+## Whether a format is a native screenshot frames source (PNG/JPG stored
+## in .frames/). Encoding to tier-1 container targets (AVI/OGV) also requires
+## ffmpeg when coming from screenshots.
+static func is_frames_source_format(format: Format) -> bool:
+	return format == Format.PNG or format == Format.JPG
+
+
+## Whether capturing into the given format as final output needs ffmpeg when
+## the backend's native artifact is a frames directory (screenshot backend).
+## PNG/JPG are native frames (no-op), everything else requires ffmpeg.
+static func frames_need_ffmpeg(format: Format) -> bool:
+	return format != Format.PNG and format != Format.JPG
 
 
 ## Human-readable label for the dock dropdown.
@@ -42,10 +67,14 @@ static func display_name(format: Format) -> String:
 			return "PNG sequence (.png)"
 		Format.JPG:
 			return "JPG sequence (.jpg)"
+		Format.MP4:
+			return "MP4 (.mp4) - ffmpeg"
+		Format.WEBM:
+			return "WebM (.webm) - ffmpeg"
 	return "AVI (.avi)"
 
 
-## Parses a stored string ("avi", "ogv", "png", "jpg"/"jpeg", or full
+## Parses a stored string ("avi", "ogv", "png", "jpg"/"jpeg", mp4, webm or full
 ## display name) into a Format. Unknown values fall back to DEFAULT.
 static func from_string(s: String) -> Format:
 	var t := s.strip_edges().to_lower()
@@ -64,13 +93,17 @@ static func from_string(s: String) -> Format:
 		or t.begins_with("jpeg")
 	):
 		return Format.JPG
+	if t in ["mp4", "mp4 (.mp4)"] or t.begins_with("mp4"):
+		return Format.MP4
+	if t in ["webm", "webm (.webm)"] or t.begins_with("webm"):
+		return Format.WEBM
 	return DEFAULT
 
 
 ## All format values in dropdown order. The dock filters this per-backend
 ## (Movie Maker offers AVI/OGV/PNG; the screenshot backend offers PNG/JPG).
 static func all_formats() -> Array:
-	return [Format.AVI, Format.OGV, Format.PNG, Format.JPG]
+	return [Format.AVI, Format.OGV, Format.PNG, Format.JPG, Format.MP4, Format.WEBM]
 
 
 ## Whether this format has known size limits that warrant a warning.
@@ -84,4 +117,6 @@ static func warning_text(format: Format) -> String:
 		return "AVI is capped at 4 GB — long or high-res recordings may hit the cap."
 	if format == Format.OGV:
 		return "OGV uses Theora+Vorbis and is only available in editor binaries."
+	if format == Format.MP4 or format == Format.WEBM:
+		return "Requires ffmpeg on PATH (or set gd_time_machine/ffmpeg/path)."
 	return ""

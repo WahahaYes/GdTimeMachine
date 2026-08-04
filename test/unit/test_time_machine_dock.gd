@@ -409,8 +409,8 @@ func test_uncheck_untitled_scene_does_not_clear() -> void:
 
 
 func test_in_place_backend_shows_format_row_with_png_jpg() -> void:
-	# The format row is visible for the screenshot backend and only offers
-	# PNG/JPG — Movie Maker's AVI/OGV would be meaningless for frame output.
+	# The format row is visible for the screenshot backend and now offers PNG/JPG + tier-2
+	# MP4/WebM/AVI/OGV (via ffmpeg). Old test counted 2, now counts more but PNG/JPG must stay first.
 	var store := FakeStore.new()
 	var ctx := _build_dock_with_mode(
 		store, "res://scenes/a.tscn", RecorderBackend.CaptureMode.IN_PLACE
@@ -421,9 +421,16 @@ func test_in_place_backend_shows_format_row_with_png_jpg() -> void:
 	var option: OptionButton = dock.get_node(
 		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
 	)
-	assert_eq(option.item_count, 2)
+	assert_true(option.item_count >= 2)
+	# First two remain PNG/JPG per _get_allowed_formats order.
 	assert_eq(option.get_item_text(0), "PNG sequence (.png)")
 	assert_eq(option.get_item_text(1), "JPG sequence (.jpg)")
+	# MP4 must be present (Op6).
+	var has_mp4 := false
+	for i in option.item_count:
+		if option.get_item_text(i).contains(".mp4"):
+			has_mp4 = true
+	assert_true(has_mp4)
 
 
 func test_restart_backend_shows_scene_and_format_rows() -> void:
@@ -435,18 +442,22 @@ func test_restart_backend_shows_scene_and_format_rows() -> void:
 
 
 func test_restart_backend_format_row_offers_avi_ogv_png() -> void:
-	# Movie Maker drives the engine writer, which only handles AVI/OGV/PNG —
-	# JPG must not appear in its format dropdown.
+	# Movie Maker natively handles AVI/OGV/PNG and via ffmpeg MP4/WebM — total >=3, first three still AVI/OGV/PNG order.
 	var store := FakeStore.new()
 	var ctx := _build_dock(store, "res://scenes/a.tscn")
 	var dock := ctx["dock"] as TimeMachineDock
 	var option: OptionButton = dock.get_node(
 		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
 	)
-	assert_eq(option.item_count, 3)
+	assert_true(option.item_count >= 3)
 	assert_eq(option.get_item_text(0), "AVI (.avi)")
 	assert_eq(option.get_item_text(1), "OGV (.ogv)")
 	assert_eq(option.get_item_text(2), "PNG sequence (.png)")
+	var has_mp4 := false
+	for i in option.item_count:
+		if option.get_item_text(i).contains(".mp4"):
+			has_mp4 = true
+	assert_true(has_mp4)
 
 
 func test_in_place_output_path_has_no_extension() -> void:

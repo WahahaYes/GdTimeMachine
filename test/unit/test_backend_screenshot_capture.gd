@@ -5,6 +5,44 @@ extends GutTest
 # state machine runs fully headlessly. Timers are neutralized — tests drive
 # the _on_*_timeout handlers directly — while every side effect (frame dir,
 # capture claim, request, copy, manifest) is recorded for assertions.
+class FakeFFmpegConverterForScreenshot:
+	extends GdTMFFmpegConvert
+	var probe_result := true
+	var execute_code := 0
+	var execute_output: Array = []
+	var deletes: Array = []
+	var convert_calls: Array = []
+
+	func probe_ffmpeg() -> bool:
+		return probe_result
+
+	func convert_frames_async(
+		frames_dir: String,
+		base_output_path: String,
+		target_format: String,
+		measured_fps: float,
+		frame_ext: String,
+		clean_on_success: bool = true
+	) -> void:
+		convert_calls.append(
+			[frames_dir, base_output_path, target_format, measured_fps, frame_ext, clean_on_success]
+		)
+		# Immediate synchronous "success" path for tests — emit deferred would need idle,
+		# so emit directly.
+		if not probe_result:
+			ffmpeg_not_found.emit("ffmpeg not found — frames kept at %s" % frames_dir)
+			return
+		if execute_code != 0:
+			conversion_failed.emit(
+				"ffmpeg failed (exit %d)" % execute_code, "\n".join(execute_output)
+			)
+			return
+		# Simulate clean
+		if clean_on_success:
+			deletes.append(frames_dir)
+		conversion_succeeded.emit("%s.%s" % [base_output_path, target_format])
+
+
 class FakeScreenshotBackend:
 	extends BackendScreenshotCapture
 	var playing := false
@@ -23,6 +61,7 @@ class FakeScreenshotBackend:
 	var poll_stops := 0
 	var played_scenes: Array = []
 	var next_dims := {"width": 1280, "height": 720}
+	var injected_converter: FakeFFmpegConverterForScreenshot = null
 
 	func _is_playing_scene() -> bool:
 		return playing
@@ -84,6 +123,22 @@ class FakeScreenshotBackend:
 
 	func _stop_no_reply_timer() -> void:
 		pass
+
+	func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+		if injected_converter != null:
+			return injected_converter
+		injected_converter = FakeFFmpegConverterForScreenshot.new()
+		return injected_converter
+
+	func _get_auto_convert_setting(_config: Dictionary) -> bool:
+		# Force true for tests that need trigger, unless overridden by
+		# config containing auto_convert key — respect that.
+		if _config.has("auto_convert"):
+			return bool(_config["auto_convert"])
+		return true
+
+	func _get_clean_on_success_setting() -> bool:
+		return true
 
 
 ## IN_PLACE output base (no extension — the backend owns the layout).
@@ -538,3 +593,83 @@ func test_stop_while_pending_cancels_and_finalizes() -> void:
 	assert_eq(notices.size(), 1)
 	assert_false(backend.is_recording())
 	assert_eq(backend.poll_stops, 1)
+
+
+func test_ffmpeg_convert_triggered_for_mp4_target() -> void:
+	var backend := _make_backend()
+	var conv := FakeFFmpegConverterForScreenshot.new()
+	backend.injected_converter = conv
+	var started: Array = []
+	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	_start_capture(backend, {"output_format": "mp4"})
+	_receive_frame(backend, 10.0, 0)
+	var converted: Array = []
+	backend.recording_converted.connect(func(name, path): converted.append([name, path]))
+	backend.stop()
+	# finalize should have triggered ffmpeg convert with mp4 target
+	assert_true(conv.convert_calls.size() >= 1)
+	assert_true(str(conv.convert_calls[0][2]).to_lower().contains("mp4"))
+	assert_eq(converted.size(), 1, "fake converter emits converted synchronously")
+
+
+func test_ffmpeg_convert_not_triggered_for_png_target() -> void:
+	var backend := _make_backend()
+	var conv := FakeFFmpegConverterForScreenshot.new()
+	# Not in tree — backend will not own it when no conversion happens, so we must free manually.
+	backend.injected_converter = conv
+	_start_capture(backend, {"output_format": "png"})
+	_receive_frame(backend, 10.0, 0)
+	backend.stop()
+	assert_eq(conv.convert_calls.size(), 0, "PNG native — no convert")
+	if conv.get_parent() == null:
+		conv.free()
+
+
+func test_ffmpeg_not_found_keeps_frames_and_emits_notice() -> void:
+	var backend := _make_backend()
+	var conv := FakeFFmpegConverterForScreenshot.new()
+	conv.probe_result = false
+	backend.injected_converter = conv
+	_start_capture(backend, {"output_format": "mp4"})
+	_receive_frame(backend, 10.0, 0)
+	var notices: Array = []
+	backend.recording_notice.connect(func(name, msg): notices.append([name, msg]))
+	var converted: Array = []
+	backend.recording_converted.connect(func(name, path): converted.append([name, path]))
+	backend.stop()
+	assert_eq(converted.size(), 0)
+	assert_eq(conv.deletes.size(), 0, "frames kept when ffmpeg missing")
+	# notice stream contains ffmpeg not found
+	var found := false
+	for n in notices:
+		if str(n[1]).to_lower().contains("ffmpeg not found"):
+			found = true
+	assert_true(found)
+
+
+func test_ffmpeg_nonzero_keeps_frames_and_emits_error_tail() -> void:
+	var backend := _make_backend()
+	var conv := FakeFFmpegConverterForScreenshot.new()
+	conv.execute_code = 1
+	conv.execute_output = ["frame pattern invalid"]
+	backend.injected_converter = conv
+	_start_capture(backend, {"output_format": "mp4"})
+	_receive_frame(backend, 10.0, 0)
+	var errors: Array = []
+	backend.recording_error.connect(func(name, msg): errors.append([name, msg]))
+	backend.stop()
+	assert_eq(errors.size(), 1)
+	assert_true(str(errors[0][1]).contains("invalid") or str(errors[0][1]).contains("failed"))
+	assert_eq(conv.deletes.size(), 0)
+
+
+func test_auto_convert_off_skips_converter() -> void:
+	var backend := _make_backend()
+	var conv := FakeFFmpegConverterForScreenshot.new()
+	backend.injected_converter = conv
+	_start_capture(backend, {"output_format": "mp4", "auto_convert": false})
+	_receive_frame(backend, 10.0, 0)
+	backend.stop()
+	assert_eq(conv.convert_calls.size(), 0)
+	if conv.get_parent() == null:
+		conv.free()

@@ -72,6 +72,7 @@ func _enter_tree() -> void:
 	_debugger_plugin = preload("res://addons/GdTimeMachine/editor/debugger_plugin.gd").new()
 	add_debugger_plugin(_debugger_plugin)
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
+	_ensure_editor_settings_defaults()
 	_config_store = CompositeConfigStore.new()
 	_recorder_controller = RecorderController.new()
 	_recorder_controller._debugger_plugin = _debugger_plugin
@@ -385,6 +386,9 @@ func _connect_controller_feedback() -> void:
 		_recorder_controller.recording_error.connect(_on_feedback_error)
 	if not _recorder_controller.recording_notice.is_connected(_on_feedback_notice):
 		_recorder_controller.recording_notice.connect(_on_feedback_notice)
+	if _recorder_controller.has_signal("recording_converted"):
+		if not _recorder_controller.recording_converted.is_connected(_on_feedback_converted):
+			_recorder_controller.recording_converted.connect(_on_feedback_converted)
 
 
 func _disconnect_controller_feedback() -> void:
@@ -398,6 +402,59 @@ func _disconnect_controller_feedback() -> void:
 		_recorder_controller.recording_error.disconnect(_on_feedback_error)
 	if _recorder_controller.recording_notice.is_connected(_on_feedback_notice):
 		_recorder_controller.recording_notice.disconnect(_on_feedback_notice)
+	if _recorder_controller.has_signal("recording_converted"):
+		if _recorder_controller.recording_converted.is_connected(_on_feedback_converted):
+			_recorder_controller.recording_converted.disconnect(_on_feedback_converted)
+
+
+## Registers EditorSettings defaults for ffmpeg (path, auto_convert, clean_frames)
+## so the settings appear in Project > Editor Settings. Safe to call repeatedly.
+func _ensure_editor_settings_defaults() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var es: Object = EditorInterface.get_editor_settings()
+	if es == null:
+		return
+	if es.has_method("has_setting") and es.has_method("set_setting"):
+		# Only set when absent — don't overwrite user's existing preference.
+		if not es.has_setting("gd_time_machine/ffmpeg/path"):
+			es.set_setting("gd_time_machine/ffmpeg/path", "")
+			# Add property info so it shows up with hint in EditorSettings UI.
+			if es.has_method("add_property_info"):
+				(
+					es
+					. add_property_info(
+						{
+							"name": "gd_time_machine/ffmpeg/path",
+							"type": TYPE_STRING,
+							"hint": PROPERTY_HINT_GLOBAL_FILE,
+						}
+					)
+				)
+		if not es.has_setting("gd_time_machine/ffmpeg/auto_convert"):
+			es.set_setting("gd_time_machine/ffmpeg/auto_convert", true)
+			if es.has_method("add_property_info"):
+				(
+					es
+					. add_property_info(
+						{
+							"name": "gd_time_machine/ffmpeg/auto_convert",
+							"type": TYPE_BOOL,
+						}
+					)
+				)
+		if not es.has_setting("gd_time_machine/ffmpeg/clean_frames"):
+			es.set_setting("gd_time_machine/ffmpeg/clean_frames", true)
+			if es.has_method("add_property_info"):
+				(
+					es
+					. add_property_info(
+						{
+							"name": "gd_time_machine/ffmpeg/clean_frames",
+							"type": TYPE_BOOL,
+						}
+					)
+				)
 
 
 func _on_feedback_started(backend_name: String, output_path: String) -> void:
@@ -417,6 +474,10 @@ func _on_feedback_notice(backend_name: String, message: String) -> void:
 	# Notice is info-level (stats / hints) — print, not warning, so it
 	# doesn't spam the Errors panel. Mirrors the dock status line.
 	print("[GdTM] %s: %s" % [backend_name, message])
+
+
+func _on_feedback_converted(backend_name: String, clip_path: String) -> void:
+	print("[GdTM] %s converted → %s" % [backend_name, clip_path])
 
 
 ## EditorPlugin.scene_changed handler: forwards the newly active scene root's

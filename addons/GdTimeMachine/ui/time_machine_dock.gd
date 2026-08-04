@@ -190,7 +190,7 @@ func _apply_setup() -> void:
 	$Split/RightColumn/SettingsGroup/OutputRow.tooltip_text = _output_edit.tooltip_text
 	$Split/RightColumn/SettingsGroup/FormatRow.tooltip_text = (
 		"Output format. AVI has a 4 GB cap, OGV is smaller, PNG is a lossless "
-		+ "sequence, JPG is a compact lossy sequence."
+		+ "sequence, JPG is a compact lossy sequence. MP4/WebM require ffmpeg."
 	)
 	_format_option.tooltip_text = "Output format for recordings."
 	_format_warning_label.tooltip_text = "Format-specific notice."
@@ -205,6 +205,8 @@ func _apply_setup() -> void:
 	_controller.recording_stopped.connect(_on_recording_stopped)
 	_controller.recording_error.connect(_on_recording_error)
 	_controller.recording_notice.connect(_on_recording_notice)
+	if _controller.has_signal("recording_converted"):
+		_controller.recording_converted.connect(_on_recording_converted)
 	_populate_backends()
 	_populate_formats()
 	_load_settings()
@@ -234,16 +236,29 @@ func _populate_backends() -> void:
 	)
 
 
-## Formats the active backend actually supports: the screenshot (IN_PLACE)
-## backend owns the frames layout and writes PNG or JPG frames; Movie Maker
-## (RESTART_SCENE) drives the engine writer, which only handles AVI/OGV/PNG.
+## Formats the active backend actually supports: screenshot (IN_PLACE) natively
+## writes PNG/JPG frames but can convert to any container via ffmpeg; Movie Maker
+## natively writes AVI/OGV/PNG and needs ffmpeg for MP4/WebM.
 func _get_allowed_formats() -> Array:
 	if (
 		_controller != null
 		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
 	):
-		return [GdTMOutputFormat.Format.PNG, GdTMOutputFormat.Format.JPG]
-	return [GdTMOutputFormat.Format.AVI, GdTMOutputFormat.Format.OGV, GdTMOutputFormat.Format.PNG]
+		return [
+			GdTMOutputFormat.Format.PNG,
+			GdTMOutputFormat.Format.JPG,
+			GdTMOutputFormat.Format.MP4,
+			GdTMOutputFormat.Format.WEBM,
+			GdTMOutputFormat.Format.AVI,
+			GdTMOutputFormat.Format.OGV,
+		]
+	return [
+		GdTMOutputFormat.Format.AVI,
+		GdTMOutputFormat.Format.OGV,
+		GdTMOutputFormat.Format.PNG,
+		GdTMOutputFormat.Format.MP4,
+		GdTMOutputFormat.Format.WEBM,
+	]
 
 
 ## Fills the format dropdown from the formats the active backend supports.
@@ -707,7 +722,29 @@ func _on_recording_started(_backend_name: String, output_path: String) -> void:
 ## Updates the UI when a recording stops (button → Record, idle status).
 func _on_recording_stopped(_backend_name: String, output_path: String) -> void:
 	_set_recording_ui(false)
-	_set_status("Saved %s" % output_path.get_file(), COLOR_IDLE)
+	# If MP4/WebM conversion is expected (any backend that writes via ffmpeg tier-2),
+	# show Converting… until converted. Heuristic: when output is still AVI but
+	# selected format is MP4/WebM, or when backend is screenshot with non-native
+	# format.
+	if _expects_conversion():
+		_set_status(
+			"Converting to %s…" % GdTMOutputFormat.to_extension(_get_selected_format()), COLOR_IDLE
+		)
+	else:
+		_set_status("Saved %s" % output_path.get_file(), COLOR_IDLE)
+
+
+## Whether the current selected format requires ffmpeg conversion given the capture mode.
+func _expects_conversion() -> bool:
+	var fmt := _get_selected_format()
+	# IN_PLACE: PNG/JPG are native frames, rest need ffmpeg.
+	if (
+		_controller != null
+		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
+	):
+		return GdTMOutputFormat.frames_need_ffmpeg(fmt)
+	# RESTART: only MP4/WEBM need ffmpeg (AVI/OGV/PNG native via engine).
+	return GdTMOutputFormat.is_tier2_format(fmt)
 
 
 ## Updates the UI when a recording errors (button → Record, error status).
@@ -718,9 +755,20 @@ func _on_recording_error(_backend_name: String, message: String) -> void:
 
 ## Shows an info-level message from the active backend (capture statistics, a
 ## zero/low-frame hint, …) in the status line. The backend composes the
-## message; this handler only prints it.
+## message; this handler only prints it. Converting… status is preserved when
+## appropriate by _on_recording_stopped's heuristic; after conversion finishes
+## the converted handler takes over.
 func _on_recording_notice(_backend_name: String, message: String) -> void:
+	# If message is "Converting…" from backend itself, respect it.
+	if "Converting" in message:
+		_set_status(message, COLOR_IDLE)
+		return
 	_set_status(message, COLOR_IDLE)
+
+
+func _on_recording_converted(_backend_name: String, clip_path: String) -> void:
+	_set_recording_ui(false)
+	_set_status("Saved %s" % clip_path.get_file(), COLOR_IDLE)
 
 
 ## Switches the record button between Record/Stop look and disables config.

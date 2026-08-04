@@ -116,6 +116,18 @@ var _duration_timer: Timer
 ## One-shot timer that finalizes when no reply arrives within the timeout.
 var _no_reply_timer: Timer
 
+## ffmpeg converter (tier-2) — created lazily, owned as child for lifecycle.
+var _ffmpeg_converter: GdTMFFmpegConvert = null
+
+## Target format string (extension) from the start() config for ffmpeg conversion.
+var _target_output_format: String = ""
+
+## Base output path without .frames suffix, used to build final clip path.
+var _base_output_path: String = ""
+
+## Whether auto-convert is enabled (from EditorSettings toggle).
+var _auto_convert_enabled: bool = true
+
 
 ## Human-readable backend name shown in the UI.
 func get_backend_name() -> String:
@@ -163,9 +175,16 @@ func start(config: Dictionary) -> void:
 	_duration = float(config.get("duration", 0.0))
 	_target_fps = int(config.get("fps", 0))
 	# The engine always delivers PNGs; "jpg"/"jpeg" requests a lossy re-encode
-	# on receipt, anything else stays PNG.
+	# on receipt, anything else stays PNG. For ffmpeg convert the target is the
+	# user-selected output format (mp4/webm/avi/ogv/png/jpg) — native png/jpg
+	# keeps frames as-is, others go through ffmpeg.
 	var out_format := str(config.get("output_format", "png")).to_lower()
 	_image_format = "jpg" if ("jpg" in out_format or "jpeg" in out_format) else "png"
+	_target_output_format = out_format
+	_base_output_path = _output_path
+	# _output_path is the base without extension for IN_PLACE; frames dir is base.frames.
+	# Auto-convert toggle from EditorSettings or config override.
+	_auto_convert_enabled = _get_auto_convert_setting(config)
 	_active = true
 	_stopping = false
 	_pending_start = false
@@ -343,7 +362,8 @@ func _send_next_request() -> void:
 ## Ends the session and emits recording_stopped exactly once, then the
 ## summary notice: releases the game_view capture, disconnects the plugin,
 ## stops all timers, writes the manifest, and composes the dock message
-## (stats, or the zero/low-frame hint).
+## (stats, or the zero/low-frame hint). When the output format requires ffmpeg
+## (mp4/webm/avi/ogv from frames) and auto-convert is on, triggers async conversion.
 func _finalize_stopped() -> void:
 	if not _active and not _stopping:
 		return
@@ -359,6 +379,9 @@ func _finalize_stopped() -> void:
 	_write_manifest()
 	recording_stopped.emit(get_backend_name(), _output_path)
 	_emit_summary_notice()
+	# After stats: if target requires ffmpeg and frames exist, kick off conversion.
+	if _auto_convert_enabled and _frame_count > 0 and _needs_ffmpeg_convert():
+		_trigger_ffmpeg_convert()
 
 
 ## Writes manifest.json (frame count, measured/target fps, elapsed, size)
@@ -662,3 +685,109 @@ func _start_polling() -> void:
 func _stop_polling() -> void:
 	if _poll_timer:
 		_poll_timer.stop()
+
+
+# --- ffmpeg tier-2 conversion (Op6) ------------------------------------------
+
+
+## Reads auto-convert toggle: config override wins, otherwise EditorSettings
+## gd_time_machine/ffmpeg/auto_convert, otherwise ProjectSettings same key,
+## default true.
+func _get_auto_convert_setting(config: Dictionary) -> bool:
+	if config.has("auto_convert"):
+		return bool(config["auto_convert"])
+	if Engine.has_singleton("EditorSettings"):
+		var es: Object = Engine.get_singleton("EditorSettings")
+		if es != null and es.has_method("get_setting"):
+			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
+			if v != null:
+				return bool(v)
+	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
+		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
+	return true
+
+
+## Whether frames should be deleted after successful convert. Config key
+## clean_frames or EditorSettings gd_time_machine/ffmpeg/clean_frames.
+func _get_clean_on_success_setting() -> bool:
+	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/clean_frames"):
+		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/clean_frames"))
+	if Engine.has_singleton("EditorSettings"):
+		var es: Object = Engine.get_singleton("EditorSettings")
+		if es != null and es.has_method("get_setting"):
+			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/clean_frames")
+			if v != null:
+				return bool(v)
+	return true
+
+
+## Whether the current target format requires ffmpeg (from frames).
+func _needs_ffmpeg_convert() -> bool:
+	if _target_output_format.is_empty():
+		return false
+	var fmt := GdTMOutputFormat.from_string(_target_output_format)
+	return GdTMOutputFormat.frames_need_ffmpeg(fmt)
+
+
+## Factory seam — overridden in tests to inject a fake converter.
+func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+	return GdTMFFmpegConvert.new()
+
+
+## Ensures the converter child exists and wires its signals.
+func _ensure_ffmpeg_converter() -> void:
+	if _ffmpeg_converter != null:
+		return
+	_ffmpeg_converter = _create_ffmpeg_converter()
+	if is_inside_tree():
+		add_child(_ffmpeg_converter)
+	_ffmpeg_converter.conversion_succeeded.connect(_on_ffmpeg_convert_succeeded)
+	_ffmpeg_converter.conversion_failed.connect(_on_ffmpeg_convert_failed)
+	_ffmpeg_converter.ffmpeg_not_found.connect(_on_ffmpeg_not_found)
+
+
+## Triggers async ffmpeg conversion for the just-finalized frames dir. Seam for
+## tests: FakeScreenshotBackend overrides this to capture intent and emit its
+## own outcomes synchronously.
+func _trigger_ffmpeg_convert() -> void:
+	_ensure_ffmpeg_converter()
+	var stats := _compute_stats()
+	var measured := float(stats.get("measured_fps", 0.0))
+	# "Converting…" feedback for the dock status line.
+	recording_notice.emit(
+		get_backend_name(), "Converting to %s…" % _target_output_format.to_lower()
+	)
+	_ffmpeg_converter.convert_frames_async(
+		_frames_dir,
+		_base_output_path,
+		_target_output_format,
+		measured,
+		_image_format,
+		_get_clean_on_success_setting()
+	)
+
+
+func _on_ffmpeg_convert_succeeded(clip_path: String) -> void:
+	recording_converted.emit(get_backend_name(), clip_path)
+	# Keep the final path visible in status line; notice composes own message.
+	recording_notice.emit(
+		get_backend_name(),
+		"Converted to %s" % clip_path.get_file() if not clip_path.is_empty() else "Converted"
+	)
+
+
+func _on_ffmpeg_not_found(message: String) -> void:
+	recording_notice.emit(get_backend_name(), message)
+
+
+func _on_ffmpeg_convert_failed(error_message: String, stderr_tail: String) -> void:
+	var detail := error_message
+	if not stderr_tail.is_empty():
+		detail = "%s\n%s" % [error_message, stderr_tail]
+	recording_error.emit(get_backend_name(), detail)
+
+
+func _exit_tree() -> void:
+	# Ensure any running ffmpeg thread is reclaimed before this Node is freed.
+	if _ffmpeg_converter != null:
+		_ffmpeg_converter.wait_for_completion()

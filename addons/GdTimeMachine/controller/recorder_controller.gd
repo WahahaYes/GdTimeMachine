@@ -33,6 +33,8 @@ signal recording_error(backend_name: String, error_message: String)
 ## dock status line (forwarded from the backend, e.g. capture statistics or a
 ## zero/low-frame hint).
 signal recording_notice(backend_name: String, message: String)
+## Emitted when ffmpeg auto-conversion succeeds (forwarded from the backend).
+signal recording_converted(backend_name: String, clip_path: String)
 
 
 ## Registers a backend under its own name, connects its signals, reparents it
@@ -160,6 +162,8 @@ func _connect_backend_signals(backend: RecorderBackend) -> void:
 	backend.recording_progress.connect(_on_backend_recording_progress)
 	backend.recording_error.connect(_on_backend_recording_error)
 	backend.recording_notice.connect(_on_backend_recording_notice)
+	if backend.has_signal("recording_converted"):
+		backend.recording_converted.connect(_on_backend_recording_converted)
 
 
 ## Disconnects a backend's signals from this controller's re-emit handlers.
@@ -169,6 +173,9 @@ func _disconnect_backend_signals(backend: RecorderBackend) -> void:
 	backend.recording_progress.disconnect(_on_backend_recording_progress)
 	backend.recording_error.disconnect(_on_backend_recording_error)
 	backend.recording_notice.disconnect(_on_backend_recording_notice)
+	if backend.has_signal("recording_converted"):
+		if backend.recording_converted.is_connected(_on_backend_recording_converted):
+			backend.recording_converted.disconnect(_on_backend_recording_converted)
 
 
 ## Forwards a backend's recording_started as the controller's own signal.
@@ -194,3 +201,8 @@ func _on_backend_recording_error(backend_name: String, error_message: String) ->
 ## Forwards a backend's recording_notice as the controller's own signal.
 func _on_backend_recording_notice(backend_name: String, message: String) -> void:
 	recording_notice.emit(backend_name, message)
+
+
+## Forwards a backend's recording_converted as the controller's own signal.
+func _on_backend_recording_converted(backend_name: String, clip_path: String) -> void:
+	recording_converted.emit(backend_name, clip_path)

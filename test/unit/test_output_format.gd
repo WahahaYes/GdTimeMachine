@@ -6,6 +6,8 @@ func test_output_format_to_extension() -> void:
 	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.OGV), "ogv")
 	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.PNG), "png")
 	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.JPG), "jpg")
+	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.MP4), "mp4")
+	assert_eq(GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.WEBM), "webm")
 
 
 func test_output_format_display_name() -> void:
@@ -14,6 +16,8 @@ func test_output_format_display_name() -> void:
 	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.PNG).contains("PNG"))
 	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.JPG).contains("JPG"))
 	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.JPG).contains(".jpg"))
+	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.MP4).contains("MP4"))
+	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.WEBM).contains("WebM"))
 
 
 func test_output_format_from_string_bare() -> void:
@@ -27,6 +31,11 @@ func test_output_format_from_string_bare() -> void:
 	assert_eq(GdTMOutputFormat.from_string(".png"), GdTMOutputFormat.Format.PNG)
 	assert_eq(GdTMOutputFormat.from_string(".jpg"), GdTMOutputFormat.Format.JPG)
 	assert_eq(GdTMOutputFormat.from_string("jpg sequence"), GdTMOutputFormat.Format.JPG)
+	assert_eq(GdTMOutputFormat.from_string("mp4"), GdTMOutputFormat.Format.MP4)
+	assert_eq(GdTMOutputFormat.from_string(".mp4"), GdTMOutputFormat.Format.MP4)
+	assert_eq(GdTMOutputFormat.from_string("MP4 (.mp4) - ffmpeg"), GdTMOutputFormat.Format.MP4)
+	assert_eq(GdTMOutputFormat.from_string("webm"), GdTMOutputFormat.Format.WEBM)
+	assert_eq(GdTMOutputFormat.from_string("WebM (.webm) - ffmpeg"), GdTMOutputFormat.Format.WEBM)
 
 
 func test_output_format_from_string_case_insensitive() -> void:
@@ -42,11 +51,13 @@ func test_output_format_from_string_unknown_defaults_to_avi() -> void:
 
 func test_output_format_all_formats() -> void:
 	var all := GdTMOutputFormat.all_formats()
-	assert_eq(all.size(), 4)
+	assert_eq(all.size(), 6)
 	assert_true(all.has(GdTMOutputFormat.Format.AVI))
 	assert_true(all.has(GdTMOutputFormat.Format.OGV))
 	assert_true(all.has(GdTMOutputFormat.Format.PNG))
 	assert_true(all.has(GdTMOutputFormat.Format.JPG))
+	assert_true(all.has(GdTMOutputFormat.Format.MP4))
+	assert_true(all.has(GdTMOutputFormat.Format.WEBM))
 
 
 func test_output_format_warning() -> void:
@@ -58,6 +69,8 @@ func test_output_format_warning() -> void:
 	assert_false(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.OGV).is_empty())
 	assert_true(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.PNG).is_empty())
 	assert_true(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.JPG).is_empty())
+	assert_false(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.MP4).is_empty())
+	assert_false(GdTMOutputFormat.warning_text(GdTMOutputFormat.Format.WEBM).is_empty())
 
 
 func test_recording_profile_roundtrip() -> void:

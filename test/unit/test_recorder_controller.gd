@@ -271,6 +271,29 @@ func test_recording_notice_not_routed_after_unregister() -> void:
 		backend.free()
 
 
+func test_recording_converted_routes_through_controller() -> void:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	var received: Array = []
+	controller.recording_converted.connect(func(name, path): received.append([name, path]))
+	backend.recording_converted.emit("Mock", "res://media/captures/x.mp4")
+	assert_eq(received.size(), 1)
+	assert_eq(received[0], ["Mock", "res://media/captures/x.mp4"])
+
+
+func test_recording_converted_not_routed_after_unregister() -> void:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := _make_backend()
+	controller.register_backend(backend)
+	var handler := Callable(controller, "_on_backend_recording_converted")
+	assert_true(backend.is_connected("recording_converted", handler))
+	controller.unregister_backend("Mock")
+	assert_false(backend.is_connected("recording_converted", handler))
+	if is_instance_valid(backend) and backend.get_parent() == null:
+		backend.free()
+
+
 func test_stop_recording_returns_bool_and_stops_backend() -> void:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
 	var backend := _make_backend()
