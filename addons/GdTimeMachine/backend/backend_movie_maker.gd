@@ -81,6 +81,9 @@ var _intermediate_path: String = ""
 ## Whether to auto-convert AVI→MP4 via ffmpeg when target is MP4/WEBM.
 var _auto_convert_enabled: bool = true
 
+## Target FPS from config, preserved for ffmpeg output -r.
+var _target_fps: int = 0
+
 
 ## Human-readable backend name shown in the UI.
 func get_backend_name() -> String:
@@ -127,21 +130,19 @@ func start(config: Dictionary) -> void:
 	_duration = float(config.get("duration", 0.0))
 	_target_output_format = str(config.get("output_format", "")).to_lower()
 	_auto_convert_enabled = _get_auto_convert_setting(config)
+	_target_fps = int(config.get("fps", 0))
 	_output_path = raw_path
 	_final_output_path = raw_path
 	_intermediate_path = raw_path
 	var fmt := GdTMOutputFormat.from_string(_target_output_format)
 	if GdTMOutputFormat.is_tier2_format(fmt):
-		# Final is mp4/webm as requested; engine intermediate is avi beside it.
 		var base := raw_path
 		var ext := base.get_extension().to_lower()
 		if ext in ["mp4", "webm"]:
 			base = base.substr(0, base.length() - ext.length() - 1)
 		_intermediate_path = "%s.avi" % base
-		# _output_path stays as engine intermediate for recording_stopped compat,
-		# but _final_output_path is the ultimate target handed over after conversion.
 		_output_path = _intermediate_path
-	var fps: int = int(config.get("fps", 0))
+	var fps: int = _target_fps
 	_prev_movie_file = _get_movie_file()
 	_prev_fps = _get_movie_fps()
 	_set_movie_file(_output_path)
@@ -149,6 +150,13 @@ func start(config: Dictionary) -> void:
 		_set_movie_fps(fps)
 	_set_movie_maker_enabled(true)
 	_start_polling()
+	# Don't start duration timer yet for RESTART_SCENE — it should measure
+	# actual recording time, not launch overhead. Timer starts when poll sees
+	# playback begin (see _on_poll_timeout). If scene never starts, the
+	# duration expiry still needs to fire, so we arm a separate pending watchdog
+	# that treats lack of start as error (same as before, but via same timer).
+	# Simplest: start timer now for pending detection, but restart it on
+	# recording start so footage duration matches user request.
 	if _duration > 0.0:
 		_start_duration_timer()
 	_play_scene(str(config.get("scene_path", "")))
@@ -176,12 +184,13 @@ func stop() -> void:
 
 ## Poll tick: while stopping, waits for the scene to exit; otherwise detects
 ## playback start (emitting recording_started) or a natural scene exit
-## (finalizing the recording).
+## (finalizing the recording). Duration timer is restarted when playback
+## actually begins so the requested duration measures footage, not launch
+## overhead (5s request was giving 2.5s file when scene took ~2.5s to start).
 func _on_poll_timeout() -> void:
 	if not _active:
 		return
 	if _stopping:
-		# Graceful stop: waiting for the game to exit on its own.
 		if not _is_playing_scene():
 			_finalize_stopped()
 		return
@@ -189,8 +198,10 @@ func _on_poll_timeout() -> void:
 		if _pending_start:
 			_pending_start = false
 			recording_started.emit(get_backend_name(), _output_path)
+			if _duration > 0.0:
+				# Restart so duration counts from first rendered frame.
+				_start_duration_timer()
 	else:
-		# Playback ended without an explicit stop (natural scene exit).
 		_finalize_stopped()
 
 
@@ -393,7 +404,7 @@ func _trigger_ffmpeg_convert() -> void:
 	recording_notice.emit(
 		get_backend_name(), "Converting to %s…" % _target_output_format.to_lower()
 	)
-	_ffmpeg_converter.convert_file_async(_intermediate_path, _final_output_path, false)
+	_ffmpeg_converter.convert_file_async(_intermediate_path, _final_output_path, false, _target_fps)
 
 
 func _on_ffmpeg_convert_succeeded(clip_path: String) -> void:

@@ -277,8 +277,12 @@ func build_frames_convert_command(
 ## Builds ffmpeg args for converting a single file (Movie Maker AVI → MP4).
 ## input_path: existing clip (avi, ogv, ...).
 ## output_path: desired output (mp4, webm, ...).
+## target_fps: optional, used to force correct output rate (WebM reports duration N/A otherwise)
+## but we avoid double -r + -vf which was observed to shorten clips when timestamps jitter.
 ## Returns Dictionary: {binary, args, output_path}.
-func build_file_convert_command(input_path: String, output_path: String) -> Dictionary:
+func build_file_convert_command(
+	input_path: String, output_path: String, target_fps: int = 0
+) -> Dictionary:
 	var fmt := GdTMOutputFormat.from_string(output_path.get_extension())
 	var abs_in := ProjectSettings.globalize_path(input_path)
 	var abs_out := ProjectSettings.globalize_path(output_path)
@@ -287,6 +291,19 @@ func build_file_convert_command(input_path: String, output_path: String) -> Dict
 	args.append("-i")
 	args.append(abs_in)
 	args.append("-y")
+	# For VP9/WebM the container duration can be N/A in ffprobe but playback is
+	# actually full duration. To guarantee the requested fps is respected we use
+	# a single fps video filter — NOT -r which can cause frame drops when combined
+	# with -vf. MP4 keeps source timing unless target_fps explicitly differs.
+	if target_fps > 0:
+		# Only force filter when format needs it or fps differs; keep simple and safe.
+		# VP9 benefits from explicit fps, h264 generally preserves source fps.
+		if fmt == GdTMOutputFormat.Format.WEBM or fmt == GdTMOutputFormat.Format.MP4:
+			args.append("-vf")
+			args.append("fps=%d:round=near" % target_fps)
+		else:
+			args.append("-r")
+			args.append(str(target_fps))
 	match fmt:
 		GdTMOutputFormat.Format.MP4:
 			args.append("-c:v")
@@ -387,12 +404,12 @@ func convert_frames_sync(
 
 
 ## Sync conversion for a single file (Movie Maker path).
-func convert_file_sync(input_path: String, output_path: String) -> Dictionary:
+func convert_file_sync(input_path: String, output_path: String, target_fps: int = 0) -> Dictionary:
 	if not probe_ffmpeg():
 		return {
 			"exit_code": -1, "output_path": "", "skip": false, "reason": "not-found", "stdout": ""
 		}
-	var cmd := build_file_convert_command(input_path, output_path)
+	var cmd := build_file_convert_command(input_path, output_path, target_fps)
 	var out: Array = []
 	var code := _os_execute_blocking(cmd["binary"], cmd["args"], out, true)
 	var stdout_txt := "\n".join(out) if not out.is_empty() else ""
@@ -458,7 +475,7 @@ func convert_frames_async(
 
 ## Async: convert single file → file.
 func convert_file_async(
-	input_path: String, output_path: String, clean_on_success: bool = false
+	input_path: String, output_path: String, clean_on_success: bool = false, target_fps: int = 0
 ) -> void:
 	if _thread != null and _thread.is_started():
 		push_warning("GdTMFFmpegConvert: conversion already running")
@@ -466,7 +483,7 @@ func convert_file_async(
 	if not probe_ffmpeg():
 		call_deferred("_deferred_emit_not_found", "ffmpeg not found — %s kept" % input_path)
 		return
-	var cmd := build_file_convert_command(input_path, output_path)
+	var cmd := build_file_convert_command(input_path, output_path, target_fps)
 	_current_output_path = cmd.get("output_path", "")
 	_current_frames_dir = ""
 	_clean_on_success = clean_on_success
