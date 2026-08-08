@@ -30,7 +30,7 @@ Result: **178/178 GUT green**, editor no longer tries to import captures.
 
 From `SESSION_PLAN_engine_native_recording.md`:
 
-- **Op6 #4a ffmpeg auto-convert** — the tier-2 hook (BRAINSTORM_tier2_ffmpeg_exports). Design exists fully in that file + `BRAINSTORM_tier2_ffmpeg_exports.md`. Not built. This is what stitches `*.frames/` into video.
+- ~~**Op6 #4a ffmpeg auto-convert**~~ — **SHIPPED 2026-08-03** (commits `8b20815`, `47b2c5a`) after this doc was written. `backend/ffmpeg_convert.gd` tier-2 hook (probe, Thread+`OS.execute`, MP4/WebM/AVI/OGV codec map, measured-fps `-framerate`), both backends wired, dock "Converting…", `gd_time_machine/ffmpeg/*` settings, MP4/WebM in the dropdown. 199/199 GUT green; verified end-to-end (in-editor AVI→MP4/WebM artifacts + headless screenshot frames→video smoke test against real capture data). **Next-chunk recommendation in this doc is superseded — see `SESSION_PLAN` Op 6 section.**
 - **Op7 nice-to-haves** — shortcut, status-bar elapsed, tooltip semantics per backend.
 
 From `IMPLEMENTATION_PLAN.md` original:
@@ -91,9 +91,9 @@ Batch manifest JSON schema + dock export UI + Python `gdclip-cli`. Core differen
 
 ## Recommended order
 
-**Op6 (ffmpeg) → Op7 polish → OBS or CLI — decide based on user priority.**
+**~~Op6 (ffmpeg)~~ → Op7 polish → OBS or CLI — decide based on user priority.**
 
-Rationale: Op6 closes the loop for the backend we just fixed, gives JPG→MP4 stitching the user asked for, and is backend-agnostic (also gives Movie Maker MP4). OBS is bigger and decoupled. CLI wants Op6 done.
+UPDATE 2026-08-03 (same session): **Op6 shipped** hours after this doc (commits `8b20815` + `47b2c5a`). The queue is now: **Op7 polish → OBS backend (Phase 3/4) → CLI companion**. Op6 closed the loop for both backends (Movie Maker gets MP4/WebM without the 4 GB cap; screenshot gets JPG/PNG→video stitching). OBS is the bigger, decoupled piece; CLI wants stable video output (now true).
 
 ## Housekeeping done this session
 
@@ -104,6 +104,6 @@ Rationale: Op6 closes the loop for the backend we just fixed, gives JPG→MP4 st
 
 ## Open questions for user
 
-1. Op6 as next? If yes, should MP4 be default converted target for screenshot, or keep PNG/JPG frames as primary with opt-in convert?
-1. Should frames dir be deleted after successful convert, or kept? (Current 4a spec says clean on success).
-1. OBS next after Op6, or CLI companion?
+1. ~~Op6 as next?~~ (Answered — shipped 2026-08-03.) For screenshot, MP4 is now the natural final target (JPG/PNG frames are the native tier-1, converted on demand); the dropdown offers both and auto-convert defaults on.
+1. ~~Should frames dir be deleted after successful convert, or kept?~~ (Answered — `gd_time_machine/ffmpeg/clean_frames` defaults true; per-recording override exists. Verified: async clean-on-success deletes frames.)
+1. OBS next after Op6, or CLI companion? (Now the live question — Op6 shipped, see Recommended order.)

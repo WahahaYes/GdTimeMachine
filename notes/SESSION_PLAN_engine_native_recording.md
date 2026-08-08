@@ -1,6 +1,6 @@
 # Session Plan — Engine-Native Recording Enhancements
 
-Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Update 2026-08-01: Op 1-2 shipped (66 GUT green incl. graceful-stop funnel, ButtonState matrix, CaptureMode). Research ses_041598e3dffeO0PR0i4m6iIrH6 verified EditorDebuggerSession.send_message API. Op 3 measured: 16-18 fps @720p fg / 1 fps bg (see `SPIKE_screenshot_fps.md`). Status: ✅ Op 1-4 shipped (106/106 GUT green), spike code cleaned. Update 2026-08-02: Op 5 scope locked — screenshot core first, ffmpeg 4a separate. Update 2026-08-02: ✅ Op 5 shipped (152/152 GUT green) — `BackendScreenshotCapture` core + `recording_notice` channel + IN_PLACE dock handling.
+Date: 2026-08-01 Based on: `ENHANCEMENTS_engine_native_recording.md`, `BRAINSTORM_in_place_recording.md` Update 2026-08-01: Op 1-2 shipped (66 GUT green incl. graceful-stop funnel, ButtonState matrix, CaptureMode). Research ses_041598e3dffeO0PR0i4m6iIrH6 verified EditorDebuggerSession.send_message API. Op 3 measured: 16-18 fps @720p fg / 1 fps bg (see `SPIKE_screenshot_fps.md`). Status: ✅ Op 1-4 shipped (106/106 GUT green), spike code cleaned. Update 2026-08-02: Op 5 scope locked — screenshot core first, ffmpeg 4a separate. Update 2026-08-02: ✅ Op 5 shipped (152/152 GUT green) — `BackendScreenshotCapture` core + `recording_notice` channel + IN_PLACE dock handling. Update 2026-08-03: ✅ Op 6 shipped (199/199 GUT green) — `ffmpeg_convert.gd` tier-2 hook (probe, Thread+`OS.execute`, MP4/WebM/AVI/OGV codec map, measured-fps `-framerate`, `recording_converted`), both backends wired, dock "Converting…" + auto-convert/ffmpeg-path/clean-frames settings, MP4/WebM in dropdown. Verified end-to-end: Movie Maker AVI→MP4/WebM in-editor (Aug 3 artifacts in `media/captures/`); screenshot frames→video smoke-tested headless against real capture data (sync mp4/webm + async clean-on-success all pass, ffprobe-valid).
 
 ## Goal
 
@@ -74,13 +74,13 @@ Core only; the ffmpeg auto-convert hook (4a) is Op 6, separate.
 - Tests: state machine, one-in-flight pacing (no 2nd rq before reply), stop-writes-frames+manifest, duration expiry, no-game → error, no-reply timeout → finalize, zero-frames → stopped + manifest, notice content (0-frames message / "N frames @ X fps" stats line / low-rate hint), controller re-emits `recording_notice`, has_capture only-while-recording (fakes for debugger channel + file seams).
 - **Shipped:** `backend_screenshot_capture.gd` (IN_PLACE state machine, one-in-flight pacing, copy-on-receipt, manifest `frame_count`/`target_fps`/`measured_fps`/`elapsed_sec`/`width`/`height`, no-game → `recording_error`, no-reply/duration timeouts, zero/low-frame → `recording_stopped` + notice), `recording_notice` on base + controller re-emit + dock status-line display (after `recording_stopped`), `_update_backend_visibility()` hides scene+format rows for IN_PLACE, extensionless output path → `.frames/`, debugger-plugin `send_screenshot_request`/`screenshot_received`/`_has_capture` gate. Test-fake-clock note: frame timestamps must be nonzero — the backend's `_first_frame_time <= 0.0` sentinel (real engine clocks never read exactly 0.0). Remaining: manual in-editor windowed check (see Open items).
 
-### Op 6 — #4a ffmpeg auto-convert (deps: #4, #5)
+### Op 6 — #4a ffmpeg auto-convert (deps: #4, #5) — SHIPPED 2026-08-03 (199/199 GUT green)
 
 - Probe (`ffmpeg -version`, optional `ffmpeg_path` override) → graceful frames-kept fallback when absent (not an error).
-- Convert target = #5's dropdown → codec map (OGV→libtheora `-an`, AVI→mjpeg, PNG→no-op); quality from `editor/movie_writer/video_quality`; `-framerate` from the manifest's measured average fps.
+- Convert target = #5's dropdown → codec map (MP4→libx264 crf 18, WebM→libvpx-vp9, OGV→libtheora `-an`, AVI→mjpeg, PNG/JPG→no-op); quality from `editor/movie_writer/video_quality`; `-framerate` from the manifest's measured average fps.
 - `Thread` + blocking `OS.execute` (stderr capture), `call_deferred` back: exit 0 → new `recording_converted` signal (base + controller forwarder) + frames dir cleaned; nonzero → frames kept + `recording_error` with stderr tail. `wait_to_finish()` before free/`_exit_tree`.
-- Dock: "Converting…" status until `recording_converted`; auto-convert toggle
-  - ffmpeg-path settings rows.
+- Dock: "Converting…" status between stopped→converted; MP4/WebM in the format dropdown (per-backend allowed sets); settings rows in Project > Editor Settings (`gd_time_machine/ffmpeg/path`, `auto_convert`, `clean_frames`).
+- Shipped: `backend/ffmpeg_convert.gd` (`GdTMFFmpegConvert` — probe, `build_frames_convert_command`/`build_file_convert_command`, sync + async (`Thread`) runners, stderr tail, recursive cleanup), `recording_converted` + `recording_notice` re-emits, Movie Maker AVI→MP4/WebM via `convert_file_async`, Screenshot frames→video via `convert_frames_async` with measured-fps + clean-on-success. Tests: `test_ffmpeg_convert.gd` (211 cases: probe, codec maps, skip-native, exit codes, thread lifecycle, stderr tail), screenshot backend convert triggers, dock expectations. **Verified end-to-end**: in-editor AVI→MP4/WebM artifacts in `media/captures/` (2026-08-03); screenshot frames→video smoke-tested headless against real capture (35 PNG @1152×648, measured 8.58 fps → valid h264/vp9, exact rate, async clean-on-success deletes frames).
 
 ### Op 7 — #7 nice-to-haves (tail)
 
@@ -102,7 +102,7 @@ Core only; the ffmpeg auto-convert hook (4a) is Op 6, separate.
 - [ ] Op 3: fps numbers at 720p/1080p + go/no-go appended to this note
 - [x] Op 4: dropdown routes all three extensions; AVI 4 GB warning shown; no `movie_file`/`fps` residue in project.godot after a recording (by construction — the addon never calls `ProjectSettings.save()`; restore seams GUT-tested)
 - [x] Op 5: frames + manifest written on stop; game never restarts; GUT green (152/152)
-- [ ] Op 6: probe-present → converted clip + frames cleaned; probe-missing → frames kept + status; nonzero exit → frames kept + stderr tail
+- [x] Op 6: probe-present → converted clip + frames cleaned; probe-missing → frames kept + status; nonzero exit → frames kept + stderr tail (199/199 GUT green; end-to-end verified 2026-08-03)
 - [ ] Op 7: shortcut, status-bar state, semantics tooltip
 
 ## Open items
