@@ -17,6 +17,7 @@ class FakeMovieMaker:
 	var stop_playing_calls := 0
 	var graceful_sent := false
 	var graceful_send_count := 0
+	var output_file_size := 0
 
 	func _get_movie_file() -> Variant:
 		return stored_movie_file
@@ -73,6 +74,9 @@ class FakeMovieMaker:
 
 	func _get_grace_period() -> float:
 		return 0.1
+
+	func _get_output_file_size() -> int:
+		return output_file_size
 
 
 const OUTPUT := "res://media/captures/demo_2026-01-01T00-00-00.avi"
@@ -418,3 +422,86 @@ func test_set_movie_file_does_not_call_save_indirectly() -> void:
 	backend.start({"output_path": OUTPUT, "scene_path": "res://a.tscn"})
 	# Only new seams should have been used; old save-counting removed.
 	assert_eq(backend.movie_file_set, OUTPUT)
+
+
+func test_avi_size_guard_ignores_output_below_limit() -> void:
+	var backend := _make_backend()
+	backend.output_file_size = BackendMovieMaker.AVI_SIZE_LIMIT_BYTES - 1
+	_start_recording(backend)
+	backend.playing = true
+	backend._on_poll_timeout()  # recording_started
+	backend._on_poll_timeout()  # size check below limit
+	assert_false(backend.graceful_sent)
+	assert_true(backend.is_recording())
+
+
+func test_avi_size_guard_stops_when_limit_reached() -> void:
+	var backend := _make_backend()
+	var stopped: Array = []
+	backend.recording_stopped.connect(func(_n, _p): stopped.append(true))
+	backend.output_file_size = BackendMovieMaker.AVI_SIZE_LIMIT_BYTES
+	_start_recording(backend)
+	backend.playing = true
+	backend._on_poll_timeout()  # recording_started
+	backend._on_poll_timeout()  # size guard trips → graceful stop
+	assert_true(backend.graceful_sent)
+	assert_true(backend._stopping)
+	# Simulate the game quitting; the poll observes the exit and finalizes.
+	backend.playing = false
+	backend._on_poll_timeout()
+	assert_eq(stopped.size(), 1)
+	assert_false(backend.is_recording())
+
+
+func test_avi_size_guard_emits_notice_after_stop() -> void:
+	var backend := _make_backend()
+	var notices: Array = []
+	backend.recording_notice.connect(func(_n, m): notices.append(m))
+	backend.output_file_size = BackendMovieMaker.AVI_SIZE_LIMIT_BYTES
+	_start_recording(backend)
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend._on_poll_timeout()
+	backend.playing = false
+	backend._on_poll_timeout()
+	assert_eq(notices.size(), 1)
+	assert_string_contains(notices[0].to_lower(), "4 gb")
+
+
+func test_avi_size_guard_ignores_non_avi_output() -> void:
+	var backend := _make_backend()
+	backend.output_file_size = BackendMovieMaker.AVI_SIZE_LIMIT_BYTES
+	(
+		backend
+		. start(
+			{
+				"output_path": "res://media/captures/demo.ogv",
+				"scene_path": "res://scenes/demo.tscn",
+			}
+		)
+	)
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend._on_poll_timeout()
+	assert_false(backend.graceful_sent)
+	assert_true(backend.is_recording())
+
+
+func test_avi_size_guard_applies_to_tier2_intermediate() -> void:
+	var backend := _make_backend()
+	backend.output_file_size = BackendMovieMaker.AVI_SIZE_LIMIT_BYTES
+	(
+		backend
+		. start(
+			{
+				"output_path": "res://media/captures/demo.mp4",
+				"scene_path": "res://scenes/demo.tscn",
+				"output_format": "mp4",
+				"auto_convert": false,
+			}
+		)
+	)
+	backend.playing = true
+	backend._on_poll_timeout()
+	backend._on_poll_timeout()
+	assert_true(backend.graceful_sent)

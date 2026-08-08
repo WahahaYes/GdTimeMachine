@@ -497,3 +497,181 @@ func test_recording_notice_sets_status_line() -> void:
 	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
 	controller.recording_notice.emit("Mock", "Saved 5 frames @ 14.2 fps (target 60)")
 	assert_eq(label.text, "Saved 5 frames @ 14.2 fps (target 60)")
+
+
+# --- Live recording status in the status line (Op 7) ---
+
+
+func test_format_elapsed_mm_ss() -> void:
+	assert_eq(TimeMachineDock.format_elapsed(0.0), "00:00")
+	assert_eq(TimeMachineDock.format_elapsed(65.0), "01:05")
+	assert_eq(TimeMachineDock.format_elapsed(599.0), "09:59")
+
+
+func test_format_elapsed_h_mm_ss_past_an_hour() -> void:
+	assert_eq(TimeMachineDock.format_elapsed(3600.0), "1:00:00")
+	assert_eq(TimeMachineDock.format_elapsed(3661.0), "1:01:01")
+
+
+func test_compose_recording_status() -> void:
+	assert_eq(
+		TimeMachineDock.compose_recording_status("Screenshot", "res://dir/clip.png", 65.0),
+		"Recording [Screenshot] → clip.png (01:05)"
+	)
+
+
+func test_recording_started_arms_live_status_and_timer() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var backend := ctx["backend"] as MockBackend
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	backend.recording = true
+	dock._fake_time = 10.0
+	controller.recording_started.emit("Screenshot", "res://media/captures/demo_2026-08-07_12-00-00")
+	assert_eq(label.text, "Recording [Screenshot] → demo_2026-08-07_12-00-00 (00:00)")
+	assert_eq(dock._recording_backend_name, "Screenshot")
+	assert_eq(dock._recording_output_path, "res://media/captures/demo_2026-08-07_12-00-00")
+	assert_eq(dock._recording_started_at, 10.0)
+	assert_not_null(dock._status_timer)
+	assert_false(dock._status_timer.is_stopped())
+
+
+func test_status_tick_computes_elapsed_from_faked_clock() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var backend := ctx["backend"] as MockBackend
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	backend.recording = true
+	dock._fake_time = 10.0
+	controller.recording_started.emit("Screenshot", "res://media/captures/demo_2026-08-07_12-00-00")
+	# 65s elapsed → mm:ss.
+	dock._fake_time = 75.0
+	dock._on_status_tick()
+	assert_eq(label.text, "Recording [Screenshot] → demo_2026-08-07_12-00-00 (01:05)")
+	# Past an hour → h:mm:ss.
+	dock._fake_time = 10.0 + 3661.0
+	dock._on_status_tick()
+	assert_eq(label.text, "Recording [Screenshot] → demo_2026-08-07_12-00-00 (1:01:01)")
+
+
+func test_status_timer_stops_on_recording_stopped() -> void:
+	# The live timer stops on stop; the existing "Saved …" status flow takes
+	# over and a stray tick must not resurrect the live status.
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var backend := ctx["backend"] as MockBackend
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	backend.recording = true
+	dock._fake_time = 10.0
+	controller.recording_started.emit("Screenshot", "res://media/captures/demo_2026-08-07_12-00-00")
+	assert_false(dock._status_timer.is_stopped())
+	backend.recording = false
+	controller.recording_stopped.emit("Screenshot", "res://media/captures/demo_2026-08-07_12-00-00")
+	assert_true(dock._status_timer.is_stopped())
+	# AVI + RESTART_SCENE → native, no conversion expected → "Saved".
+	assert_eq(label.text, "Saved demo_2026-08-07_12-00-00")
+	var before := label.text
+	dock._on_status_tick()
+	assert_eq(label.text, before)
+
+
+func test_status_timer_stops_on_recording_error() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var backend := ctx["backend"] as MockBackend
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	backend.recording = true
+	dock._fake_time = 10.0
+	controller.recording_started.emit("Mock", "res://media/captures/demo.png")
+	assert_false(dock._status_timer.is_stopped())
+	backend.recording = false
+	controller.recording_error.emit("Mock", "Scene did not start")
+	assert_true(dock._status_timer.is_stopped())
+	assert_eq(label.text, "Error: Scene did not start")
+
+
+func test_status_timer_stops_on_recording_converted() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var backend := ctx["backend"] as MockBackend
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	backend.recording = true
+	dock._fake_time = 10.0
+	controller.recording_started.emit("Mock", "res://media/captures/demo.png")
+	assert_false(dock._status_timer.is_stopped())
+	backend.recording = false
+	controller.recording_converted.emit("Mock", "res://media/captures/demo.mp4")
+	assert_true(dock._status_timer.is_stopped())
+	assert_eq(label.text, "Saved demo.mp4")
+
+
+func test_status_tick_self_stops_when_controller_not_recording() -> void:
+	# The tick guards on controller.is_recording() (single source of truth):
+	# if a terminal signal was missed, the next tick stops the timer and leaves
+	# the status line untouched instead of showing stale elapsed time.
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var backend := ctx["backend"] as MockBackend
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	backend.recording = true
+	dock._fake_time = 10.0
+	controller.recording_started.emit("Mock", "res://media/captures/demo.png")
+	assert_false(dock._status_timer.is_stopped())
+	backend.recording = false
+	var before := label.text
+	dock._on_status_tick()
+	assert_true(dock._status_timer.is_stopped())
+	assert_eq(label.text, before)
+
+
+func test_set_record_shortcut_attaches_shortcut_and_tooltip_hint() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var button: Button = dock.get_node("Split/LeftColumn/RecordButton")
+	var original_tooltip := button.tooltip_text
+	var shortcut := Shortcut.new()
+	var event := InputEventKey.new()
+	event.keycode = KEY_R
+	event.ctrl_pressed = true
+	event.alt_pressed = true
+	shortcut.events = [event]
+	dock.set_record_shortcut(shortcut)
+	assert_eq(button.shortcut, shortcut)
+	assert_string_contains(button.tooltip_text, original_tooltip)
+	assert_string_contains(button.tooltip_text, "Ctrl+Alt+R")
+
+
+func test_set_record_shortcut_before_ready_applies_later() -> void:
+	# The plugin fallback may attach the shortcut before the dock's button
+	# exists; it must be applied once _ready builds the UI.
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var backend := MockBackend.new()
+	controller.register_backend(backend)
+	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
+	dock.setup(controller, FakeStore.new())
+	# Pre-seed the scene field so _ready's _prefill_scene skips EditorInterface
+	# (unavailable in headless test runs), mirroring _build_dock.
+	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = "res://scenes/a.tscn"
+	var shortcut := Shortcut.new()
+	var event := InputEventKey.new()
+	event.keycode = KEY_R
+	event.ctrl_pressed = true
+	event.alt_pressed = true
+	shortcut.events = [event]
+	dock.set_record_shortcut(shortcut)
+	assert_null(dock._record_button)  # not ready yet → deferred
+	add_child_autofree(dock)
+	assert_eq(dock._record_button.shortcut, shortcut)

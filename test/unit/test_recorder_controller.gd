@@ -219,17 +219,6 @@ func test_recording_stopped_signal_routes_through_controller() -> void:
 	assert_eq(received[0], ["Mock", "res://media/captures/x.avi"])
 
 
-func test_recording_progress_signal_routes_through_controller() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	var received: Array = []
-	controller.recording_progress.connect(func(name, elapsed): received.append([name, elapsed]))
-	backend.recording_progress.emit(backend.get_backend_name(), 12.5)
-	assert_eq(received.size(), 1)
-	assert_eq(received[0], ["Mock", 12.5])
-
-
 func test_recording_error_signal_routes_through_controller() -> void:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
 	var backend := _make_backend()

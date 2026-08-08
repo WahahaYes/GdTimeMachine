@@ -134,12 +134,16 @@ func get_backend_name() -> String:
 	return "Screenshot"
 
 
-## Short UI description of what this backend needs and its limits.
+## Short UI description of what this backend needs and its limits, including
+## its capture semantics: real-time — the game sim runs at normal speed, so
+## capture is machine-bound (no fixed rate) and the window must stay visible.
 func get_description() -> String:
 	return (
-		"Captures the running scene via the engine's screenshot channel (no extra software). "
-		+ "No audio, stills only. The game window must stay visible and focused — occluded "
-		+ "windows throttle to ~1 fps. Dev-quality rate (~15 fps typical), machine-dependent."
+		"Real-time capture of the running scene via the engine's screenshot "
+		+ "channel (no extra software): the game sim runs at normal speed, so the "
+		+ "rate is machine-bound (~15 fps typical), not fixed. No audio, stills "
+		+ "only. The game window must stay visible and focused — occluded windows "
+		+ "throttle to ~1 fps."
 	)
 
 

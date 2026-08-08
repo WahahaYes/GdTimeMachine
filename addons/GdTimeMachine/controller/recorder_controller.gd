@@ -24,8 +24,6 @@ signal backend_changed(backend_name: String)
 signal recording_started(backend_name: String, output_path: String)
 ## Emitted when the active backend stops recording (forwarded from the backend).
 signal recording_stopped(backend_name: String, output_path: String)
-## Emitted periodically with the active backend's elapsed recording time (forwarded from the backend).
-signal recording_progress(backend_name: String, elapsed_sec: float)
 ## Emitted when recording fails (forwarded from the backend, or emitted
 ## directly when start_recording is called with no backend selected).
 signal recording_error(backend_name: String, error_message: String)
@@ -159,7 +157,6 @@ func _first_backend() -> RecorderBackend:
 func _connect_backend_signals(backend: RecorderBackend) -> void:
 	backend.recording_started.connect(_on_backend_recording_started)
 	backend.recording_stopped.connect(_on_backend_recording_stopped)
-	backend.recording_progress.connect(_on_backend_recording_progress)
 	backend.recording_error.connect(_on_backend_recording_error)
 	backend.recording_notice.connect(_on_backend_recording_notice)
 	if backend.has_signal("recording_converted"):
@@ -170,7 +167,6 @@ func _connect_backend_signals(backend: RecorderBackend) -> void:
 func _disconnect_backend_signals(backend: RecorderBackend) -> void:
 	backend.recording_started.disconnect(_on_backend_recording_started)
 	backend.recording_stopped.disconnect(_on_backend_recording_stopped)
-	backend.recording_progress.disconnect(_on_backend_recording_progress)
 	backend.recording_error.disconnect(_on_backend_recording_error)
 	backend.recording_notice.disconnect(_on_backend_recording_notice)
 	if backend.has_signal("recording_converted"):
@@ -186,11 +182,6 @@ func _on_backend_recording_started(backend_name: String, output_path: String) ->
 ## Forwards a backend's recording_stopped as the controller's own signal.
 func _on_backend_recording_stopped(backend_name: String, output_path: String) -> void:
 	recording_stopped.emit(backend_name, output_path)
-
-
-## Forwards a backend's recording_progress as the controller's own signal.
-func _on_backend_recording_progress(backend_name: String, elapsed_sec: float) -> void:
-	recording_progress.emit(backend_name, elapsed_sec)
 
 
 ## Forwards a backend's recording_error as the controller's own signal.

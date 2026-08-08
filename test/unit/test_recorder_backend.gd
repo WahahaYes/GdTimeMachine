@@ -29,3 +29,20 @@ func test_default_start_and_stop_do_not_crash() -> void:
 	backend.stop()
 	# Reaching here without error is the assertion.
 	assert_true(true)
+
+
+func test_movie_maker_description_mentions_fixed_fps() -> void:
+	# Op 7 tooltip contract: the backend's get_description() must state the
+	# capture semantics — Movie Maker is fixed-fps, non-real-time.
+	var backend: BackendMovieMaker = add_child_autofree(BackendMovieMaker.new())
+	var desc := backend.get_description().to_lower()
+	assert_string_contains(desc, "fixed-fps")
+	assert_string_contains(desc, "non-real-time")
+
+
+func test_screenshot_description_mentions_real_time() -> void:
+	# Op 7 tooltip contract: the screenshot backend must state its real-time
+	# capture semantics (game sim runs at normal speed, machine-bound rate).
+	var backend: BackendScreenshotCapture = add_child_autofree(BackendScreenshotCapture.new())
+	var desc := backend.get_description().to_lower()
+	assert_string_contains(desc, "real-time")

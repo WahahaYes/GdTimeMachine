@@ -12,8 +12,9 @@ What works today:
 - **Screenshot backend** — zero-dependency in-place capture of the *running* scene via the engine's debugger screenshot channel (PNG or JPG frames). The game is never restarted or killed. Dev-quality: no audio, real-time jitter, ~15 fps typical, game window must stay visible and focused.
 - **ffmpeg tier-2 conversion** — when ffmpeg is available, MP4 (H.264) and WebM (VP9) output are produced from any backend's native artifact (Movie Maker AVI → MP4; screenshot frames → MP4/WebM). Frames-per-second is taken from the capture's measured average, not the target. If ffmpeg is missing, the native artifact is kept and a notice is shown — never a failed recording.
 - **Output** — recordings are written as `.avi`, `.ogv`, PNG/JPG sequences, `.mp4`, or `.webm`. File names are auto-generated from scene name + timestamp.
-- **Bottom panel dock** — a "GdTimeMachine" tab in the editor's bottom panel holds the controls.
+- **Bottom panel dock** — a "GdTimeMachine" tab in the editor's bottom panel holds the controls. Its status line shows live recording state while recording (backend, output file, and elapsed time), then the save/convert/error outcome.
 - **Toolbar buttons** — Record/Stop buttons in the run bar and in the game view toolbar.
+- **Editor-wide shortcut** — press `Ctrl+Alt+R` (`Cmd+Alt+R` on macOS) anywhere in the editor to start/stop recording; rebindable under Project > Editor Settings > Shortcuts ("gd_time_machine/toggle_recording") or via the command palette ("GdTimeMachine: Toggle Recording").
 - **Graceful stop** — Stop asks the running game to quit cleanly so Movie Maker finalizes the file, instead of killing the process mid-write.
 - **No project.godot pollution** — Movie Maker settings are set in-memory for the recording and restored afterwards; nothing is written to `project.godot` on disk.
 - **Local config store** — default profile in `EditorSettings` under `gd_time_machine/recorder/*`, per-scene overrides in `addons/GdTimeMachine/config/state/profiles.cfg` (gitignored by default, localized under the addon, opt-in to commit).
@@ -21,7 +22,7 @@ What works today:
 
 ## Backends
 
-| Backend | CaptureMode | Deps | Output | Notes | |---|---|---|---|---| | Godot Movie Maker | `RESTART_SCENE` | none (built-in) | AVI / OGV / PNG sequence | Restarts the scene to record; duration watchdog stops recording if the scene never starts; AVI files are capped at 4 GB | | Screenshot | `IN_PLACE` | none | PNG/JPG frames (+ ffmpeg: MP4/WebM) | Zero-dependency, dev-quality capture of the running scene; no audio; game window must stay visible and focused | | OBS | `IN_PLACE` | OBS Studio | — | Planned — requires OBS installed; records the running scene without restarting it |
+| Backend | CaptureMode | Deps | Output | Notes | |---|---|---|---|---| | Godot Movie Maker | `RESTART_SCENE` | none (built-in) | AVI / OGV / PNG sequence | Restarts the scene to record; duration watchdog stops recording if the scene never starts; AVI files are capped at 4 GB (auto-stops before the cap) | | Screenshot | `IN_PLACE` | none | PNG/JPG frames (+ ffmpeg: MP4/WebM) | Zero-dependency, dev-quality capture of the running scene; no audio; game window must stay visible and focused | | OBS | `IN_PLACE` | OBS Studio | — | Planned — requires OBS installed; records the running scene without restarting it |
 
 `RESTART_SCENE` backends (Movie Maker) must launch a fresh scene to record, so the in-game record button is greyed out while a scene is running — starting a recording would restart the scene you are looking at. In-place backends (Screenshot) record the running scene and stop without killing it; when no scene is playing, Record launches the scene first (same UX as Movie Maker).
 

@@ -81,6 +81,24 @@ var _syncing_scene_state := false
 ## The scene_changed that follows a tab close must not re-save it.
 var _flushed_on_close := ""
 
+## Monotonic seconds (via _now()) when the current recording started; 0 while
+## idle. Drives the live elapsed status in the status line.
+var _recording_started_at := 0.0
+
+## Backend name of the active recording (from recording_started).
+var _recording_backend_name := ""
+
+## Output path of the active recording (from recording_started).
+var _recording_output_path := ""
+
+## One-second repeating timer that refreshes the live elapsed status while
+## recording; created lazily behind an is_inside_tree() guard.
+var _status_timer: Timer
+
+## Test seam: when >= 0.0, _now() returns this fixed value instead of the real
+## clock, so GUT can drive elapsed-time assertions deterministically.
+var _fake_time := -1.0
+
 ## Dock title icon (shows the brand logo).
 @onready var _title_icon: TextureRect = $Split/LeftColumn/TitleIcon
 
@@ -127,6 +145,10 @@ var _format_warning_label: Label = $Split/RightColumn/SettingsGroup/FormatWarnin
 ## Record/Stop toggle button.
 @onready var _record_button: Button = $Split/LeftColumn/RecordButton
 
+## Editor-wide record/stop shortcut to attach once the Record button exists;
+## used as the fallback surface when the run-bar button is unavailable.
+var _pending_record_shortcut: Shortcut = null
+
 
 ## Called by plugin.gd before the dock enters the tree; stores the
 ## controller and optional config store. UI wiring happens in _ready().
@@ -135,6 +157,23 @@ func setup(controller: RecorderController, config_store: ConfigStore = null) -> 
 	_config_store = config_store
 	if is_inside_tree():
 		_apply_setup()
+
+
+## Attaches the editor-wide record/stop shortcut to the dock's Record button
+## and appends the combo to its tooltip for discoverability. Used as the
+## fallback surface when the run-bar button is unavailable; no-op when the
+## shortcut is null. If the button is not ready yet, the shortcut is applied
+## once _ready() builds the UI.
+func set_record_shortcut(shortcut: Shortcut) -> void:
+	if shortcut == null:
+		return
+	if _record_button == null:
+		_pending_record_shortcut = shortcut
+		return
+	_record_button.shortcut = shortcut
+	var hint := shortcut.get_as_text()
+	if not hint.is_empty() and not _record_button.tooltip_text.contains(hint):
+		_record_button.tooltip_text = "%s (%s)" % [_record_button.tooltip_text, hint]
 
 
 ## Loads icons, wires signals, sets tooltips, and applies the controller
@@ -196,6 +235,13 @@ func _apply_setup() -> void:
 	_format_warning_label.tooltip_text = "Format-specific notice."
 	_per_scene_check.tooltip_text = "When checked, this scene's settings are saved as its own profile when you switch away, and reloaded when you come back.\nWhen unchecked, the default profile is used and any stored per-scene profile for this scene is cleared."
 	_record_button.tooltip_text = "Start or stop recording with the settings above."
+
+	# Apply a shortcut that arrived before the button was ready (plugin-level
+	# fallback when the run-bar button is unavailable).
+	if _pending_record_shortcut != null:
+		var pending := _pending_record_shortcut
+		_pending_record_shortcut = null
+		set_record_shortcut(pending)
 
 	_format_option.item_selected.connect(_on_format_selected)
 	_per_scene_check.toggled.connect(_on_per_scene_toggled)
@@ -713,14 +759,23 @@ func _build_output_path() -> String:
 	return _build_output_path_for_profile(profile, profile.output_dir)
 
 
-## Updates the UI when a recording starts (button → Stop, green status).
-func _on_recording_started(_backend_name: String, output_path: String) -> void:
+## Updates the UI when a recording starts (button → Stop, green status, live
+## elapsed timer armed). The status line becomes live: a 1-second timer
+## refreshes "Recording [backend] → file (mm:ss)" until stop/error/converted.
+func _on_recording_started(backend_name: String, output_path: String) -> void:
 	_set_recording_ui(true)
-	_set_status("Recording → %s" % output_path.get_file(), COLOR_RECORDING)
+	_recording_backend_name = backend_name
+	_recording_output_path = output_path
+	_recording_started_at = _now()
+	_start_status_timer()
+	_set_status(compose_recording_status(backend_name, output_path, 0.0), COLOR_RECORDING)
 
 
-## Updates the UI when a recording stops (button → Record, idle status).
+## Updates the UI when a recording stops (button → Record, idle status). The
+## live status timer stops here; the existing Converting… / Saved flow
+## takes over the status line unchanged.
 func _on_recording_stopped(_backend_name: String, output_path: String) -> void:
+	_stop_status_timer()
 	_set_recording_ui(false)
 	# If MP4/WebM conversion is expected (any backend that writes via ffmpeg tier-2),
 	# show Converting… until converted. Heuristic: when output is still AVI but
@@ -749,6 +804,7 @@ func _expects_conversion() -> bool:
 
 ## Updates the UI when a recording errors (button → Record, error status).
 func _on_recording_error(_backend_name: String, message: String) -> void:
+	_stop_status_timer()
 	_set_recording_ui(false)
 	_set_status("Error: %s" % message, COLOR_ERROR)
 
@@ -767,6 +823,7 @@ func _on_recording_notice(_backend_name: String, message: String) -> void:
 
 
 func _on_recording_converted(_backend_name: String, clip_path: String) -> void:
+	_stop_status_timer()
 	_set_recording_ui(false)
 	_set_status("Saved %s" % clip_path.get_file(), COLOR_IDLE)
 
@@ -800,3 +857,89 @@ func _set_controls_enabled(enabled: bool) -> void:
 func _set_status(text: String, color: Color) -> void:
 	_status_label.text = text
 	_status_light.color = color
+
+
+# --- Live recording status (Op 7) --------------------------------------------
+#
+# While recording, the status line shows "Recording [backend] → file (mm:ss)"
+# refreshed once per second by a lazy timer. The elapsed time is computed from
+# _recording_started_at against the _now() seam; the timer stops on
+# stop/error/converted so the existing "Converting…" / "Saved" flows take over
+# unchanged. The controller's is_recording() is the single source of truth —
+# the tick self-stops if a terminal signal was somehow missed.
+
+
+## Formats a duration in seconds as mm:ss, or h:mm:ss past an hour. Pure
+## static so GUT can exercise both branches headlessly.
+static func format_elapsed(seconds: float) -> String:
+	var total := int(floor(seconds))
+	var hours := total / 3600
+	var minutes := (total % 3600) / 60
+	var secs := total % 60
+	if hours > 0:
+		return "%d:%02d:%02d" % [hours, minutes, secs]
+	return "%02d:%02d" % [minutes, secs]
+
+
+## Composes the live recording status line for the given backend, output path
+## and elapsed seconds. Pure static for testability.
+static func compose_recording_status(
+	backend_name: String, output_path: String, elapsed_seconds: float
+) -> String:
+	return (
+		"Recording [%s] → %s (%s)"
+		% [
+			backend_name,
+			output_path.get_file(),
+			format_elapsed(elapsed_seconds),
+		]
+	)
+
+
+## Monotonic seconds for the live status timer; returns the _fake_time seam
+## when set, otherwise the real engine clock. Mirrors the backends' _now().
+func _now() -> float:
+	if _fake_time >= 0.0:
+		return _fake_time
+	return Time.get_ticks_msec() / 1000.0
+
+
+## Timer tick: refreshes the status line's elapsed time while recording.
+## Guards on the controller's is_recording() (single source of truth) so the
+## timer self-stops if a stop/error/converted signal was missed.
+func _on_status_tick() -> void:
+	if _controller == null or not _controller.is_recording():
+		_stop_status_timer()
+		return
+	if _recording_started_at <= 0.0:
+		return
+	var elapsed := _now() - _recording_started_at
+	_set_status(
+		compose_recording_status(_recording_backend_name, _recording_output_path, elapsed),
+		COLOR_RECORDING
+	)
+
+
+## Starts the 1-second repeating status timer (created lazily).
+func _start_status_timer() -> void:
+	_ensure_status_timer()
+	if _status_timer:
+		_status_timer.start(1.0)
+
+
+## Stops the status timer; no-op when it was never started.
+func _stop_status_timer() -> void:
+	if _status_timer:
+		_status_timer.stop()
+
+
+## Lazily creates the status timer (requires being inside the scene tree) and
+## wires its tick callback. Mirrors the backends' _ensure_timers() pattern.
+func _ensure_status_timer() -> void:
+	if _status_timer == null and is_inside_tree():
+		_status_timer = Timer.new()
+		_status_timer.wait_time = 1.0
+		_status_timer.one_shot = false
+		_status_timer.autostart = false
+		_status_timer.timeout.connect(_on_status_tick)
+		add_child(_status_timer)

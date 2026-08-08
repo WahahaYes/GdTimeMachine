@@ -80,10 +80,6 @@ signal recording_started(backend_name: String, output_path: String)
 ## output path that was written.
 signal recording_stopped(backend_name: String, output_path: String)
 
-## Emitted periodically while recording; carries the backend name and the
-## number of seconds elapsed so far.
-signal recording_progress(backend_name: String, elapsed_sec: float)
-
 ## Emitted when a recording fails; carries the backend name and an error
 ## message describing what went wrong.
 signal recording_error(backend_name: String, error_message: String)

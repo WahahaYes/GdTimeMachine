@@ -33,6 +33,19 @@ const AUTOLOAD_NAME := "GdTimeMachineGracefulStop"
 ## Script backing the graceful-stop autoload singleton.
 const AUTOLOAD_PATH := "res://addons/GdTimeMachine/autoload/graceful_stop.gd"
 
+## EditorSettings path under which the editor-wide record/stop shortcut is
+## registered (user-rebindable via Project > Editor Settings > Shortcuts).
+const SHORTCUT_SETTINGS_PATH := "gd_time_machine/toggle_recording"
+
+## Default keycode for the record/stop shortcut.
+const SHORTCUT_KEYCODE := KEY_R
+
+## Command-palette action name for the record/stop toggle.
+const COMMAND_PALETTE_ACTION := "GdTimeMachine: Toggle Recording"
+
+## Command-palette key name for the record/stop toggle.
+const COMMAND_PALETTE_KEY := "gd_time_machine_toggle_recording"
+
 ## Owns backends and exposes the recording API used by the dock and buttons.
 var _recorder_controller: RecorderController
 
@@ -73,6 +86,7 @@ func _enter_tree() -> void:
 	add_debugger_plugin(_debugger_plugin)
 	add_autoload_singleton(AUTOLOAD_NAME, AUTOLOAD_PATH)
 	_ensure_editor_settings_defaults()
+	_register_recording_shortcut()
 	_config_store = CompositeConfigStore.new()
 	_recorder_controller = RecorderController.new()
 	_recorder_controller._debugger_plugin = _debugger_plugin
@@ -135,6 +149,7 @@ func _exit_tree() -> void:
 		remove_debugger_plugin(_debugger_plugin)
 		_debugger_plugin = null
 	remove_autoload_singleton(AUTOLOAD_NAME)
+	_unregister_recording_shortcut()
 	if _run_bar_button:
 		if _run_bar_button.is_inside_tree():
 			_run_bar_button.get_parent().remove_child(_run_bar_button)
@@ -176,10 +191,42 @@ func _setup_run_bar_button() -> void:
 		push_warning(
 			"GdTimeMachine: editor run bar not found; run-bar record button unavailable (bottom-panel tab still works)"
 		)
+		# The dock's permanent Record button is always in the tree, so it can
+		# safely carry the editor-wide shortcut as the fallback surface.
+		_attach_dock_shortcut_fallback()
 		return
 	_run_bar_button = _build_record_button()
 	row.add_child(_run_bar_button)
+	# The run-bar button lives in the editor tree permanently, so it is the
+	# primary surface that carries the editor-wide record/stop shortcut. The
+	# game-view button (shared factory) exists only while a scene plays —
+	# attaching there would create a second, intermittently-active binding.
+	_attach_shortcut_to_button(_run_bar_button)
 	_apply_button_state(_run_bar_button, false)
+
+
+## Attaches the editor-wide record/stop shortcut to a button and appends the
+## combo to its tooltip for discoverability. No-op when the button or the
+## shortcut is unavailable (e.g. headless).
+func _attach_shortcut_to_button(button: Button) -> void:
+	if button == null:
+		return
+	var shortcut := _get_recording_shortcut()
+	if shortcut == null:
+		return
+	button.shortcut = shortcut
+	var hint := shortcut.get_as_text()
+	if not hint.is_empty() and not button.tooltip_text.contains(hint):
+		button.tooltip_text = "%s (%s)" % [button.tooltip_text, hint]
+
+
+## When the run bar can't be traversed, the dock's permanent Record button
+## carries the editor-wide shortcut instead — the dock is always in the tree,
+## so there is exactly one binding either way.
+func _attach_dock_shortcut_fallback() -> void:
+	if _dock == null:
+		return
+	_dock.set_record_shortcut(_get_recording_shortcut())
 
 
 ## Finds the game view toolbar row and inserts the record button. If the
@@ -281,15 +328,29 @@ func _find_node_by_class(node: Node, target_class: String) -> Node:
 	return null
 
 
+## Pure toggle-decision rule, extracted as a static so GUT can exercise the
+## full matrix without instantiating an EditorPlugin (virtual class — the
+## editor instantiates it, tests cannot). Returns {"action": "stop"} when a
+## recording is running, else {"action": "start", "config": Dictionary} — the
+## dock's current config, or {} when the dock is unavailable (backends apply
+## their defaults instead of the editor crashing).
+static func compute_toggle_action(recording: bool, dock: TimeMachineDock) -> Dictionary:
+	if recording:
+		return {"action": "stop"}
+	var config: Dictionary = dock.build_config() if dock != null else {}
+	return {"action": "start", "config": config}
+
+
 ## Toggles recording via the controller; starts a recording using the
 ## dock's current config.
 func _on_record_button_pressed() -> void:
 	if _recorder_controller == null:
 		return
-	if _recorder_controller.is_recording():
+	var action := compute_toggle_action(_recorder_controller.is_recording(), _dock)
+	if action["action"] == "stop":
 		_recorder_controller.stop_recording()
-	else:
-		_recorder_controller.start_recording(_dock.build_config())
+		return
+	_recorder_controller.start_recording(action["config"])
 
 
 ## Syncs a record button's text and icon with the recording state.
@@ -304,6 +365,88 @@ func _apply_button_state(button: Button, recording: bool) -> void:
 		button.icon = GdTMIconFactory.scaled_texture(
 			ICON_RECORD_PATH, GdTMIconFactory.BUTTON_HEIGHT
 		)
+
+
+# --- Editor-wide record/stop shortcut ----------------------------------------
+#
+# A user-rebindable shortcut (EditorSettings.add_shortcut + BaseButton.shortcut,
+# Godot 4.6+) lets the record/stop toggle fire from anywhere in the editor —
+# no need to hit the tiny run-bar button. EditorSettings.add_shortcut never
+# clobbers a user rebind (the engine keeps the user's events when the stored
+# "original" meta differs), so calling it on every _enter_tree is safe and the
+# binding survives plugin disable/re-enable. Ctrl+Alt+R is deliberately
+# uncommon: unmodified letters collide with script-editor chords, and F5–F8
+# are taken by the run bar.
+
+
+## Returns true on macOS, where the record/stop shortcut uses Meta (Cmd)
+## instead of Ctrl (Ctrl+Alt conflicts with common macOS chords). Static seam
+## so GUT can pin the platform decision.
+static func _should_use_meta() -> bool:
+	return OS.get_name() == "macOS"
+
+
+## Builds the record/stop Shortcut: exactly one InputEventKey, Ctrl+Alt+R on
+## most platforms, Cmd+Alt+R on macOS. `use_meta` selects the platform
+## modifier and is parameterized so tests can exercise both branches.
+static func build_toggle_shortcut(use_meta: bool) -> Shortcut:
+	var shortcut := Shortcut.new()
+	var event := InputEventKey.new()
+	event.keycode = SHORTCUT_KEYCODE
+	event.alt_pressed = true
+	if use_meta:
+		event.meta_pressed = true
+	else:
+		event.ctrl_pressed = true
+	shortcut.events = [event]
+	return shortcut
+
+
+## Registers the record/stop shortcut under EditorSettings (it shows up under
+## Project > Editor Settings > Shortcuts, user-rebindable) and adds the
+## command-palette action for discoverability (display-only shortcut text).
+func _register_recording_shortcut() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var es: Object = EditorInterface.get_editor_settings()
+	if es == null or not es.has_method("add_shortcut"):
+		return
+	var shortcut := build_toggle_shortcut(_should_use_meta())
+	es.add_shortcut(SHORTCUT_SETTINGS_PATH, shortcut)
+	var palette := EditorInterface.get_command_palette()
+	if palette != null and palette.has_method("add_command"):
+		(
+			palette
+			. add_command(
+				COMMAND_PALETTE_ACTION,
+				COMMAND_PALETTE_KEY,
+				_on_record_button_pressed,
+				shortcut.get_as_text(),
+			)
+		)
+
+
+## Removes the command-palette action on _exit_tree so re-enables don't leave
+## stale entries. The EditorSettings shortcut itself is left in place — that's
+## the point: user rebinds survive plugin disable/re-enable.
+func _unregister_recording_shortcut() -> void:
+	if not Engine.is_editor_hint():
+		return
+	var palette := EditorInterface.get_command_palette()
+	if palette != null and palette.has_method("remove_command"):
+		palette.remove_command(COMMAND_PALETTE_ACTION)
+
+
+## Returns the registered record/stop shortcut (the user's rebind if any), or
+## null when EditorSettings is unavailable — the run-bar button then simply has
+## no key binding (degradation: still clickable).
+func _get_recording_shortcut() -> Shortcut:
+	if not Engine.is_editor_hint():
+		return null
+	var es: Object = EditorInterface.get_editor_settings()
+	if es == null or not es.has_method("get_shortcut"):
+		return null
+	return es.get_shortcut(SHORTCUT_SETTINGS_PATH) as Shortcut
 
 
 # --- Game-view button grey-out ---------------------------------------------

@@ -27,6 +27,12 @@ const DEFAULT_OUTPUT_PATH := "res://movie.avi"
 ## Seconds to wait for the game to exit gracefully before forcing a stop.
 const GRACE_PERIOD := 2.0
 
+## Size at which recording auto-stops (bytes). Godot's MJPEG AVI writer uses a
+## RIFF container with 32-bit offsets, so files past 4 GiB are corrupted. The
+## dock warning is the soft notice; this guard stops the recording 256 MiB
+## before the cap so the finalization write still lands inside it.
+const AVI_SIZE_LIMIT_BYTES := 4 * 1024 * 1024 * 1024 - 256 * 1024 * 1024
+
 ## Whether a recording session is in progress (from start() until finalize).
 var _active := false
 
@@ -36,6 +42,10 @@ var _pending_start := false
 ## True while a graceful stop is in progress: awaiting poll-observed exit or
 ## the grace timer.
 var _stopping := false
+
+## True when the 4 GB AVI size guard triggered the current stop;
+## _finalize_stopped() emits the notice for it. Reset on finalize.
+var _stopped_for_size_limit := false
 
 ## Where the engine actually writes; for tier-2 targets this is the AVI
 ## intermediate. For native targets it's the final path. Consumers observe it
@@ -90,9 +100,16 @@ func get_backend_name() -> String:
 	return "Godot Movie Maker"
 
 
-## Short UI description of what this backend needs.
+## Short UI description of what this backend needs, including its capture
+## semantics: fixed-fps (non-real-time) — the scene is restarted and playback
+## is deterministically paced, so the output rate equals the configured FPS
+## regardless of editor performance.
 func get_description() -> String:
-	return "Built-in Godot encoder. No extra software needed."
+	return (
+		"Built-in Godot encoder. Fixed-fps, non-real-time: the scene is restarted "
+		+ "and playback is deterministically paced — output rate equals the "
+		+ "configured FPS regardless of editor performance. No extra software needed."
+	)
 
 
 ## Movie Maker ships with the editor, so this backend is always available.
@@ -124,6 +141,7 @@ func start(config: Dictionary) -> void:
 	_active = true
 	_pending_start = true
 	_stopping = false
+	_stopped_for_size_limit = false
 	var raw_path := str(config.get("output_path", ""))
 	if raw_path.is_empty():
 		raw_path = DEFAULT_OUTPUT_PATH
@@ -201,6 +219,10 @@ func _on_poll_timeout() -> void:
 			if _duration > 0.0:
 				# Restart so duration counts from first rendered frame.
 				_start_duration_timer()
+		else:
+			# While recording, enforce the hard 4 GB AVI cap (the dock warning
+			# is the soft notice; this is the enforcement).
+			_check_avi_size_limit()
 	else:
 		_finalize_stopped()
 
@@ -259,6 +281,15 @@ func _finalize_stopped() -> void:
 	_stop_duration_timer()
 	_stop_grace_timer()
 	recording_stopped.emit(get_backend_name(), _output_path)
+	if _stopped_for_size_limit:
+		_stopped_for_size_limit = false
+		(
+			recording_notice
+			. emit(
+				get_backend_name(),
+				"Stopped at the AVI 4 GB cap — file finalized before corruption",
+			)
+		)
 	_set_movie_maker_enabled(false)
 	_restore_settings()
 	# Tier-2: AVI just finalized, now transcode to MP4/WebM if requested.
@@ -496,3 +527,38 @@ func _ensure_timers() -> void:
 		_grace_timer.autostart = false
 		_grace_timer.timeout.connect(_on_grace_timeout)
 		add_child(_grace_timer)
+
+
+# --- AVI 4 GB hard guard ------------------------------------------------------
+
+
+## Current size in bytes of the engine's output file; 0 when the file cannot
+## be opened. Overridable seam so tests can fake sizes without a real file.
+func _get_output_file_size() -> int:
+	var abs_path := ProjectSettings.globalize_path(_output_path)
+	var f := FileAccess.open(abs_path, FileAccess.READ)
+	if f == null:
+		return 0
+	var size := f.get_length()
+	f.close()
+	return size
+
+
+## Hard 4 GB cap enforcement: once the output approaches the RIFF limit, stops
+## gracefully so the engine finalizes the AVI inside the cap (the graceful
+## quit path writes the remaining RIFF headers). The dock warning is the soft
+## notice; this is the enforcement.
+func _check_avi_size_limit() -> void:
+	if not _writes_avi():
+		return
+	if _get_output_file_size() < AVI_SIZE_LIMIT_BYTES:
+		return
+	_stopped_for_size_limit = true
+	stop()
+
+
+## Whether the engine is currently writing an AVI: native .avi output, or the
+## .avi intermediate for tier-2 MP4/WebM targets — both go through the same
+## MJPEG AVI writer with the hard 4 GB RIFF cap.
+func _writes_avi() -> bool:
+	return _output_path.get_extension().to_lower() == "avi"
