@@ -1,6 +1,6 @@
 # Plan — OBS Backend v2 (ground-up rebuild, minimal core)
 
-Date: 2026-08-11 Status: `plan` — v2 plan, locked 2026-08-14; **Phase 0 COMPLETE** (all three exit criteria green: reference vector, plumbing proof, real-OBS matrix — see `notes/PROGRESS_obs_backend_v2.md`). Phases 1–3 not started (awaiting user go for Phase 1). Branch: `obs-backend-v2` (from clean `main`). Archive of the v1 experiment: branch `obs-backend-wip` (`f74a953` impl, `713e147` tests, `f5e2a96` notes, `263b5f8` bug-7 test polish) — all 221 GUT tests green on the archive.
+Date: 2026-08-11 Status: `plan` — v2 plan, locked 2026-08-14. **Phase 0 COMPLETE** (reference vector, plumbing proof, real-OBS matrix — see `notes/PROGRESS_obs_backend_v2.md`). **Phases 1–2 COMPLETE.** **Phase 3 IN PROGRESS** — `plugin.gd` registration of `BackendOBS` + the `gd_time_machine/obs/*` EditorSettings defaults landed 2026-08-14 (see PROGRESS); remaining §6 dock work (availability gating, install dialog, native-mp4 format filter, `hints/dont_show_obs_hint`, tests) is scoped in `notes/SEED_phase3_dock_wiring.md`. Branch: `obs-backend-v2` (from clean `main`). Archive of the v1 experiment: branch `obs-backend-wip` (`f74a953` impl, `713e147` tests, `f5e2a96` notes, `263b5f8` bug-7 test polish) — all 221 GUT tests green on the archive.
 
 > Write location rule: `notes/` is the per-session plan store (`AGENTS.md`). This file IS the v2 work plan. No worker starts without explicit user "execute plan".
 
@@ -138,6 +138,5 @@ ______________________________________________________________________
 
 ## 10. What to do next
 
-1. Review this plan — confirm the minimal-core cuts (§1), the two-axis availability lock (§2), and the Phase 0 gate.
-1. Say **"execute PLAN_obs_backend_v2"** → Sisyphus delegates Phase 0 first (it is blocking), then Phases 1–3 per the delegation map (each phase = one `task(category=…, load_skills=[…])` lane; workers read this file).
-1. Phase 0 real-OBS run needs a machine with OBS on 4455 — flag if you want that gated until you can run it manually.
+1. Execute the remaining Phase 3 precisely via `notes/SEED_phase3_dock_wiring.md` (the dock work in §6 still outstanding — availability gating, install dialog, native-mp4 filter, `hints/dont_show_obs_hint`, tests). Phase-3 plugin registration + editor-settings defaults are already done.
+1. After Phase 3 lands: run the §9 manual matrix (OBS on 4455 — no password / matching / wrong password; not-installed + `auto_launch`) against the real dock, then mark the plan complete and merge `obs-backend-v2` back to `main`.

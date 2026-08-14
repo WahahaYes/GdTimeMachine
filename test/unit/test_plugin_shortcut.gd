@@ -56,3 +56,21 @@ func test_should_use_meta_returns_bool() -> void:
 	# Platform seam: deterministic per-OS; smoke-check it returns a bool so
 	# _register_recording_shortcut's branch selection is exercised headlessly.
 	assert_true(PluginScript._should_use_meta() is bool)
+
+
+func test_palette_action_and_key_are_distinct() -> void:
+	# remove_command() keys by the palette KEY (gd_time_machine_toggle_recording),
+	# not the display name. The two identifiers must never be conflated — the
+	# "command doesn't exists" teardown error came from passing the action name
+	# to remove_command. Pin the mismatch so a const edit can't silently merge.
+	assert_not_same(PluginScript.COMMAND_PALETTE_ACTION, PluginScript.COMMAND_PALETTE_KEY)
+	assert_false(PluginScript.COMMAND_PALETTE_KEY.contains(PluginScript.COMMAND_PALETTE_ACTION))
+
+
+func test_palette_key_is_settings_style_identifier() -> void:
+	# The key is unique and keyed in the palette namespace like EditorSettings
+	# paths — underscore/lowercase, not a display string.
+	assert_string_contains(PluginScript.COMMAND_PALETTE_KEY, "gd_time_machine")
+	assert_false(
+		PluginScript.COMMAND_PALETTE_KEY.contains(" "), "palette key must not contain spaces"
+	)

@@ -1,6 +1,6 @@
-# Progress — OBS Backend v2, Phase 0 (auth gate, code-side)
+# Progress — OBS Backend v2
 
-Date: 2026-08-14. Branch: `obs-backend-v2`. Working: Phase 0 only — every Phase-0 position here is evidence, not code.
+Date: 2026-08-14. Branch: `obs-backend-v2`. Working: **Phases 0–2 COMPLETE; Phase 3 IN PROGRESS** (plugin registration + editor-settings defaults done; dock gating / install dialog / native-format filter + tests remaining — see `notes/SEED_phase3_dock_wiring.md`).
 
 ## Decisions locked at session start (user)
 
@@ -149,5 +149,25 @@ Verified live (2026-08-14, user confirmed OBS WebSocket up on 4455, auth disable
 
 ## Next actions
 
-1. `make test-godot` — green (266 total).
-1. Review Phase 2 with the user, then Phase 3 (`plugin.gd` + dock wiring — plan §6) once approved. Real-OBS end-to-end matrix stays the user's manual check (§9), now runnable as the driver above.
+1. Execute the remaining Phase 3 via `notes/SEED_phase3_dock_wiring.md` — dock availability gating, install dialog, native-mp4 format filter, `hints/dont_show_obs_hint`, tests.
+1. After Phase 3: run the §9 manual matrix against the real dock (OBS on 4455 — no password / matching / wrong password; not-installed + `auto_launch`), then mark the plan complete and merge `obs-backend-v2` back to `main`.
+1. `make test-godot` — green (266 total) at time of writing.
+
+## Session 2026-08-14 (afternoon) — editor-startup log fixes + Phase-3 registration
+
+Startup logs showed two defects (user report via `make launch-editor`):
+
+1. **`Unknown backend 'OBS Studio'` (×4)** — the saved dock profile still selects "OBS Studio" (v1 era), but the v2 plugin registered only Movie Maker + Screenshot; the fully-tested `BackendOBS` (Phases 1–2) was never wired in. Fixed: registered `BackendOBS` in `plugin.gd._enter_tree` after Screenshot (Movie Maker stays default), and extended `_ensure_editor_settings_defaults()` with the `gd_time_machine/obs/{host,port,password,scene,auto_launch,auto_close,binary_path}` defaults + property info per plan §6 (install-hint `hints/dont_show_obs_hint` and the dock gating/dialog deferred with the rest of Phase 3).
+1. **`The Command 'GdTimeMachine: Toggle Recording' doesn't exists. Unable to remove it.`** — `_unregister_recording_shortcut()` passed `COMMAND_PALETTE_ACTION` (display name) to `EditorCommandPalette.remove_command()`, but that API keys by the key name (`COMMAND_PALETTE_KEY`). With the wrong identifier the C++ warn fired on the exit_tree during startup teardown. Fixed: remove by `COMMAND_PALETTE_KEY`, guarded by a `_command_palette_registered` flag set only when `add_command` actually ran (palette singleton can be null during early editor init).
+
+Regression lock: `test_plugin_shortcut.gd` now pins that the palette action and key are distinct identifiers (the exact conflation behind the teardown error). Full suite green (266); headless `--editor --quit` cycle clean (plugins init + teardown, no warnings/errors). Remaining Phase-3 §6 dock work (availability gating, install dialog, native-format filter) is still deferred — OBS is selectable now and surfacing errors is backend-guaranteed.
+
+## Phase 3 — plugin + dock wiring (IN PROGRESS)
+
+Scoped in `notes/SEED_phase3_dock_wiring.md`. Done so far (2026-08-14 session, with the startup-log fixes above):
+
+- `plugin.gd` registers `BackendOBS` after Screenshot (Movie Maker stays default) — the saved "OBS Studio" profile now resolves, no more `Unknown backend` warnings.
+- `_ensure_editor_settings_defaults()` adds `gd_time_machine/obs/{host,port,password,scene,auto_launch,auto_close,binary_path}` with property info (the only source `_get_obs_settings()` reads).
+- Note: plan §6's `_exit_tree` best-effort kill is already satisfied by `BackendOBS._exit_tree()` itself (`_we_launched && auto_close` → `_kill_process`, then `_release_obs_client`); `BackendOBS` has no `_debugger_plugin` to null.
+
+Remaining (§6 / §7 / §9, per the seed): `hints/dont_show_obs_hint` default; `_populate_backends()` marks OBS "— not available" when `is_available()` is false; `_get_allowed_formats()` honors `get_native_formats()` (MP4) for OBS; one-time install dialog (dynamic text, Bug-6 lesson) with obsproject.com link on selecting an unavailable OBS; live availability refresh from `BackendOBS.availability_changed` (dock needs backend access — see seed's design notes); install-hint AcceptDialog node in `time_machine_dock.tscn`; gating/dialog/native-formats tests in `test_time_machine_dock.gd`.

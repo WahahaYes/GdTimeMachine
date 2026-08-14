@@ -4,10 +4,10 @@ extends EditorPlugin
 ## GdTimeMachine EditorPlugin lifecycle.
 ##
 ## On enter: registers the debugger plugin, the graceful-stop autoload
-## singleton, builds the RecorderController with its Movie Maker backend,
-## adds the dock as a bottom panel, and (best-effort) inserts record
-## buttons into the editor run bar and game view toolbar via UI traversal.
-## Every traversal failure degrades to "no button" without affecting
+## singleton, builds the RecorderController with its Movie Maker, Screenshot
+## and OBS Studio backends, adds the dock as a bottom panel, and (best-effort)
+## inserts record buttons into the editor run bar and game view toolbar via UI
+## traversal. Every traversal failure degrades to "no button" without affecting
 ## recording — the bottom-panel tab is the supported surface. On exit the
 ## same pieces are torn down in reverse order.
 
@@ -55,6 +55,14 @@ var _movie_maker_backend: BackendMovieMaker
 ## Screenshot (in-place) backend registered with the controller.
 var _screenshot_backend: BackendScreenshotCapture
 
+## OBS Studio backend registered with the controller.
+var _obs_backend: BackendOBS
+
+## True once the command-palette action has been added, so _exit_tree only
+## removes what was actually registered (the palette singleton can be null
+## during early editor init while removal must stay error-free regardless).
+var _command_palette_registered := false
+
 ## Registered debugger plugin; injected into the backend for graceful stop.
 var _debugger_plugin: EditorDebuggerPlugin = null
 
@@ -99,6 +107,11 @@ func _enter_tree() -> void:
 	_screenshot_backend = BackendScreenshotCapture.new()
 	_screenshot_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_screenshot_backend)
+	# OBS Studio is registered after Movie Maker and Screenshot so the existing
+	# defaults are unchanged (Movie Maker stays the default backend; OBS is a
+	# per-project opt-in via the backend dropdown / saved profile).
+	_obs_backend = BackendOBS.new()
+	_recorder_controller.register_backend(_obs_backend)
 	_connect_controller_feedback()
 	_dock = preload("res://addons/GdTimeMachine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
@@ -405,6 +418,8 @@ static func build_toggle_shortcut(use_meta: bool) -> Shortcut:
 ## Registers the record/stop shortcut under EditorSettings (it shows up under
 ## Project > Editor Settings > Shortcuts, user-rebindable) and adds the
 ## command-palette action for discoverability (display-only shortcut text).
+## Tracks _command_palette_registered so teardown removes only what was added —
+## the palette singleton can be null during early editor init.
 func _register_recording_shortcut() -> void:
 	if not Engine.is_editor_hint():
 		return
@@ -424,17 +439,23 @@ func _register_recording_shortcut() -> void:
 				shortcut.get_as_text(),
 			)
 		)
+		_command_palette_registered = true
 
 
 ## Removes the command-palette action on _exit_tree so re-enables don't leave
-## stale entries. The EditorSettings shortcut itself is left in place — that's
-## the point: user rebinds survive plugin disable/re-enable.
+## stale entries. Removes by the palette KEY (the same identifier add_command
+## used — remove_command looks up by key name, not the display name). The
+## EditorSettings shortcut itself is left in place — that's the point: user
+## rebinds survive plugin disable/re-enable.
 func _unregister_recording_shortcut() -> void:
 	if not Engine.is_editor_hint():
 		return
+	if not _command_palette_registered:
+		return
 	var palette := EditorInterface.get_command_palette()
 	if palette != null and palette.has_method("remove_command"):
-		palette.remove_command(COMMAND_PALETTE_ACTION)
+		palette.remove_command(COMMAND_PALETTE_KEY)
+	_command_palette_registered = false
 
 
 ## Returns the registered record/stop shortcut (the user's rebind if any), or
@@ -598,6 +619,46 @@ func _ensure_editor_settings_defaults() -> void:
 						}
 					)
 				)
+		# OBS backend settings (PLAN_obs_backend_v2.md §6) — the only source
+		# BackendOBS._get_obs_settings() reads. Only set when absent so user
+		# preferences (host/port/password) survive plugin re-enables.
+		var obs_defaults: Array = [
+			[
+				"gd_time_machine/obs/host",
+				"127.0.0.1",
+				{"type": TYPE_STRING},
+			],
+			[
+				"gd_time_machine/obs/port",
+				4455,
+				{
+					"type": TYPE_INT,
+					"hint": PROPERTY_HINT_RANGE,
+					"hint_string": "1,65535",
+				},
+			],
+			[
+				"gd_time_machine/obs/password",
+				"",
+				{"type": TYPE_STRING, "hint": PROPERTY_HINT_PASSWORD},
+			],
+			["gd_time_machine/obs/scene", "", {"type": TYPE_STRING}],
+			["gd_time_machine/obs/auto_launch", true, {"type": TYPE_BOOL}],
+			["gd_time_machine/obs/auto_close", true, {"type": TYPE_BOOL}],
+			[
+				"gd_time_machine/obs/binary_path",
+				"",
+				{"type": TYPE_STRING, "hint": PROPERTY_HINT_GLOBAL_FILE},
+			],
+		]
+		for entry in obs_defaults:
+			var key: String = entry[0]
+			if not es.has_setting(key):
+				es.set_setting(key, entry[1])
+				if es.has_method("add_property_info"):
+					var info: Dictionary = entry[2].duplicate()
+					info["name"] = key
+					es.add_property_info(info)
 
 
 func _on_feedback_started(backend_name: String, output_path: String) -> void:
