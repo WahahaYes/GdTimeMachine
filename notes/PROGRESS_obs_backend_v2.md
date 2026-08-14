@@ -69,7 +69,49 @@ The single seam that joins the two halves (`start()`/`probe` forwarding settings
 - `backend/backend_obs.gd` — `@tool extends RecorderBackend class_name BackendOBS`, `_get_es()`/`_get_obs_settings()`/typed readers. No connection/state code (Phase 2).
 - `test/unit/test_obs_client.gd`, `test/unit/test_backend_obs.gd`.
 
+## Phase 1 — OBSClient full port (DONE)
+
+Port of the v1 client (obs-backend-wip) into `vendor/obs_client.gd` per plan §4, with exactly ONE behavioral change.
+
+### What landed
+
+- **State machine** `DISCONNECTED → CONNECTING → AWAITING_HELLO → AWAITING_IDENTIFIED → READY → CLOSING`, polled every `_process` (no throttle), `_ready()` starts with `set_process(false)`.
+- **Handshake** `connect_to_obs` → `_create_websocket_peer()` seam → `connect_to_url("ws://host:port", null)` with `SUBPROTOCOL`, `CONNECT_TIMEOUT = 5.0` deadline, `set_process(true)`. `_handle_hello` reads `authentication.{salt,challenge}`; Identify always carries `rpcVersion: 1` + `eventSubscriptions` (`EVENT_SUBSCRIPTIONS = (1<<0)|(1<<2)|(1<<3)|(1<<6)`).
+- **The v2 auth rule (the one behavioral change):** `_handle_hello` now computes `_generate_auth` ONLY when `_password != ""` AND both salt+challenge are present. Empty password → Identify has **no** `authentication` field (auth-disabled server connects; auth-enabled closes 4009 → surfaced later by the backend). v1 computed auth even for empty password — the masking bug this port fixes.
+- **Requests** `send_request(requestType, requestData, requestId=auto)` → `{"op":6,...}`, `{"op":7,...}` correlated by `requestId` → `request_completed`. Ops covered: GetVersion, GetRecordStatus, StartRecord, StopRecord (`outputPath`), GetSceneList, SetCurrentProgramScene. Ported `STATUS_SUCCESS/NOT_READY/OUTPUT_RUNNING` + `CLOSE_CODE_UNSUPPORTED_RPC`.
+- **Signals** `connection_established`, `connection_authenticated`, `connection_closed(code, reason)`, `connection_failed(message)`, `request_completed(...)`, `event_received(...)`, plus v1's `data_received` low-level passthrough.
+- **Failure classification** ported verbatim: `_on_socket_closed` (READY/CLOSING → `connection_closed`, else `connection_failed`) + `_describe_connect_failure` (4009 → "Authentication failed — OBS rejected the password (close code 4009)", 4010 → unsupported RPC, generic reach error with host:port) + `_check_connect_timeout` message.
+- **Seams** `_create_websocket_peer()` (untyped), `_now()` (monotonic), `is_connected_to_obs()`, `get_ready_state()`, `get_state()`. No `OS.execute`, no Thread. **NOT ported** (scope lock §1): capture-source helpers (`create_input`, `get_scene_item_list`, `get_input_kind_list`, `INPUT_KIND_*`) — deferred to `platform_capture.gd`; `SetRecordDirectory`, auto-close teardown, backend/dock wiring.
+- **Kept untouched:** `_generate_auth` (pinned) verbatim; `connect_to_obs` keeps `_password/_host/_port` storage and the out-of-range port → `ERR_INVALID_PARAMETER` (docstring upgraded from "Phase 0 records the target" to the real contract).
+
+### Test delta (`test/unit/test_obs_client.gd`: 5 → 16)
+
+All 5 Phase 0 tests untouched and green. Added (v1 `FakeWebSocketPeer`/`FakeOBSClient` seam pattern):
+
+- `test_connect_defaults_and_handshake_happy_path` (established → authenticated)
+- `test_hello_with_auth_sends_authentication_string` (challenge + non-empty password)
+- `test_empty_password_sends_no_authentication_field` (**v2 rule** — v1 sent a bogus one)
+- `test_send_request_shape_and_request_id_correlation` (+ unknown-id drop)
+- `test_send_request_auto_generated_ids_increment`
+- `test_event_forwarded_as_event_received`
+- `test_close_after_ready_emits_connection_closed`
+- `test_tcp_connect_failure_emits_connection_failed`
+- `test_auth_failure_emits_distinct_connection_failed_message` (close 4009)
+- `test_handshake_timeout_emits_connection_failed` (via `_now()` seam)
+- `test_poll_processes_packets_every_frame_without_throttle`
+
+`make test-godot`: 248 total (16 client + 232 baseline), all green, no ObjectDB leaks, no warnings. Pre-commit (gdformat, trailing-whitespace, end-of-file-fixer, gitleaks) passes on changed files.
+
+### Deviations from plan §4 / seed
+
+- **None in behavior.** Two test-file notes: (a) the seed's "no challenge → no authentication field" case is asserted inside the happy-path test (`test_connect_defaults_and_handshake_happy_path`, `assert_false(identify["d"].has("authentication"))`) rather than as a separate test; (b) v1's duplicate `test_generate_auth_matches_known_vectors` was dropped — the three Phase 0 pinned-vector tests already cover it.
+- `_handle_hello` requires salt **and** challenge present before computing (seed says "challenge present"; requiring both is the safe reading — a challenge with no salt cannot be answered correctly).
+
+### Cleanup
+
+`tools/obs_auth_probe.gd` deleted (superseded by the real client + fake-peer tests, per seed §Cleanup). Historical references to it in Phase 0 evidence above are left as-is (record of what ran).
+
 ## Next actions
 
-1. `make test-godot` — must stay green (224 baseline + new Phase 0 tests).
-1. Review Phase 0 evidence with the user. Real-OBS matrix (correct/wrong/none password) is theirs; then Phase 1 (client port).
+1. `make test-godot` — green (248 baseline + new client tests).
+1. Review Phase 1 with the user, then Phase 2 (`backend/backend_obs.gd` — plan §5) once approved. Real-OBS matrix remains the user's manual check.

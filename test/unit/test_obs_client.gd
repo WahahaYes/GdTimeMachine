@@ -1,19 +1,20 @@
 extends GutTest
 
-## Phase 0 auth gate (PLAN_obs_backend_v2.md §3.1) + client half of the
-## plumbing proof (§3.2).
+## OBSClient tests — Phase 0 auth gate (PLAN_obs_backend_v2.md §3.1) + client
+## half of the plumbing proof (§3.2), then the Phase 1 full client port (§4).
 ##
-## The three vectors below were computed INDEPENDENTLY with python3
-## hashlib/base64 — NOT by the function under test (the v1 vectors were
-## self-suspected in the seed prompt; a fresh reference run reproduces them
-## exactly). They are the hard regression lock: any auth change that shifts
-## them fails CI immediately.
-##
+## Phase 0: the three vectors below were computed INDEPENDENTLY with python3
+## hashlib/base64 — NOT by the function under test. They are the hard
+## regression lock: any auth change that shifts them fails CI immediately.
 ## Reference logic (one-liner):
 ##   base64(sha256(base64(sha256(password + salt)) + challenge))
 ##   ("password",  "salt", "challenge")  → zTM5ki6L2vVvBQiTG9ckH1Lh64AbnCf6XZ226UmnkIA=
 ##   ("p@ss w0rd", "s01t", "chal-1")     → OviXHTMUDxkuThqADhlITYdX+RovQ9rp+QknwnKk4MY=
 ##   ("", "", "")                        → XEB0z23rR/W2r5xf4+C70OQrlZb+iKxU1ca275h+DyA=
+##
+## Phase 1: handshake/state-machine tests use the FakeWebSocketPeer seam
+## pattern ported from v1 (obs-backend-wip) — a plain RefCounted standing in
+## for WebSocketPeer, which cannot be subclassed in GDScript.
 
 const REF_PASSWORD_1 := "password"
 const REF_SALT_1 := "salt"
@@ -26,6 +27,70 @@ const REF_CHALLENGE_2 := "chal-1"
 const REF_VECTOR_2 := "OviXHTMUDxkuThqADhlITYdX+RovQ9rp+QknwnKk4MY="
 
 const REF_VECTOR_EMPTY := "XEB0z23rR/W2r5xf4+C70OQrlZb+iKxU1ca275h+DyA="
+
+
+# Fake WebSocketPeer. The real class cannot be subclassed for stubbing
+# (overriding its native methods is a parse error in GDScript), so the
+# client's _create_websocket_peer seam returns this plain RefCounted exposing
+# the same surface OBSClient touches. `incoming` feeds inbound JSON frames;
+# `sent` captures outbound text frames; `ready_state` is driven by the tests.
+class FakeWebSocketPeer:
+	extends RefCounted
+	var supported_protocols: PackedStringArray = []
+	var sent: Array = []
+	var incoming: Array = []
+	var ready_state := WebSocketPeer.STATE_CONNECTING
+	var close_code := 1000
+	var close_reason := ""
+	var close_calls: Array = []
+	var connect_urls: Array = []
+
+	func poll() -> void:
+		pass
+
+	func get_ready_state() -> int:
+		return ready_state
+
+	func get_available_packet_count() -> int:
+		return incoming.size()
+
+	func get_packet() -> PackedByteArray:
+		return incoming.pop_front()
+
+	func was_string_packet() -> bool:
+		return true
+
+	func send_text(message: String) -> Error:
+		sent.append(message)
+		return OK
+
+	func connect_to_url(url: String, _tls: TLSOptions = null) -> int:
+		connect_urls.append(url)
+		ready_state = WebSocketPeer.STATE_OPEN
+		return OK
+
+	func close(code: int = 1000, reason: String = "") -> void:
+		close_calls.append([code, reason])
+		ready_state = WebSocketPeer.STATE_CLOSED
+
+	func get_close_code() -> int:
+		return close_code
+
+	func get_close_reason() -> String:
+		return close_reason
+
+
+# Fake client swapping in the fake peer and a controllable clock.
+class FakeOBSClient:
+	extends OBSClient
+	var peer := FakeWebSocketPeer.new()
+	var fake_now := 0.0
+
+	func _create_websocket_peer():
+		return peer
+
+	func _now() -> float:
+		return fake_now
 
 
 func test_generate_auth_matches_python_reference() -> void:
@@ -55,3 +120,255 @@ func test_connect_to_obs_stores_password() -> void:
 func test_connect_to_obs_rejects_out_of_range_port() -> void:
 	var client := OBSClient.new()
 	assert_eq(client.connect_to_obs(OBSClient.DEFAULT_HOST, 0, ""), ERR_INVALID_PARAMETER)
+
+
+func _make_client() -> FakeOBSClient:
+	return add_child_autofree(FakeOBSClient.new())
+
+
+func _hello_frame(authentication: Dictionary = {}) -> PackedByteArray:
+	return (
+		JSON
+		. stringify(
+			{
+				"op": 0,
+				"d":
+				{"obsWebSocketVersion": "5.5.0", "rpcVersion": 1, "authentication": authentication}
+			}
+		)
+		. to_utf8_buffer()
+	)
+
+
+func _identified_frame() -> PackedByteArray:
+	return JSON.stringify({"op": 2, "d": {"negotiatedRpcVersion": 1}}).to_utf8_buffer()
+
+
+func _event_frame(event_type: String, event_data: Dictionary = {}) -> PackedByteArray:
+	return (
+		JSON
+		. stringify(
+			{"op": 5, "d": {"eventType": event_type, "eventIntent": 1, "eventData": event_data}}
+		)
+		. to_utf8_buffer()
+	)
+
+
+func _response_frame(
+	request_id: String, result: bool, code: int, response_data: Dictionary
+) -> PackedByteArray:
+	return (
+		JSON
+		. stringify(
+			{
+				"op": 7,
+				"d":
+				{
+					"requestType": "x",
+					"requestId": request_id,
+					"requestStatus": {"result": result, "code": code},
+					"responseData": response_data,
+				},
+			}
+		)
+		. to_utf8_buffer()
+	)
+
+
+func _connect_and_authenticate(client: FakeOBSClient, peer: FakeWebSocketPeer) -> void:
+	client.connect_to_obs()
+	peer.incoming.append(_hello_frame())
+	client._process(0.0)
+	peer.incoming.append(_identified_frame())
+	client._process(0.0)
+
+
+func test_connect_defaults_and_handshake_happy_path() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	watch_signals(client)
+	assert_eq(client.connect_to_obs(), OK)
+	assert_eq(peer.connect_urls, ["ws://127.0.0.1:4455"])
+	assert_eq(peer.supported_protocols, PackedStringArray(["obswebsocket.json"]))
+	assert_false(client.is_connected_to_obs())
+	# Hello (no auth required) → Identify sent, connection_established.
+	peer.incoming.append(_hello_frame())
+	client._process(0.0)
+	assert_signal_emitted(client, "connection_established")
+	assert_eq(client.get_state(), OBSClient.State.AWAITING_IDENTIFIED)
+	assert_eq(peer.sent.size(), 1)
+	var identify: Dictionary = JSON.parse_string(peer.sent[0])
+	assert_eq(identify["op"], 1)
+	assert_eq(identify["d"]["rpcVersion"], 1)
+	assert_false(identify["d"].has("authentication"))
+	# Identified → READY + authenticated.
+	peer.incoming.append(_identified_frame())
+	client._process(0.0)
+	assert_signal_emitted(client, "connection_authenticated")
+	assert_true(client.is_connected_to_obs())
+	assert_eq(client.get_state(), OBSClient.State.READY)
+
+
+func test_hello_with_auth_sends_authentication_string() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	client.connect_to_obs("localhost", 4455, "password")
+	peer.incoming.append(_hello_frame({"challenge": "challenge", "salt": "salt"}))
+	client._process(0.0)
+	assert_eq(peer.sent.size(), 1)
+	var identify: Dictionary = JSON.parse_string(peer.sent[0])
+	assert_eq(
+		identify["d"]["authentication"],
+		"zTM5ki6L2vVvBQiTG9ckH1Lh64AbnCf6XZ226UmnkIA=",
+	)
+
+
+func test_empty_password_sends_no_authentication_field() -> void:
+	# v2 rule (PLAN §2): challenge present + empty password → NO
+	# authentication field. v1 computed a bogus auth string here, masking the
+	# plumbing bug; the server must be left to either accept (auth disabled)
+	# or close 4009 (auth enabled).
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	client.connect_to_obs("localhost", 4455, "")
+	peer.incoming.append(_hello_frame({"challenge": "challenge", "salt": "salt"}))
+	client._process(0.0)
+	assert_eq(peer.sent.size(), 1)
+	var identify: Dictionary = JSON.parse_string(peer.sent[0])
+	assert_false(identify["d"].has("authentication"))
+
+
+func test_send_request_shape_and_request_id_correlation() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	watch_signals(client)
+	_connect_and_authenticate(client, peer)
+	var rid := client.send_request("StartRecord", {"sceneName": "x"})
+	assert_eq(rid, "req_0")
+	var payload: Dictionary = JSON.parse_string(peer.sent[1])
+	assert_eq(payload["op"], 6)
+	assert_eq(payload["d"]["requestType"], "StartRecord")
+	assert_eq(payload["d"]["requestId"], "req_0")
+	assert_eq(payload["d"]["requestData"]["sceneName"], "x")
+	# Matching response fires request_completed with the echo.
+	peer.incoming.append(_response_frame("req_0", true, 100, {"outputActive": true}))
+	client._process(0.0)
+	assert_signal_emitted_with_parameters(
+		client, "request_completed", ["req_0", true, 100, {"outputActive": true}]
+	)
+	# Response for an unknown requestId is dropped, not forwarded.
+	peer.incoming.append(_response_frame("nope", false, 500, {}))
+	client._process(0.0)
+	assert_signal_emit_count(client, "request_completed", 1)
+
+
+func test_send_request_auto_generated_ids_increment() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	_connect_and_authenticate(client, peer)
+	assert_eq(client.send_request("GetVersion"), "req_0")
+	assert_eq(client.send_request("GetVersion"), "req_1")
+	assert_eq(client.send_request("GetVersion", {}, "custom"), "custom")
+	assert_eq(client.send_request("GetVersion"), "req_2")
+
+
+func test_event_forwarded_as_event_received() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	_connect_and_authenticate(client, peer)
+	watch_signals(client)
+	var data := {"outputActive": true, "outputState": "OBS_WEBSOCKET_OUTPUT_STARTED"}
+	peer.incoming.append(_event_frame("RecordStateChanged", data))
+	client._process(0.0)
+	assert_signal_emitted_with_parameters(client, "event_received", ["RecordStateChanged", data])
+
+
+func test_close_after_ready_emits_connection_closed() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	_connect_and_authenticate(client, peer)
+	watch_signals(client)
+	peer.close_code = 1000
+	peer.close_reason = "Shutting down"
+	peer.ready_state = WebSocketPeer.STATE_CLOSED
+	client._process(0.0)
+	assert_signal_emitted_with_parameters(client, "connection_closed", [1000, "Shutting down"])
+	assert_signal_not_emitted(client, "connection_failed")
+	assert_eq(client.get_state(), OBSClient.State.DISCONNECTED)
+	assert_false(client.is_connected_to_obs())
+
+
+func test_tcp_connect_failure_emits_connection_failed() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	watch_signals(client)
+	client.connect_to_obs("127.0.0.1", 4455)
+	peer.ready_state = WebSocketPeer.STATE_CLOSED
+	peer.close_code = 1006
+	client._process(0.0)
+	assert_signal_emitted_with_parameters(
+		client,
+		"connection_failed",
+		["Connection failed — could not reach OBS at 127.0.0.1:4455 (close code 1006)"],
+	)
+	assert_eq(client.get_state(), OBSClient.State.DISCONNECTED)
+
+
+func test_auth_failure_emits_distinct_connection_failed_message() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	watch_signals(client)
+	client.connect_to_obs("localhost", 4455, "wrong-password")
+	peer.incoming.append(_hello_frame({"challenge": "c", "salt": "s"}))
+	client._process(0.0)
+	assert_eq(client.get_state(), OBSClient.State.AWAITING_IDENTIFIED)
+	peer.ready_state = WebSocketPeer.STATE_CLOSED
+	peer.close_code = 4009
+	peer.close_reason = "Authentication failed."
+	client._process(0.0)
+	assert_signal_emitted_with_parameters(
+		client,
+		"connection_failed",
+		["Authentication failed — OBS rejected the password (close code 4009)"],
+	)
+
+
+func test_handshake_timeout_emits_connection_failed() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	watch_signals(client)
+	client.connect_to_obs()
+	# Deadline is _now() + 5 s; advance the fake clock past it with no frames.
+	client.fake_now = 10.0
+	client._process(0.0)
+	assert_signal_emitted_with_parameters(
+		client,
+		"connection_failed",
+		[
+			(
+				"Connection timed out — no Hello from OBS within 5 s "
+				+ "(is the WebSocket server enabled?)"
+			)
+		],
+	)
+	assert_eq(client.get_state(), OBSClient.State.DISCONNECTED)
+	assert_eq(peer.close_calls.size(), 1)
+
+
+func test_poll_processes_packets_every_frame_without_throttle() -> void:
+	var client := _make_client()
+	var peer: FakeWebSocketPeer = client.peer
+	watch_signals(client)
+	client.connect_to_obs()
+	# A queued frame is handled on the very next _process even with delta 0
+	# (a 1 s poll_time would have skipped both these frames).
+	peer.incoming.append(_hello_frame())
+	client._process(0.0)
+	peer.incoming.append(_identified_frame())
+	client._process(0.0)
+	assert_true(client.is_connected_to_obs())
+	peer.incoming.append(_event_frame("A"))
+	client._process(0.0)
+	peer.incoming.append(_event_frame("B"))
+	client._process(0.0)
+	assert_signal_emit_count(client, "event_received", 2)
