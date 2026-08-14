@@ -111,7 +111,43 @@ All 5 Phase 0 tests untouched and green. Added (v1 `FakeWebSocketPeer`/`FakeOBSC
 
 `tools/obs_auth_probe.gd` deleted (superseded by the real client + fake-peer tests, per seed §Cleanup). Historical references to it in Phase 0 evidence above are left as-is (record of what ran).
 
+## Phase 2 — BackendOBS (`backend/backend_obs.gd`) (DONE)
+
+Port of the v1 backend into the Phase 0 `backend_obs.gd` per plan §5. Two spec-open decisions were locked with the user before writing code — **A1** and **B1**, both the proven v1 behavior:
+
+- **A1 — pending-start poll:** `_poll_timer` polls `_is_playing_scene()` (v1), not §5's literal GetRecordStatus. PENDING_START = "launched the scene, waiting for it"; when it starts, `_begin_recording()` connects + `StartRecord`, confirmed by its own response (`result || code==STATUS_OUTPUT_RUNNING` counts as success). Rationale recorded at decision time: GetRecordStatus says nothing about scene state, adds a request round-trip and a second failure surface, and no §5 test needs it.
+- **B1 — start() unreachable path:** an explicit `is_obs_installed()` gate first with the actionable "OBS Studio not found … Tools → WebSocket Server Settings" error, then `is_obs_running()` → `ensure_obs_running()`, then `recording_error(_describe_start_error())` (which appends the 4009 password hint). Plan §9 wants "not installed" distinguishable; §5's single-funnel text lives beneath it for reachable-but-connect-fails.
+
+### What landed
+
+- **Two-axis availability** (plan §2, never conflated): `is_available()` = cached probe result `_available`; `is_obs_installed()` = `_resolve_and_cache_binary()` guarded by the `_obs_binary_resolved` flag (Bug 1). `_ready()` seeds+refreshes the probe on the `AVAILABILITY_TTL` 5 s cycle **only under `Engine.is_editor_hint()`** — headless GUT never opens a real socket, keeping Phase 0 plumbing tests deterministic.
+- **Probe/launch/ownership:** `probe_obs_async()` (fire-and-forget, captures failures into `_last_connect_error`), `ensure_obs_running()` gating on `is_obs_running()` reachability (Bug 3), launch `--minimize-to-tray` when `auto_launch`, 10 s poll, kill own pid on timeout, `_we_launched` tracking. Never kills a pre-existing OBS.
+- **Record flow:** `start()` parse + non-MP4 format guard (v1 records MP4 natively; webm/avi/ogv deferred §1) → B1 install gate → reachability → A1 scene-poll pending-start → `_begin_recording()` (connect 3 s, `SetCurrentProgramScene`, `StartRecord`). `stop()` → `StopRecord` → read `outputPath` → move-after-stop (`_resolve_and_move_output` with `globalize_path`/`path_join` fallback) → `_finalize_stopped()` single `recording_stopped` emission (guarded). 3 s fallback timer protects a dropped StopRecord response.
+- **Error surfacing:** v1 `_last_connect_error` + `_describe_start_error()` — 4009 → "Authentication failed" + password guidance naming `gd_time_machine/obs/password`.
+- **Seams** `_create_obs_client()`, `_get_obs_settings()`, `_is_playing_scene()`, `_play_scene()`, `_now()`, `_sleep()`, `_resolve_obs_binary()`, `_os_execute()`, `_launch_obs_process()`, `_kill_process()`. `_get_auto_close_setting()` reads via the Phase 0 `_read_setting` seam (EditorSettings-first), not the dead `Engine.has_singleton("EditorSettings")` branch.
+- **Cut (scope lock §1):** capture-source machinery (`ensure_screen_capture`, token persistence, `needs_setup`, Wayland detect), `SetRecordDirectory` (move-after-stop only), ffmpeg tier-2 conversion/`recording_converted`, idle-timer `auto_close` teardown (only `_exit_tree` best-effort kill-if-`_we_launched` kept).
+
+### Test delta (`test/unit/test_backend_obs.gd`: 5 → 26)
+
+All 5 Phase 0 plumbing tests untouched and green. Added — contract; two-axis availability (installed true/false, resolve-exactly-once, is_available never-binary both directions, `is_obs_running` stale→re-probe / fresh→no); ensure_obs_running (reachable-no-launch, launch+own, kill-own-on-timeout); start paths (B1 not-installed error, format guard, happy `recording_started`, A1 pending-start launches scene then records, pending expiry, duration auto-stop); stop (never-kill + single emission, pending-stop without connecting); file-move fallback; probe failure capture + auth-guidance + generic error text (v1 Bug-7 pattern). Seam fakes: `FakeOBSClient` (synchronous connect-to-READY / `connection_failed`, **deferred one-frame request replies** to honor the async ordering `_pending_request_id` relies on), `FakeBackendOBS`, `RecordingBackend`, `LaunchTestBackend`, `ProbeFailureBackend`.
+
+`make test-godot`: **266 total** (26 backend + 240 baseline), all green, 0 failures/warnings. Pre-commit (gdformat now fixing my form, trailing-whitespace, end-of-file-fixer, gitleaks) green on both files.
+
+### Deviations from plan §5 / spec
+
+- **A1 by user lock:** GetRecordStatus not used in the poll (client op still shipped in Phase 1 for Phase-3-era use).
+- `_ready()` availability wiring is editor-gated (plan doesn't say; necessary for deterministic headless tests since the Phase 0 `_make_backend()` constructs the raw class).
+- Format guard (non-MP4 → `recording_error`) added as a Phase-2-than-Phase-3 correctness cut; plan only mandates the MP4-native format set.
+
+## Interactive driver (new Phase-2 tooling)
+
+`tools/obs_backend_drive.gd` (`extends SceneTree`, runs via `godot --headless -s`) drives the REAL backend — real probe, connect, StartRecord/StopRecord, move-after-stop — against a live obs-websocket server, plus the B1 not-installed error path. Only seams stubbed: `_is_playing_scene()`/`_play_scene()` (back onto `EditorInterface`; the dock owns those in Phase 3). This supersedes the deleted Phase 0 probe as the pre-dock form of the §9 matrix (items 1–3).
+
+Usage (mirrors matrix): `godot --headless -s --path . tools/obs_backend_drive.gd -- [--password X] [--binary PATH] [--wait SECONDS] [--output PATH] [--host/--port] [--launch] [--no-obs]`. Live mode gates on a fresh `probe_obs_async()` result first (cold-cache: `is_obs_running()` returns stale false and fires an async probe, so `start()`'s `ensure_obs_running()` would bail before the answer lands — this is Bug-3 behavior, not a driver bug); `--launch` bypasses the gate so `ensure_obs_running()` can spawn and poll for itself.
+
+Verified live (2026-08-14, user confirmed OBS WebSocket up on 4455, auth disabled): `--no-obs` → `RESULT EXPECTED_ERROR` (B1 "OBS Studio not found"); live empty-password run → `RESULT OK`, 1.38 MB `res://media/captures/obs/obs_driver.mp4` moved into the repo (file present). Full suite stays green (266).
+
 ## Next actions
 
-1. `make test-godot` — green (248 baseline + new client tests).
-1. Review Phase 1 with the user, then Phase 2 (`backend/backend_obs.gd` — plan §5) once approved. Real-OBS matrix remains the user's manual check.
+1. `make test-godot` — green (266 total).
+1. Review Phase 2 with the user, then Phase 3 (`plugin.gd` + dock wiring — plan §6) once approved. Real-OBS end-to-end matrix stays the user's manual check (§9), now runnable as the driver above.
