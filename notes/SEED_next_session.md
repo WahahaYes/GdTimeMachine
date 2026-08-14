@@ -14,11 +14,12 @@ Continue the **OBS backend v2 ground-up rebuild** for the GdTimeMachine Godot 4.
 main            1741af5  (clean; pre-OBS baseline)
 obs-backend-wip 263b5f8  (v1 experiment archive: impl f74a953, tests 713e147,
                           notes f5e2a96, bug-7 polish 263b5f8; 221 GUT tests green)
-obs-backend-v2  e21397f  ← CURRENT BRANCH. Plan + seed committed; Phase 0
-                          code-side gate applied (see below); Phases 1–3 not started.
+obs-backend-v2  e21397f  ← CURRENT BRANCH. Plan + seed committed; **Phase 0
+                          COMPLETE** (vector + plumbing + real-OBS matrix all
+                          green, see PROGRESS_obs_backend_v2.md). Phase 1 not started.
 ```
 
-Working tree has uncommitted Phase 0 files (vendor/obs_client.gd + NOTICE.txt, backend/backend_obs.gd, test/unit/test_obs_client.gd, test/unit/test_backend_obs.gd, notes/PROGRESS_obs_backend_v2.md). Branches never pushed; all local.
+Working tree has uncommitted Phase 0 files (vendor/obs_client.gd + NOTICE.txt, backend/backend_obs.gd, test/unit/test_obs_client.gd, test/unit/test_backend_obs.gd, tools/obs_auth_probe.gd, notes/PROGRESS_obs_backend_v2.md). Branches never pushed; all local.
 
 ## The single most important finding (drives everything)
 
@@ -37,7 +38,7 @@ Working tree has uncommitted Phase 0 files (vendor/obs_client.gd + NOTICE.txt, b
 ## Open user decisions — RESOLVED 2026-08-14 (do not re-ask)
 
 1. **Dock has no OBS settings UI** — KEPT. Password/host/port stay in Project > Editor Settings (`gd_time_machine/obs/*`), read path proven by GUT tests. A dock password field is only a follow-up if the real-OBS run implicates the read path (Phase 0 says it doesn't).
-1. **Real-OBS Phase 0** — code-side gate ran first (done); the manual correct/wrong/none-password matrix on 4455 is the USER's step and is BLOCKING before Phase 1.
+1. **Real-OBS Phase 0** — code-side gate ran first (done); the manual matrix on 4455 was the user's step and is **DONE** (all three cases pass — correct → Identified, wrong → 4009, none → Identified). No longer blocking.
 
 ## Execution protocol (non-negotiable)
 

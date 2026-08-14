@@ -32,6 +32,16 @@ EditorInterface.get_editor_settings()  → exists, works (editor mode)
 
 Fix path adopted: reuse this codebase's proven `EditorSettingsConfigStore` pattern (config/editor_settings_store.gd) — `_editor_settings` injected seam, else `EditorInterface.get_editor_settings()` when `Engine.is_editor_hint()`, else null → `EditorSettings-first, then ProjectSettings, then default`. Headless GUT covers ProjectSettings via the real singleton; the EditorSettings-present branch is covered by injecting a fake store through `_editor_settings` (same seam the config store tests already use).
 
+### 3.3 Real OBS (manual) — PASS, run by user 2026-08-14
+
+Probe: `tools/obs_auth_probe.gd` (Phase 0 tooling, not addon code) connects to `ws://127.0.0.1:4455`, uses `OBSClient._generate_auth` on a real obs-websocket 5.x server:
+
+| case | result | |---|---| | correct password (`obs-auth`), auth enabled | `RESULT IDENTIFIED` — real OBS accepted the auth response | | wrong password (`obs-auth2`), auth enabled | `RESULT AUTH_FAILED (close 4009): Authentication failed.` | | empty password, auth disabled | `RESULT IDENTIFIED` (no `authentication` field sent) |
+
+**Phase 0 exit criteria met:** fixed vector test green, plumbing test green, real-OBS matrix behaves exactly as documented. (The `ObjectDB leaked` / `resources still in use` warnings at probe exit are the probe quitting without freeing its WebSocketPeer — tooling noise, not an addon issue.)
+
+**Phase 0 COMPLETE. Next: Phase 1** (`vendor/obs_client.gd` full client port) once the user approves.
+
 ### Phase 0 test breakdown
 
 `test_obs_client.gd`
