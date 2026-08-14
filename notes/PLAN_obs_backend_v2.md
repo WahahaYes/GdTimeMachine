@@ -1,6 +1,6 @@
 # Plan — OBS Backend v2 (ground-up rebuild, minimal core)
 
-Date: 2026-08-11 Status: `plan` — no code yet. Branch: `obs-backend-v2` (from clean `main`). Archive of the v1 experiment: branch `obs-backend-wip` (`f74a953` impl, `713e147` tests, `f5e2a96` notes, `263b5f8` bug-7 test polish) — all 221 GUT tests green on the archive.
+Date: 2026-08-11 Status: `plan` — v2 plan, locked 2026-08-14; **Phase 0 code-side gate DONE** (reference vector + plumbing proof green, `notes/PROGRESS_obs_backend_v2.md`). Phases 1–3 not started (blocked on the user's real-OBS matrix). Branch: `obs-backend-v2` (from clean `main`). Archive of the v1 experiment: branch `obs-backend-wip` (`f74a953` impl, `713e147` tests, `f5e2a96` notes, `263b5f8` bug-7 test polish) — all 221 GUT tests green on the archive.
 
 > Write location rule: `notes/` is the per-session plan store (`AGENTS.md`). This file IS the v2 work plan. No worker starts without explicit user "execute plan".
 

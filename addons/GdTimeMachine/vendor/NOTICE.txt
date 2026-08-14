@@ -1,0 +1,7 @@
+GdTimeMachine includes auth logic ported from obs-websocket-gd (Apache-2.0)
+by you-win — https://github.com/you-win/obs-websocket-gd
+
+The OBS WebSocket 5.x authentication challenge response (base64(sha256(
+base64(sha256(password + salt)) + challenge))) in vendor/obs_client.gd
+(_generate_auth) is derived from obs-websocket-gd and used under the terms
+of the Apache License 2.0. See LICENSE.txt for the full license text.
