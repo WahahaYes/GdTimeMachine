@@ -660,6 +660,15 @@ func _ensure_editor_settings_defaults() -> void:
 					info["name"] = key
 					es.add_property_info(info)
 
+		# Install-hint suppression flag (Phase 3): set when the user ticks "Don't
+		# show again" in the OBS install hint dialog, so the dialog stays
+		# suppressed across restarts. Read/written by the dock via the same
+		# EditorSettings-first path the backends use.
+		if not es.has_setting("hints/dont_show_obs_hint"):
+			es.set_setting("hints/dont_show_obs_hint", false)
+			if es.has_method("add_property_info"):
+				es.add_property_info({"name": "hints/dont_show_obs_hint", "type": TYPE_BOOL})
+
 
 func _on_feedback_started(backend_name: String, output_path: String) -> void:
 	print("[GdTM] %s recording → %s" % [backend_name, output_path])

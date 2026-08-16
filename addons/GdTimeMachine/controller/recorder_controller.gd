@@ -33,6 +33,11 @@ signal recording_error(backend_name: String, error_message: String)
 signal recording_notice(backend_name: String, message: String)
 ## Emitted when ffmpeg auto-conversion succeeds (forwarded from the backend).
 signal recording_converted(backend_name: String, clip_path: String)
+## Emitted when a registered backend's availability flips (forwarded from
+## backends that declare availability_changed — not in the base contract, so
+## guarded with has_signal). Lets the dock re-mark the backend dropdown
+## without ever holding backend references.
+signal backend_availability_changed(backend_name: String, available: bool)
 
 
 ## Registers a backend under its own name, connects its signals, reparents it
@@ -95,6 +100,15 @@ func get_backend_names() -> Array:
 ## Whether the active backend is currently recording.
 func is_recording() -> bool:
 	return active_backend != null and active_backend.is_recording()
+
+
+## Whether the backend registered under backend_name reports itself available
+## right now. Thin read-only wrapper so the UI never holds backend references.
+func is_backend_available(backend_name: String) -> bool:
+	if not backends.has(backend_name):
+		return false
+	var backend: RecorderBackend = backends[backend_name]
+	return backend.is_available()
 
 
 ## Capture mode of the active backend, so UI never reaches into backends
@@ -161,6 +175,10 @@ func _connect_backend_signals(backend: RecorderBackend) -> void:
 	backend.recording_notice.connect(_on_backend_recording_notice)
 	if backend.has_signal("recording_converted"):
 		backend.recording_converted.connect(_on_backend_recording_converted)
+	if backend.has_signal("availability_changed"):
+		backend.availability_changed.connect(
+			_on_backend_availability_changed.bind(backend.get_backend_name())
+		)
 
 
 ## Disconnects a backend's signals from this controller's re-emit handlers.
@@ -172,6 +190,12 @@ func _disconnect_backend_signals(backend: RecorderBackend) -> void:
 	if backend.has_signal("recording_converted"):
 		if backend.recording_converted.is_connected(_on_backend_recording_converted):
 			backend.recording_converted.disconnect(_on_backend_recording_converted)
+	if backend.has_signal("availability_changed"):
+		# The connect side binds the backend name, so the disconnect must use
+		# the same bound callable (Callable equality includes bound args).
+		var bound := _on_backend_availability_changed.bind(backend.get_backend_name())
+		if backend.availability_changed.is_connected(bound):
+			backend.availability_changed.disconnect(bound)
 
 
 ## Forwards a backend's recording_started as the controller's own signal.
@@ -197,3 +221,8 @@ func _on_backend_recording_notice(backend_name: String, message: String) -> void
 ## Forwards a backend's recording_converted as the controller's own signal.
 func _on_backend_recording_converted(backend_name: String, clip_path: String) -> void:
 	recording_converted.emit(backend_name, clip_path)
+
+
+## Forwards a backend's availability_changed as the controller's own signal.
+func _on_backend_availability_changed(available: bool, backend_name: String) -> void:
+	backend_availability_changed.emit(backend_name, available)

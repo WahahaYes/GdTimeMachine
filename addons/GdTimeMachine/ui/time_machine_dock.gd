@@ -51,6 +51,21 @@ const ICON_STOP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
 ## Icon path for the dock's brand logo (title bar).
 const ICON_LOGO_PATH := "res://addons/GdTimeMachine/ui/icons/icon_logo.svg"
 
+## Backend name the install-hint dialog applies to (BackendOBS.get_backend_name()).
+## OBS is the only backend that can be unavailable; the suffix + tooltip marking
+## below applies to any unavailable backend, but the dialog is OBS-specific.
+const OBS_BACKEND_NAME := "OBS Studio"
+
+## Suffix appended to a dropdown item whose backend reports itself unavailable.
+const UNAVAILABLE_SUFFIX := " — not available"
+
+## EditorSettings key for the install-hint suppression flag (Phase 3; default
+## false, registered in plugin.gd). True = never show the hint again.
+const OBS_HINT_DONT_SHOW_SETTING := "hints/dont_show_obs_hint"
+
+## OBS download/install page opened by the dialog's link.
+const OBS_DOWNLOAD_URL := "https://obsproject.com"
+
 ## Loaded record icon (scaled to button height — see _ready()).
 var _icon_record: Texture2D
 
@@ -149,6 +164,28 @@ var _format_warning_label: Label = $Split/RightColumn/SettingsGroup/FormatWarnin
 ## used as the fallback surface when the run-bar button is unavailable.
 var _pending_record_shortcut: Shortcut = null
 
+## Injected EditorSettings stand-in for headless GUT (mirrors BackendOBS's
+## seam). When null, falls back to EditorInterface in editor context, else null.
+var _editor_settings: Object = null
+
+## Test seam: count of times the OBS install hint was requested to pop up.
+## A headless DisplayServer can't reflect Window.visible, so tests assert on
+## this counter instead of dialog.visible.
+var _install_hint_popups := 0
+
+## OBS install-hint AcceptDialog (tscn node). Built once; text set per show.
+@onready var _obs_install_dialog: AcceptDialog = $ObsInstallDialog
+
+## Dynamic body of the install hint (rebuilt per show — Bug-6 lesson).
+@onready var _obs_hint_label: Label = $ObsInstallDialog/HintContent/HintLabel
+
+## "Open obsproject.com" link button.
+@onready
+var _obs_hint_download: LinkButton = $ObsInstallDialog/HintContent/DownloadRow/DownloadButton
+
+## "Don't show this hint again" checkbox.
+@onready var _obs_hint_dont_show: CheckBox = $ObsInstallDialog/HintContent/DontShowAgain
+
 
 ## Called by plugin.gd before the dock enters the tree; stores the
 ## controller and optional config store. UI wiring happens in _ready().
@@ -201,6 +238,10 @@ func _ready() -> void:
 	_duration_spin.value_changed.connect(func(_v): _on_duration_changed())
 	_fps_spin.value_changed.connect(func(_v): _on_fps_changed())
 	_scene_edit.text_changed.connect(_on_scene_edit_changed)
+	# OBS install-hint dialog: persist "don't show again" on either exit path.
+	_obs_install_dialog.confirmed.connect(_on_obs_install_dialog_closed)
+	_obs_install_dialog.close_requested.connect(_on_obs_install_dialog_closed)
+	_obs_hint_download.pressed.connect(_open_obs_download)
 	if _controller != null:
 		_apply_setup()
 
@@ -253,6 +294,7 @@ func _apply_setup() -> void:
 	_controller.recording_notice.connect(_on_recording_notice)
 	if _controller.has_signal("recording_converted"):
 		_controller.recording_converted.connect(_on_recording_converted)
+	_controller.backend_availability_changed.connect(_on_backend_availability_changed)
 	_populate_backends()
 	_populate_formats()
 	_load_settings()
@@ -272,20 +314,62 @@ func _ensure_config_store() -> void:
 		_config_store = CompositeConfigStore.new()
 
 
-## Fills the backend dropdown from the controller's registered backends.
+## Fills the backend dropdown from the controller's registered backends. Each
+## item's metadata carries the raw backend name (the item text may carry the
+## " — not available" suffix), so selection/profile reads never see the suffix.
+## Unavailable backends are kept selectable: a hard set_item_disabled would
+## make the OBS install hint unreachable, and selection must be able to fire it.
 func _populate_backends() -> void:
 	_backend_option.clear()
 	for name in _controller.get_backend_names():
-		_backend_option.add_item(str(name))
+		var backend_name := str(name)
+		var i := _backend_option.item_count
+		var available := _controller.is_backend_available(backend_name)
+		_backend_option.add_item(_backend_label(backend_name, available))
+		_backend_option.set_item_metadata(i, backend_name)
+		if not available:
+			_backend_option.set_item_tooltip(i, _unavailable_tooltip(backend_name))
 	_select_backend_item(
 		_controller.active_backend.get_backend_name() if _controller.active_backend else ""
 	)
 
 
-## Formats the active backend actually supports: screenshot (IN_PLACE) natively
-## writes PNG/JPG frames but can convert to any container via ffmpeg; Movie Maker
-## natively writes AVI/OGV/PNG and needs ffmpeg for MP4/WebM.
+## Dropdown label for a backend: the plain name when available, otherwise the
+## name plus the " — not available" suffix (the §6 "greyed" marker).
+func _backend_label(backend_name: String, available: bool) -> String:
+	if available:
+		return backend_name
+	return "%s%s" % [backend_name, UNAVAILABLE_SUFFIX]
+
+
+## Tooltip for an unavailable backend item explaining why it is marked and
+## what to do. OBS gets actionable WebSocket guidance naming the actual
+## host/port from settings (Bug-6 lesson — never a hardcoded "OBS must be
+## running"); other backends get a generic note.
+func _unavailable_tooltip(backend_name: String) -> String:
+	if backend_name != OBS_BACKEND_NAME:
+		return "%s is currently unavailable." % backend_name
+	return (
+		(
+			"%s is not reachable at %s. Install OBS Studio, enable the WebSocket "
+			+ "server (Tools → WebSocket Server Settings → Enable WebSocket Server), "
+			+ "and check gd_time_machine/obs/* (host/port/password) under Project > "
+			+ "Editor Settings."
+		)
+		% [backend_name, _obs_target_text()]
+	)
+
+
+## Formats the active backend actually supports. A backend may declare exact
+## native formats (BackendOBS → [MP4]) — then the dropdown offers exactly
+## those. Guarded with has_method so Movie Maker / Screenshot keep their
+## existing lists: screenshot (IN_PLACE) natively writes PNG/JPG frames but can
+## convert to any container via ffmpeg; Movie Maker natively writes AVI/OGV/PNG
+## and needs ffmpeg for MP4/WebM.
 func _get_allowed_formats() -> Array:
+	var backend := _controller.active_backend if _controller != null else null
+	if backend != null and backend.has_method("get_native_formats"):
+		return backend.get_native_formats()
 	if (
 		_controller != null
 		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
@@ -314,10 +398,11 @@ func _populate_formats() -> void:
 		_format_option.add_item(GdTMOutputFormat.display_name(fmt))
 
 
-## Selects the dropdown item whose text matches backend_name.
+## Selects the dropdown item whose metadata matches backend_name. Item text
+## is not the identity (it can carry the " — not available" suffix).
 func _select_backend_item(backend_name: String) -> void:
 	for i in _backend_option.item_count:
-		if _backend_option.get_item_text(i) == backend_name:
+		if str(_backend_option.get_item_metadata(i)) == backend_name:
 			_backend_option.select(i)
 			return
 
@@ -383,17 +468,28 @@ func _build_profile_from_ui() -> RecordingProfile:
 	p.duration = 0.0 if _duration_spin.value <= 0.0 else float(_duration_spin.value)
 	p.scene_path = _scene_edit.text.strip_edges()
 	if _backend_option.selected >= 0:
-		p.backend_name = _backend_option.get_item_text(_backend_option.selected)
+		# Metadata carries the raw backend name (the item text may carry the
+		# " — not available" suffix, which must never reach the stored profile).
+		var meta: Variant = _backend_option.get_item_metadata(_backend_option.selected)
+		var stored_name := str(meta) if meta != null else ""
+		if stored_name.is_empty():
+			stored_name = _backend_option.get_item_text(_backend_option.selected)
+		p.backend_name = stored_name
 	return p
 
 
-## Switches the controller to the backend chosen in the dropdown and
-## persists the preference to the default profile.
+## Switches the controller to the backend chosen in the dropdown and persists
+## the preference to the default profile. When an unavailable OBS Studio is
+## chosen, fires the install hint (repeatable until suppressed; recording
+## itself still fails actionably from the backend's error path).
 func _on_backend_selected(index: int) -> void:
 	if _controller == null:
 		return
-	var name := _backend_option.get_item_text(index)
+	var name := str(_backend_option.get_item_metadata(index))
+	if name.is_empty():
+		name = _backend_option.get_item_text(index)
 	_controller.select_backend(name)
+	_maybe_show_obs_install_hint(name)
 	if not _applying_profile:
 		_persist_default_profile()
 
@@ -498,6 +594,20 @@ func _on_backend_changed(backend_name: String) -> void:
 	_persist_default_profile()
 
 
+## Re-marks a backend's dropdown item when its availability flips async (OBS
+## probe result), so the " — not available" suffix un-greys when OBS starts.
+func _on_backend_availability_changed(backend_name: String, available: bool) -> void:
+	for i in _backend_option.item_count:
+		if str(_backend_option.get_item_metadata(i)) != backend_name:
+			continue
+		_backend_option.set_item_text(i, _backend_label(backend_name, available))
+		if available:
+			_backend_option.set_item_tooltip(i, "")
+		else:
+			_backend_option.set_item_tooltip(i, _unavailable_tooltip(backend_name))
+		return
+
+
 ## Rebuilds the format dropdown for the active backend, keeping the current
 ## selection when the backend still supports it and falling back to the first
 ## allowed format otherwise (so the dropdown always has a valid selection).
@@ -525,6 +635,91 @@ func _update_backend_tooltip() -> void:
 		_backend_option.tooltip_text = note
 	else:
 		_backend_option.tooltip_text = "%s\n%s" % [note, description]
+
+
+## Shows the OBS install hint when an unavailable OBS Studio item is selected
+## (repeatable as a reminder until the user sets hints/dont_show_obs_hint; the
+## flag is persisted when the box is ticked and the dialog closes). Suppressed
+## while the flag is true. The body is rebuilt dynamically with the real
+## settings host/port (Bug 6).
+func _maybe_show_obs_install_hint(backend_name: String) -> void:
+	if backend_name != OBS_BACKEND_NAME:
+		return
+	if _obs_install_dialog == null:
+		return
+	if bool(_read_setting(OBS_HINT_DONT_SHOW_SETTING, false)):
+		return
+	# Never hint at an OBS that is actually reachable — the dialog asserts the
+	# opposite, so it must only appear while availability is false (D1).
+	if _controller != null and _controller.is_backend_available(backend_name):
+		return
+	_update_obs_install_dialog_text()
+	_obs_hint_dont_show.button_pressed = false
+	_install_hint_popups += 1
+	_obs_install_dialog.popup_centered()
+
+
+## "ws://host:port" resolved from the same OBS settings the backend reads.
+func _obs_target_text() -> String:
+	var host := str(_read_setting("gd_time_machine/obs/host", "127.0.0.1"))
+	var port := int(_read_setting("gd_time_machine/obs/port", 4455))
+	return "ws://%s:%d" % [host, port]
+
+
+## Builds the install-hint body from the real settings host/port (Bug-6
+## lesson: never assume OBS is running; the text always names the actual
+## target the backend would connect to).
+func _update_obs_install_dialog_text() -> void:
+	_obs_hint_label.text = (
+		(
+			"OBS Studio isn't running or reachable at %s.\n\n"
+			+ "To record with OBS Studio:\n"
+			+ "1. Install OBS Studio (obsproject.com — use the link below).\n"
+			+ "2. Start OBS and enable the WebSocket server: Tools → WebSocket "
+			+ "Server Settings → Enable WebSocket Server.\n"
+			+ "3. If the server requires a password, set the same password under "
+			+ "Project > Editor Settings → gd_time_machine/obs/password."
+		)
+		% _obs_target_text()
+	)
+
+
+## Opens the OBS download page in the system browser.
+func _open_obs_download() -> void:
+	OS.shell_open(OBS_DOWNLOAD_URL)
+
+
+## Persists the "don't show again" flag when the dialog closes with the box
+## ticked. Fires on both the OK button (confirmed) and the window X
+## (close_requested) so the choice survives either exit path.
+func _on_obs_install_dialog_closed() -> void:
+	if _obs_hint_dont_show != null and _obs_hint_dont_show.button_pressed:
+		var es := _get_es()
+		if es != null and es.has_method("set_setting"):
+			es.set_setting(OBS_HINT_DONT_SHOW_SETTING, true)
+
+
+## Returns the settings store to read, or null outside the editor when no fake
+## was injected. Mirrors BackendOBS._get_es() (the proven 4.x access path —
+## Engine.has_singleton("EditorSettings") is dead code on 4.7).
+func _get_es() -> Object:
+	if _editor_settings != null:
+		return _editor_settings
+	if Engine.is_editor_hint():
+		return EditorInterface.get_editor_settings()
+	return null
+
+
+## First non-null value across EditorSettings → ProjectSettings → default.
+func _read_setting(key: String, default: Variant) -> Variant:
+	var es := _get_es()
+	if es != null and es.has_method("get_setting"):
+		var v: Variant = es.get_setting(key)
+		if v != null:
+			return v
+	if ProjectSettings.has_setting(key):
+		return ProjectSettings.get_setting(key)
+	return default
 
 
 ## In-place backends record the running scene and stop without killing it,
@@ -789,9 +984,20 @@ func _on_recording_stopped(_backend_name: String, output_path: String) -> void:
 		_set_status("Saved %s" % output_path.get_file(), COLOR_IDLE)
 
 
-## Whether the current selected format requires ffmpeg conversion given the capture mode.
+## Whether the current selected format requires ffmpeg conversion given the
+## capture mode. A backend that declares exact native formats (BackendOBS →
+## [MP4]) produces them itself, so its own formats never expect a Converting…
+## status (that path would dangle: OBS emits only recording_stopped, never
+## recording_converted).
 func _expects_conversion() -> bool:
 	var fmt := _get_selected_format()
+	var backend := _controller.active_backend if _controller != null else null
+	if (
+		backend != null
+		and backend.has_method("get_native_formats")
+		and backend.get_native_formats().has(fmt)
+	):
+		return false
 	# IN_PLACE: PNG/JPG are native frames, rest need ffmpeg.
 	if (
 		_controller != null

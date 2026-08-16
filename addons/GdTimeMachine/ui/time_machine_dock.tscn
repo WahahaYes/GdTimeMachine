@@ -134,3 +134,24 @@ color = Color(0.62, 0.62, 0.62, 1)
 size_flags_horizontal = 3
 text = "Ready"
 clip_text = true
+
+[node name="ObsInstallDialog" type="AcceptDialog" parent="."]
+title = "OBS Studio not detected"
+
+[node name="HintContent" type="VBoxContainer" parent="ObsInstallDialog"]
+custom_minimum_size = Vector2(460, 0)
+theme_override_constants/separation = 8
+
+[node name="HintLabel" type="Label" parent="ObsInstallDialog/HintContent"]
+size_flags_horizontal = 3
+text = "OBS Studio isn't running or reachable."
+autowrap_mode = 3
+
+[node name="DownloadRow" type="HBoxContainer" parent="ObsInstallDialog/HintContent"]
+theme_override_constants/separation = 4
+
+[node name="DownloadButton" type="LinkButton" parent="ObsInstallDialog/HintContent/DownloadRow"]
+text = "Open obsproject.com"
+
+[node name="DontShowAgain" type="CheckBox" parent="ObsInstallDialog/HintContent"]
+text = "Don't show this hint again"

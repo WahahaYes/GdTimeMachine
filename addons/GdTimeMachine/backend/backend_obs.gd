@@ -244,7 +244,9 @@ func _await_auth(client: OBSClient, timeout: float) -> bool:
 ## Ensures OBS is running and reachable, launching it (auto_launch) if not.
 ## Gates on is_obs_running() (reachability) — never on install status (Bug 3).
 ## Launched processes are owned via _we_launched/_launched_pid; a pre-existing
-## OBS is never killed.
+## OBS is never killed. Narrates the launch/wait flow via recording_notice so
+## the plugin's [GdTM] terminal log and the dock status line show what is
+## happening while the user waits (OBS itself may open minimized to the tray).
 func ensure_obs_running() -> bool:
 	if is_obs_running():
 		_we_launched = false
@@ -255,11 +257,24 @@ func ensure_obs_running() -> bool:
 	var binary := _resolve_obs_binary()
 	if binary.is_empty():
 		return false
+	(
+		recording_notice
+		. emit(
+			get_backend_name(),
+			(
+				"OBS Studio isn't reachable — launching it now (auto_launch). "
+				+ "It may start minimized to the tray."
+			),
+		)
+	)
 	var pid := _launch_obs_process(binary)
 	if pid <= 0:
 		return false
 	_launched_pid = pid
 	_we_launched = true
+	recording_notice.emit(
+		get_backend_name(), "Launched OBS Studio (pid %d) — waiting for the WebSocket server…" % pid
+	)
 	var deadline := _now() + LAUNCH_WAIT_TIMEOUT
 	while _now() < deadline:
 		var ok := await _probe_once()
@@ -267,6 +282,7 @@ func ensure_obs_running() -> bool:
 		_available = ok
 		if ok:
 			availability_changed.emit(true)
+			recording_notice.emit(get_backend_name(), "OBS Studio is reachable.")
 			return true
 		await _sleep(LAUNCH_POLL_INTERVAL)
 	_kill_process(_launched_pid)
@@ -791,8 +807,20 @@ func _stop_duration_timer() -> void:
 func _exit_tree() -> void:
 	_stop_polling()
 	_stop_duration_timer()
+	var launched_pid := _launched_pid
 	if _we_launched and _get_auto_close_setting():
-		_kill_process(_launched_pid)
+		_kill_process(launched_pid)
+		# Direct print, not a recording_notice: by the time _exit_tree runs the
+		# plugin has already disconnected its [GdTM] feedback handlers
+		# (plugin._exit_tree → _disconnect_controller_feedback), so a notice
+		# would be silently lost. This line is the auto_close bookend to the
+		# launch narration in ensure_obs_running().
+		print(
+			(
+				"[GdTM] %s: closed — auto_close stopped the OBS instance we launched (pid %d)"
+				% [get_backend_name(), launched_pid]
+			)
+		)
 		_we_launched = false
 		_launched_pid = 0
 	_release_obs_client()

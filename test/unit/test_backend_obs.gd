@@ -17,6 +17,11 @@ extends GutTest
 
 const PASSWORD_KEY := "gd_time_machine/obs/password"
 const TEST_PASSWORD := "phase0-plumbing-password"
+## Budget for awaiting fake-deferred request replies (wait_for_signal).
+## Must stay < the backend's 3.0 s StopRecord fallback timer so a test can
+## never pass via the fallback; the fake replies ~1 frame later, so 2.0 s is
+## orders of magnitude above the reply latency.
+const REPLY_BUDGET := 2.0
 
 
 ## Fake EditorSettings store: get_setting() returns per-key values or null,
@@ -126,8 +131,8 @@ class FakeOBSClient:
 		var data: Dictionary = respond_data
 		# A real OBS answers asynchronously, so the backend's
 		# _pending_request_id/_kind are already assigned by the time a reply
-		# lands. Emit one frame later to preserve that ordering; tests settle
-		# with wait_frames(1).
+		# lands. Emit one frame later to preserve that ordering; tests wait on
+		# the resulting backend signal (wait_for_signal), not on frame counts.
 		var tree := get_tree()
 		if tree == null:
 			request_completed.emit(rid, ok, code, data)
@@ -454,7 +459,14 @@ func test_start_happy_path_emits_recording_started() -> void:
 	backend.playing = true
 	watch_signals(backend)
 	await backend.start({"output_path": "res://media/captures/obs/obs_happy"})
-	await wait_frames(1)
+	# wait_for_signal, not wait_frames: the StartRecord reply rides a
+	# process_frame one-shot while GUT's wait_frames clocks physics frames,
+	# and headless process↔physics interleaving let the reply miss the short
+	# window (recording stayed pending, recording_started never fired).
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"the StartRecord reply must arrive",
+	)
 	assert_signal_emitted_with_parameters(
 		backend, "recording_started", ["OBS Studio", _obs_path("obs_happy")]
 	)
@@ -475,7 +487,10 @@ func test_start_pending_start_launches_scene_then_records() -> void:
 	assert_signal_not_emitted(backend, "recording_started")
 	backend.playing = true
 	backend._on_poll_timeout()
-	await wait_frames(1)
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"the pending-start path must send StartRecord and get the reply after the scene plays",
+	)
 	assert_false(backend._pending_start)
 	assert_signal_emitted(backend, "recording_started")
 
@@ -499,10 +514,16 @@ func test_duration_auto_stops_recording() -> void:
 	backend.playing = true
 	watch_signals(backend)
 	await backend.start({"output_path": "res://media/captures/obs/obs_dur", "duration": 5.0})
-	await wait_frames(1)
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"the StartRecord reply must arrive before the duration path is exercised",
+	)
 	assert_signal_emitted(backend, "recording_started")
 	backend._on_duration_timeout()
-	await wait_frames(1)
+	assert_true(
+		await wait_for_signal(backend.recording_stopped, REPLY_BUDGET),
+		"the duration auto-stop must complete its StopRecord reply",
+	)
 	assert_signal_emitted(backend, "recording_stopped")
 	assert_false(backend.is_recording())
 
@@ -515,10 +536,16 @@ func test_stop_never_kills_and_emits_once() -> void:
 	backend.playing = true
 	watch_signals(backend)
 	await backend.start({"output_path": "res://media/captures/obs/obs_stop"})
-	await wait_frames(1)
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"the StartRecord reply must arrive before stop() is exercised",
+	)
 	assert_signal_emitted(backend, "recording_started")
 	backend.stop()
-	await wait_frames(1)
+	assert_true(
+		await wait_for_signal(backend.recording_stopped, REPLY_BUDGET),
+		"the StopRecord reply (not the 3 s fallback timer) must finalize the stop",
+	)
 	assert_signal_emitted_with_parameters(
 		backend, "recording_stopped", ["OBS Studio", _obs_path("obs_stop")]
 	)
@@ -571,7 +598,7 @@ func test_probe_failure_captures_last_connect_error() -> void:
 	var backend := _make_probe_backend()
 	backend.auth_fail_message = AUTH_FAIL_MESSAGE
 	backend.probe_obs_async()
-	await wait_frames(1)
+	await wait_process_frames(1)
 	assert_true(
 		backend._last_connect_error.contains("Authentication failed"),
 		"probe must capture the auth failure message, got: '%s'" % backend._last_connect_error,
@@ -584,7 +611,8 @@ func test_start_error_surfaces_auth_failure_with_password_guidance() -> void:
 	backend.auth_fail_message = AUTH_FAIL_MESSAGE
 	watch_signals(backend)
 	await backend.start({})
-	await wait_frames(1)
+	# Auth failure propagates synchronously; the tick is just a settle buffer.
+	await wait_process_frames(1)
 	assert_signal_emitted(backend, "recording_error")
 	var params = get_signal_parameters(backend, "recording_error")
 	var error_message := str(params[1])

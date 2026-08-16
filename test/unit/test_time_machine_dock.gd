@@ -675,3 +675,247 @@ func test_set_record_shortcut_before_ready_applies_later() -> void:
 	assert_null(dock._record_button)  # not ready yet → deferred
 	add_child_autofree(dock)
 	assert_eq(dock._record_button.shortcut, shortcut)
+
+
+# --- OBS Phase 3 wiring ---
+#
+# Dock behavior when an OBS backend (which exposes get_native_formats() and
+# availability_changed) is registered: availability gating in the backend
+# dropdown, a one-time install-hint dialog, and native-MP4 format filtering.
+# The dock's settings seam (_editor_settings) is injected with FakeSettings so
+# no engine singletons are touched.
+
+
+# Mock OBS backend exercising the BackendOBS surface the dock Phase 3 wiring
+# depends on: two-axis availability + native-formats + the async availability
+# signal. Inner class so GUT doesn't collect it.
+class MockOBSBackend:
+	extends RecorderBackend
+	var display_name := "OBS Studio"
+	var available := false
+	var recording := false
+	signal availability_changed(available: bool)
+
+	func get_backend_name() -> String:
+		return display_name
+
+	func get_description() -> String:
+		return "Mock OBS backend for dock tests"
+
+	func is_available() -> bool:
+		return available
+
+	func get_capture_mode() -> CaptureMode:
+		return CaptureMode.IN_PLACE
+
+	func get_native_formats() -> Array:
+		return [GdTMOutputFormat.Format.MP4]
+
+	func is_recording() -> bool:
+		return recording
+
+	func start(_config: Dictionary) -> void:
+		recording = true
+
+	func stop() -> void:
+		recording = false
+
+
+# In-memory EditorSettings stand-in for the dock's injected settings seam
+# (_editor_settings). Mirrors EditorSettingsConfigStore's fake-store pattern.
+class FakeSettings:
+	extends RefCounted
+	var values := {}
+
+	func has_setting(key: String) -> bool:
+		return values.has(key)
+
+	func get_setting(key: String) -> Variant:
+		return values.get(key)
+
+	func set_setting(key: String, value: Variant) -> void:
+		values[key] = value
+
+
+## Like _build_dock but registers a MockBackend (Movie Maker) FIRST and a
+## MockOBSBackend SECOND, so the dropdown order is [Godot Movie Maker, OBS
+## Studio]. `obs_available` seeds the OBS backend's availability; settings
+## may carry editor-settings values (e.g. hints/dont_show_obs_hint). Injects
+## the dock's _editor_settings seam BEFORE the dock enters the tree.
+func _build_dock_with_obs(
+	store: FakeStore, scene_path: String, obs_available: bool, settings: FakeSettings = null
+) -> Dictionary:
+	var controller: RecorderController = add_child_autofree(RecorderController.new())
+	var movie_maker := MockBackend.new()
+	controller.register_backend(movie_maker)
+	var obs := MockOBSBackend.new()
+	obs.available = obs_available
+	controller.register_backend(obs)
+	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
+	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
+	if settings != null:
+		dock._editor_settings = settings
+	dock.setup(controller, store)
+	add_child_autofree(dock)
+	return {"dock": dock, "controller": controller, "obs": obs, "movie_maker": movie_maker}
+
+
+## Index of the OBS Studio item in the backend dropdown (searched by metadata,
+## since the item text may carry the " — not available" suffix).
+func _obs_item_index(dock: TimeMachineDock) -> int:
+	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
+	for i in option.item_count:
+		if str(option.get_item_metadata(i)) == "OBS Studio":
+			return i
+	return -1
+
+
+func test_obs_unavailable_item_marked_and_explained() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
+	var dock := ctx["dock"] as TimeMachineDock
+	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
+	# _build_dock_with_obs registers Movie Maker first, so it's index 0.
+	assert_true(option.get_item_text(_obs_item_index(dock)).ends_with(" — not available"))
+	assert_string_contains(
+		option.get_item_tooltip(_obs_item_index(dock)), "not reachable at ws://127.0.0.1:4455"
+	)
+	assert_eq(option.get_item_text(0), "Godot Movie Maker")
+
+
+func test_obs_available_item_is_not_marked() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
+	assert_eq(option.get_item_text(_obs_item_index(dock)), "OBS Studio")
+	assert_eq(option.get_item_tooltip(_obs_item_index(dock)), "")
+
+
+func test_obs_unavailable_tooltip_names_custom_host_port() -> void:
+	# Bug-6 lesson: the tooltip must name the host/port from settings, never a
+	# hardcoded default.
+	var settings := FakeSettings.new()
+	settings.values["gd_time_machine/obs/host"] = "10.0.0.7"
+	settings.values["gd_time_machine/obs/port"] = 9999
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false, settings)
+	var dock := ctx["dock"] as TimeMachineDock
+	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
+	assert_string_contains(option.get_item_tooltip(_obs_item_index(dock)), "ws://10.0.0.7:9999")
+
+
+func test_availability_flip_remarks_item_live() -> void:
+	# A backend declaring availability_changed flips the dropdown synchronously:
+	# un-greys on become-available, re-marks when it drops again.
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
+	var dock := ctx["dock"] as TimeMachineDock
+	var obs := ctx["obs"] as MockOBSBackend
+	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
+	assert_true(option.get_item_text(_obs_item_index(dock)).ends_with(" — not available"))
+	obs.available = true
+	obs.availability_changed.emit(true)
+	assert_eq(option.get_item_text(_obs_item_index(dock)), "OBS Studio")
+	obs.available = false
+	obs.availability_changed.emit(false)
+	assert_true(option.get_item_text(_obs_item_index(dock)).ends_with(" — not available"))
+
+
+func test_obs_active_limits_format_dropdown_to_mp4() -> void:
+	# Selecting OBS (which exposes get_native_formats()) narrows the format row
+	# to its MP4 list; switching back to Movie Maker restores the pre-existing
+	# multi-format list (the has_method fallback).
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	controller.select_backend("OBS Studio")
+	assert_eq(option.item_count, 1)
+	assert_true(option.get_item_text(0).contains("mp4"))
+	controller.select_backend("Godot Movie Maker")
+	assert_true(option.item_count >= 3)
+	assert_eq(option.get_item_text(0), "AVI (.avi)")
+
+
+func test_selecting_unavailable_obs_requests_install_dialog() -> void:
+	var ctx := _build_dock_with_obs(
+		FakeStore.new(), "res://scenes/a.tscn", false, FakeSettings.new()
+	)
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._on_backend_selected(_obs_item_index(dock))
+	assert_eq(dock._install_hint_popups, 1)
+	assert_string_contains(dock._obs_hint_label.text, "ws://127.0.0.1:4455")
+
+
+func test_install_dialog_suppressed_when_flag_set() -> void:
+	var settings := FakeSettings.new()
+	settings.values["hints/dont_show_obs_hint"] = true
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false, settings)
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._on_backend_selected(_obs_item_index(dock))
+	assert_eq(dock._install_hint_popups, 0)
+
+
+func test_dont_show_again_persists_flag_on_confirm() -> void:
+	var settings := FakeSettings.new()
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false, settings)
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._on_backend_selected(_obs_item_index(dock))
+	assert_eq(dock._install_hint_popups, 1)
+	dock._obs_hint_dont_show.button_pressed = true
+	dock._obs_install_dialog.confirmed.emit()
+	assert_eq(settings.values.get("hints/dont_show_obs_hint"), true)
+
+
+func test_obs_unavailable_selection_still_selects_backend() -> void:
+	# D1 design decision: the item stays selectable even when unavailable, so
+	# the persisted default profile records the chosen backend by NAME
+	# (metadata), never the " — not available" display text.
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	dock._on_backend_selected(_obs_item_index(dock))
+	assert_eq(controller.active_backend.get_backend_name(), "OBS Studio")
+	var profile := dock._build_profile_from_ui()
+	assert_eq(profile.backend_name, "OBS Studio")
+	assert_false(profile.backend_name.contains("not available"))
+
+
+func test_obs_recording_error_surfaces_in_status_line() -> void:
+	# Spec §6 item 6: B1 errors flow through the existing recording_error
+	# handler unchanged — "Error:" prefix keeps the backend's actionable
+	# message intact.
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	controller.recording_error.emit(
+		"OBS Studio",
+		"OBS Studio not found. Please install OBS Studio and enable the WebSocket server..."
+	)
+	assert_true(label.text.begins_with("Error:"))
+	assert_string_contains(label.text, "OBS Studio not found")
+
+
+func test_selecting_available_obs_does_not_request_install_dialog() -> void:
+	# D1 enforcement (validator M1): the hint asserts OBS is NOT reachable, so
+	# it must never appear while an available OBS Studio is selected — even
+	# with the suppression flag unset.
+	var settings := FakeSettings.new()
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true, settings)
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._on_backend_selected(_obs_item_index(dock))
+	assert_eq(dock._install_hint_popups, 0)
+
+
+func test_obs_stop_shows_saved_not_converting() -> void:
+	# Validator S2: BackendOBS records MP4 natively (get_native_formats →
+	# [MP4]) and never emits recording_converted, so a stopped OBS recording
+	# must land on "Saved …", not a dangling "Converting to mp4…" status.
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	controller.select_backend("OBS Studio")  # narrows the format row to [MP4]
+	controller.recording_stopped.emit("OBS Studio", "res://media/captures/obs/obs_happy.mp4")
+	assert_eq(label.text, "Saved obs_happy.mp4")
+	assert_false(label.text.contains("Converting"))
