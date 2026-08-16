@@ -423,6 +423,42 @@ func test_ensure_obs_running_kills_own_process_on_timeout() -> void:
 	assert_eq(backend._launched_pid, 0)
 
 
+func test_ensure_obs_running_notices_launch_progress() -> void:
+	# Narrates intent → pid → reachable in order, so the terminal log and the
+	# dock status line track the launch while the user waits.
+	var backend := _make_launch_backend()
+	backend.probe_ok = true
+	var messages: Array[String] = []
+	backend.recording_notice.connect(
+		func(_backend_name: String, message: String) -> void: messages.append(message)
+	)
+	var result = await backend.ensure_obs_running()
+	assert_true(result)
+	assert_eq(backend.launch_calls, 1)
+	assert_eq(
+		messages.size(),
+		3,
+		"launch path must narrate intent, pid, and reachable, got: %s" % [messages],
+	)
+	assert_eq(
+		messages[0],
+		"OBS Studio isn't reachable — launching it now (auto_launch). It may start minimized to the tray."
+	)
+	assert_eq(messages[1], "Launched OBS Studio (pid 4711) — waiting for the WebSocket server…")
+	assert_eq(messages[2], "OBS Studio is reachable.")
+
+
+func test_ensure_obs_running_does_not_notice_when_no_launch_needed() -> void:
+	# Reachable fast path must stay silent: no intent notice, no launch.
+	var backend := _make_launch_backend()
+	backend._available = true
+	watch_signals(backend)
+	var result = await backend.ensure_obs_running()
+	assert_true(result)
+	assert_signal_not_emitted(backend, "recording_notice")
+	assert_eq(backend.launch_calls, 0)
+
+
 # --- start() paths ---
 
 
