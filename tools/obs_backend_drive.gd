@@ -48,7 +48,9 @@ class DriverBackend:
 	var binary_override := ""
 
 	func _ready() -> void:
-		pass
+		# Run the startup orphan sweep (D2) without the editor-only probe
+		# wiring — the driver is headless but shares the user:// ledger.
+		_reap_orphaned_launches()
 
 	func _is_playing_scene() -> bool:
 		return true

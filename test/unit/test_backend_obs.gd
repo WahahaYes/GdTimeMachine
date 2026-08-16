@@ -45,7 +45,7 @@ func _read_password(backend: BackendOBS) -> String:
 
 func _make_backend() -> BackendOBS:
 	# add_child_autofree returns an untyped value, so the caller must annotate.
-	return add_child_autofree(BackendOBS.new())
+	return add_child_autofree(SettingsBackend.new())
 
 
 func test_password_read_from_project_settings_fallback() -> void:
@@ -179,6 +179,17 @@ class FakeBackendOBS:
 		return fake_now
 
 
+## Minimal BackendOBS for the settings/read tests: _ready() is neutralized so
+## the real startup orphan sweep never touches the user:// launch ledger during
+## a test run. All base settings plumbing (EditorSettings/ProjectSettings reads
+## and the typed readers) stays intact — these tests only read.
+class SettingsBackend:
+	extends BackendOBS
+
+	func _ready() -> void:
+		pass
+
+
 ## End-to-end start/stop backend. is_obs_installed() resolves to EXISTING_BINARY
 ## (or empty), _create_obs_client() returns the configurable FakeOBSClient, and
 ## the scene is faked via the playing flag so start() can drive the
@@ -193,6 +204,9 @@ class RecordingBackend:
 	var kill_calls := 0
 	var client_fail_message := ""
 	var fake_now := 0.0
+	var persisted_pid := 0
+	var ledger_cleared := false
+	var killed_pids: Array = []
 
 	func _ready() -> void:
 		pass
@@ -232,6 +246,27 @@ class RecordingBackend:
 
 	func _kill_process(_pid: int) -> void:
 		kill_calls += 1
+		killed_pids.append(_pid)
+
+	func _persist_launched_pid(pid: int, _binary: String) -> void:
+		persisted_pid = pid
+
+	func _load_launched_ledger() -> Dictionary:
+		return (
+			{"pid": persisted_pid, "binary": ProjectSettings.globalize_path(EXISTING_BINARY)}
+			if persisted_pid > 0
+			else {}
+		)
+
+	func _clear_launched_ledger() -> void:
+		ledger_cleared = true
+		persisted_pid = 0
+
+	func _is_process_alive(_pid: int) -> bool:
+		return false
+
+	func _force_kill_process(_pid: int) -> void:
+		kill_calls += 1
 
 	func _now() -> float:
 		return fake_now
@@ -245,6 +280,9 @@ class LaunchTestBackend:
 	var kill_calls := 0
 	var probe_ok := false
 	var fake_now := 0.0
+	var persisted_pid := 0
+	var ledger_cleared := false
+	var killed_pids: Array = []
 
 	func _ready() -> void:
 		pass
@@ -268,12 +306,97 @@ class LaunchTestBackend:
 
 	func _kill_process(_pid: int) -> void:
 		kill_calls += 1
+		killed_pids.append(_pid)
+
+	func _persist_launched_pid(pid: int, _binary: String) -> void:
+		persisted_pid = pid
+
+	func _load_launched_ledger() -> Dictionary:
+		return (
+			{"pid": persisted_pid, "binary": ProjectSettings.globalize_path(EXISTING_BINARY)}
+			if persisted_pid > 0
+			else {}
+		)
+
+	func _clear_launched_ledger() -> void:
+		ledger_cleared = true
+		persisted_pid = 0
+
+	func _is_process_alive(_pid: int) -> bool:
+		return false
+
+	func _force_kill_process(_pid: int) -> void:
+		kill_calls += 1
 
 	func _now() -> float:
 		return fake_now
 
 	func _sleep(seconds: float) -> void:
 		fake_now += seconds
+
+
+## Neutralized BackendOBS for the D2 orphan-sweep / D3 kill-escalation tests.
+## _ready() never runs the real sweep; the ledger, liveness, ownership, and
+## kill seams are injected, and the fake clock (_now/_sleep) collapses the 2 s
+## TERM grace to a fixed iteration count.
+class ReapTestBackend:
+	extends BackendOBS
+	var alive := false
+	var ours := true
+	var term_calls := 0
+	var force_calls := 0
+	var ledger: Dictionary = {}
+	var ledger_cleared := false
+	var auto_close_on := true
+	var fake_now := 0.0
+
+	## CRITICAL: never run the real base _ready() orphan sweep during a test.
+	func _ready() -> void:
+		pass
+
+	func _get_auto_close_setting() -> bool:
+		return auto_close_on
+
+	func _is_process_alive(_pid: int) -> bool:
+		return alive
+
+	func _process_is_ours(_pid: int, _binary: String) -> bool:
+		return ours
+
+	func _kill_process(_pid: int) -> void:
+		term_calls += 1
+
+	func _force_kill_process(_pid: int) -> void:
+		force_calls += 1
+
+	func _load_launched_ledger() -> Dictionary:
+		return ledger
+
+	func _clear_launched_ledger() -> void:
+		ledger = {}
+		ledger_cleared = true
+
+	func _persist_launched_pid(_pid: int, _binary: String) -> void:
+		pass
+
+	func _now() -> float:
+		return fake_now
+
+	func _sleep(seconds: float) -> void:
+		fake_now += seconds
+
+	func probe_obs_async() -> void:
+		pass
+
+
+## Like ReapTestBackend, but TERM actually kills: _kill_process() flips alive
+## off, so the grace loop never reaches the SIGKILL escalation.
+class DiesAfterTermBackend:
+	extends ReapTestBackend
+
+	func _kill_process(_pid: int) -> void:
+		term_calls += 1
+		alive = false
 
 
 ## BackendOBS with a stubbed client factory + binary resolve so the real
@@ -317,6 +440,10 @@ func _make_recording_backend() -> RecordingBackend:
 
 func _make_launch_backend() -> LaunchTestBackend:
 	return add_child_autofree(LaunchTestBackend.new())
+
+
+func _make_reap_backend() -> ReapTestBackend:
+	return add_child_autofree(ReapTestBackend.new())
 
 
 func _make_probe_backend() -> ProbeFailureBackend:
@@ -421,6 +548,8 @@ func test_ensure_obs_running_kills_own_process_on_timeout() -> void:
 	assert_eq(backend.kill_calls, 1, "must kill only the OBS it launched")
 	assert_false(backend._we_launched)
 	assert_eq(backend._launched_pid, 0)
+	assert_true(backend.ledger_cleared, "confirmed-dead timeout kill must clear the ledger")
+	assert_eq(backend.persisted_pid, 0)
 
 
 func test_ensure_obs_running_notices_launch_progress() -> void:
@@ -448,15 +577,112 @@ func test_ensure_obs_running_notices_launch_progress() -> void:
 	assert_eq(messages[2], "OBS Studio is reachable.")
 
 
-func test_ensure_obs_running_does_not_notice_when_no_launch_needed() -> void:
-	# Reachable fast path must stay silent: no intent notice, no launch.
+func test_ensure_obs_running_notices_reuse_when_already_reachable() -> void:
+	# Fast path reuses a reachable OBS and says so (D4), instead of staying silent.
 	var backend := _make_launch_backend()
 	backend._available = true
-	watch_signals(backend)
+	var messages: Array[String] = []
+	backend.recording_notice.connect(
+		func(_backend_name: String, message: String) -> void: messages.append(message)
+	)
 	var result = await backend.ensure_obs_running()
 	assert_true(result)
-	assert_signal_not_emitted(backend, "recording_notice")
 	assert_eq(backend.launch_calls, 0)
+	assert_eq(
+		messages,
+		["OBS Studio is already running — reusing it."],
+		"fast path must narrate the reuse, got: %s" % [messages],
+	)
+
+
+# --- orphan sweep (D2) / kill escalation (D3) ---
+
+
+func test_orphan_sweep_reaps_live_ours_obs() -> void:
+	# D2: live, provably-ours orphan → TERM, the 2 s grace expires (the fake
+	# clock advances via _sleep), then SIGKILL, then the ledger is cleared.
+	var backend := _make_reap_backend()
+	backend.ledger = {"pid": 4711, "binary": "/usr/bin/obs"}
+	backend.alive = true
+	backend.ours = true
+	await backend._reap_orphaned_launches()
+	assert_eq(backend.term_calls, 1)
+	assert_eq(backend.force_calls, 1, "TERM ignored → grace expires → SIGKILL")
+	assert_true(backend.ledger_cleared)
+	assert_true(backend.ledger.is_empty())
+
+
+func test_orphan_sweep_dies_after_term_needs_no_force() -> void:
+	# D2/D3: the orphan honors TERM, so the grace loop exits at the first
+	# liveness poll and no escalation is needed; ledger cleared.
+	var backend: DiesAfterTermBackend = add_child_autofree(DiesAfterTermBackend.new())
+	backend.ledger = {"pid": 4711, "binary": "/usr/bin/obs"}
+	backend.alive = true
+	backend.ours = true
+	await backend._reap_orphaned_launches()
+	assert_eq(backend.term_calls, 1)
+	assert_eq(backend.force_calls, 0)
+	assert_true(backend.ledger_cleared)
+
+
+func test_orphan_sweep_leaves_not_ours_pid_alone() -> void:
+	# D2: pid is alive but provably not our spawn (recycled / cmdline mismatch)
+	# → warning + stale entry dropped; never a kill.
+	var backend := _make_reap_backend()
+	backend.ledger = {"pid": 4711, "binary": "/usr/bin/obs"}
+	backend.alive = true
+	backend.ours = false
+	await backend._reap_orphaned_launches()
+	assert_eq(backend.term_calls, 0)
+	assert_eq(backend.force_calls, 0)
+	assert_true(backend.ledger_cleared, "stale not-ours entry must be dropped")
+
+
+func test_orphan_sweep_clears_dead_ledger() -> void:
+	# D2: pid already dead (e.g. graceful close last session) → nothing to
+	# kill, the stale entry is just dropped.
+	var backend := _make_reap_backend()
+	backend.ledger = {"pid": 4711, "binary": "/usr/bin/obs"}
+	backend.alive = false
+	await backend._reap_orphaned_launches()
+	assert_eq(backend.term_calls, 0)
+	assert_eq(backend.force_calls, 0)
+	assert_true(backend.ledger.is_empty())
+
+
+func test_orphan_sweep_noop_when_no_ledger() -> void:
+	# D2: no ledger entry → the sweep does nothing at all.
+	var backend := _make_reap_backend()
+	await backend._reap_orphaned_launches()
+	assert_eq(backend.term_calls, 0)
+	assert_eq(backend.force_calls, 0)
+	assert_false(backend.ledger_cleared)
+
+
+func test_orphan_sweep_noop_when_auto_close_off() -> void:
+	# D2: auto_close off = we manage nothing, orphans included — the ledger
+	# stays exactly as it was.
+	var backend := _make_reap_backend()
+	backend.ledger = {"pid": 4711, "binary": "/usr/bin/obs"}
+	backend.alive = true
+	backend.ours = true
+	backend.auto_close_on = false
+	await backend._reap_orphaned_launches()
+	assert_eq(backend.term_calls, 0)
+	assert_eq(backend.force_calls, 0)
+	assert_false(backend.ledger_cleared)
+	assert_eq(backend.ledger, {"pid": 4711, "binary": "/usr/bin/obs"})
+
+
+func test_kill_process_and_wait_escalates_when_ter_ignored() -> void:
+	# D3: TERM ignored → the 2 s grace expires → SIGKILL fires and the call
+	# reports the process is not confirmed gone.
+	var backend := _make_reap_backend()
+	backend.alive = true
+	var confirmed := await backend._kill_process_and_wait(4711)
+	assert_eq(backend.term_calls, 1)
+	assert_eq(backend.force_calls, 1)
+	assert_false(confirmed)
 
 
 # --- start() paths ---

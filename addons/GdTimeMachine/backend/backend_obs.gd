@@ -134,6 +134,11 @@ func _resolve_and_cache_binary() -> String:
 func _ready() -> void:
 	_probe_in_flight = false
 	_last_probe_time = -1000.0
+	# Startup orphan sweep (D2): fire-and-forget so _ready never blocks, and
+	# before the editor gate so the headless drive tool reaps leftovers too.
+	# GUT fakes override _ready with pass, so the real sweep never runs in
+	# tests (no user:// ledger access during a test run).
+	_reap_orphaned_launches()
 	# Editor-only availability wiring: seed the cache one frame after the pane
 	# loads, then refresh every AVAILABILITY_TTL while idle. Gated so headless
 	# GUT (Engine.is_editor_hint() == false) never opens a real WebSocket.
@@ -246,6 +251,9 @@ func _await_auth(client: OBSClient, timeout: float) -> bool:
 func ensure_obs_running() -> bool:
 	if is_obs_running():
 		_we_launched = false
+		# D4: narrate the reuse so a leftover OBS (reused instead of launched)
+		# shows up in the terminal log and the dock status line.
+		recording_notice.emit(get_backend_name(), "OBS Studio is already running — reusing it.")
 		return true
 	var settings := _get_obs_settings()
 	if not bool(settings.get("auto_launch", true)):
@@ -268,6 +276,9 @@ func ensure_obs_running() -> bool:
 		return false
 	_launched_pid = pid
 	_we_launched = true
+	# D1: record ownership so a later session's orphan sweep can prove the
+	# process is ours before ever killing it.
+	_persist_launched_pid(pid, binary)
 	recording_notice.emit(
 		get_backend_name(), "Launched OBS Studio (pid %d) — waiting for the WebSocket server…" % pid
 	)
@@ -281,7 +292,11 @@ func ensure_obs_running() -> bool:
 			recording_notice.emit(get_backend_name(), "OBS Studio is reachable.")
 			return true
 		await _sleep(LAUNCH_POLL_INTERVAL)
-	_kill_process(_launched_pid)
+	# C2 escalation: TERM, then a short grace poll, then SIGKILL. The ledger is
+	# cleared only when the process is confirmed gone.
+	var confirmed := await _kill_process_and_wait(_launched_pid)
+	if confirmed:
+		_clear_launched_ledger()
 	_we_launched = false
 	_launched_pid = 0
 	return false
@@ -759,6 +774,143 @@ func _os_execute(binary: String, args: PackedStringArray, out: Array) -> int:
 	return OS.execute(binary, args, out, true)
 
 
+# --- OBS ownership record + orphan sweep (D1/D2/D3) ---
+
+
+## Records that this session launched OBS (pid + resolved binary) in user:// so
+## a later session's orphan sweep can prove ownership before killing anything.
+## Save errors are ignored: the ledger is best-effort bookkeeping.
+func _persist_launched_pid(pid: int, binary: String) -> void:
+	if pid <= 0:
+		return
+	var cfg := ConfigFile.new()
+	cfg.set_value("obs", "pid", pid)
+	cfg.set_value("obs", "binary", binary)
+	cfg.save("user://gdtime_obs_launched.cfg")
+
+
+## Reads the persisted launch record. Missing file or pid <= 0 means "no entry".
+func _load_launched_ledger() -> Dictionary:
+	var cfg := ConfigFile.new()
+	if cfg.load("user://gdtime_obs_launched.cfg") != OK:
+		return {}
+	var pid := int(cfg.get_value("obs", "pid", 0))
+	if pid <= 0:
+		return {}
+	return {"pid": pid, "binary": str(cfg.get_value("obs", "binary", ""))}
+
+
+## Drops the persisted launch record. Delete errors are ignored.
+func _clear_launched_ledger() -> void:
+	DirAccess.remove_absolute("user://gdtime_obs_launched.cfg")
+
+
+func _is_process_alive(pid: int) -> bool:
+	return pid > 0 and OS.is_process_running(pid)
+
+
+## True when pid is provably our OBS launch: the stored binary as argv[0] plus
+## our --minimize-to-tray flag, read from /proc/<pid>/cmdline. On non-Linux
+## there is no reliable /proc, so the check is best-effort true (documented
+## limitation — we never kill by pid alone on platforms that can verify).
+func _process_is_ours(pid: int, binary: String) -> bool:
+	if OS.get_name() != "Linux":
+		return true
+	if pid <= 0 or binary.is_empty():
+		return false
+	var cmdline := FileAccess.get_file_as_string("/proc/%d/cmdline" % pid)
+	if cmdline.is_empty():
+		return false
+	var parts := cmdline.split(String.chr(0))
+	if parts.is_empty():
+		return false
+	return (
+		_normalize_binary_path(parts[0]) == _normalize_binary_path(binary)
+		and parts.has("--minimize-to-tray")
+	)
+
+
+## Trims and resolves res:///user:// prefixes so a /proc cmdline entry and the
+## stored binary path compare as equal absolute filesystem paths.
+func _normalize_binary_path(path: String) -> String:
+	var p := path.strip_edges()
+	if p.begins_with("res://") or p.begins_with("user://"):
+		p = ProjectSettings.globalize_path(p)
+	return p
+
+
+## SIGKILL-level kill for processes that ignore TERM (OS.kill is one shot, no
+## escalation). Per-OS force-kill command; falls back to OS.kill elsewhere.
+func _force_kill_process(pid: int) -> void:
+	if pid <= 0:
+		return
+	match OS.get_name():
+		"Linux":
+			OS.execute("kill", ["-9", str(pid)])
+		"Windows":
+			OS.execute("taskkill", ["/F", "/PID", str(pid)])
+		_:
+			OS.kill(pid)
+
+
+## TERM first, then up to ~2 s grace polling liveness, then SIGKILL.
+## Returns whether the process is confirmed gone afterwards.
+func _kill_process_and_wait(pid: int) -> bool:
+	if pid <= 0:
+		return true
+	_kill_process(pid)
+	var deadline := _now() + 2.0
+	while _is_process_alive(pid) and _now() < deadline:
+		await _sleep(0.25)
+	if _is_process_alive(pid):
+		_force_kill_process(pid)
+	return not _is_process_alive(pid)
+
+
+## Startup orphan sweep (D2): a previous session may have died hard (crash,
+## SIGKILL) and left an OBS it launched behind. Only processes we can prove we
+## launched are touched; everything else is logged and the stale ledger entry
+## dropped. auto_close off means we manage nothing, orphans included.
+func _reap_orphaned_launches() -> void:
+	if not _get_auto_close_setting():
+		return
+	var ledger := _load_launched_ledger()
+	if ledger.is_empty():
+		return
+	var pid: int = int(ledger.get("pid", 0))
+	if pid <= 0:
+		_clear_launched_ledger()
+		return
+	if not _is_process_alive(pid):
+		_clear_launched_ledger()
+		return
+	if not _process_is_ours(pid, str(ledger.get("binary", ""))):
+		push_warning(
+			(
+				"[GdTM] %s: found pid %d at the recorded OBS ledger, but it is not our OBS launch — leaving it alone."
+				% [get_backend_name(), pid]
+			)
+		)
+		_clear_launched_ledger()
+		return
+	var confirmed := await _kill_process_and_wait(pid)
+	if confirmed:
+		print(
+			(
+				"[GdTM] %s: reaped a leftover OBS from a previous session (pid %d)"
+				% [get_backend_name(), pid]
+			)
+		)
+	else:
+		push_warning(
+			(
+				"[GdTM] %s: could not stop the leftover OBS (pid %d) — it may still be running."
+				% [get_backend_name(), pid]
+			)
+		)
+	_clear_launched_ledger()
+
+
 func _ensure_timers() -> void:
 	if _poll_timer == null and is_inside_tree():
 		_poll_timer = Timer.new()
@@ -807,7 +959,9 @@ func _exit_tree() -> void:
 		# plugin has already disconnected its [GdTM] feedback handlers
 		# (plugin._exit_tree → _disconnect_controller_feedback), so a notice
 		# would be silently lost. This line is the auto_close bookend to the
-		# launch narration in ensure_obs_running().
+		# launch narration in ensure_obs_running(). The ledger entry is
+		# deliberately left behind so the next startup's orphan sweep (D2) is
+		# the safety net if TERM silently fails.
 		print(
 			(
 				"[GdTM] %s: closed — auto_close stopped the OBS instance we launched (pid %d)"
