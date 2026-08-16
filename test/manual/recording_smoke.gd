@@ -1,6 +1,6 @@
 extends Node
 
-## Manual smoke scene for GdTimeMachine's Movie Maker backend (Phase 2).
+## Manual smoke scene for GdTimeMachine's Movie Maker backend.
 ##
 ## Visually verifies a recording: the background cycles through hues and the
 ## label shows a running clock, so a recorded .avi is obviously "live" when

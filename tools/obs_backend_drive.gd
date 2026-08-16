@@ -1,15 +1,13 @@
 extends SceneTree
 
-## Interactive driver for the Phase 2 BackendOBS (`backend/backend_obs.gd`,
-## PLAN_obs_backend_v2.md §5). Runs the REAL backend — real WebSocket probe,
-## real connect/StartRecord/StopRecord, real move-after-stop, real settings
-## read — against a live obs-websocket server, or the B1 not-installed error
-## path with no OBS at all. This is the pre-dock form of the manual matrix in
-## plan §9 (items 1–3); it supersedes the deleted Phase 0 auth probe.
+## Interactive driver for BackendOBS (`backend/backend_obs.gd`). Runs the REAL
+## backend against a live obs-websocket server — real WebSocket probe, real
+## connect/StartRecord/StopRecord, real move-after-stop, real settings read —
+## or the "OBS Studio not found" error path with no OBS at all.
 ##
 ## The only seams stubbed are the scene seams (_is_playing_scene/_play_scene),
-## which back onto EditorInterface — the dock owns that in Phase 3; this
-## driver records "the scene is already playing".
+## which would back onto EditorInterface — this driver records "the scene is
+## already playing".
 ##
 ## Usage:
 ##   godot --headless -s --path . tools/obs_backend_drive.gd -- [options]
@@ -60,7 +58,7 @@ class DriverBackend:
 			(
 				(
 					"[driver] scene seam (stubbed — the dock launches the game in "
-					+ "Phase 3): play_scene('%s')"
+					+ "the editor): play_scene('%s')"
 				)
 				% scene_path
 			)

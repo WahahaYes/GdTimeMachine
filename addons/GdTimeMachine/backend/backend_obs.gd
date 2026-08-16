@@ -8,28 +8,24 @@ class_name BackendOBS
 ## All stop paths converge on _finalize_stopped() (single recording_stopped
 ## emission). IN_PLACE: the game is never killed or gracefully quit.
 ##
-## Availability (plan §2 two-axis lock): is_available() = last WebSocket probe
-## result (cached, never binary presence); is_obs_installed() = OBS binary
-## resolved exactly once. A fresh probe runs in the editor on a 5 s TTL; a
-## stale cache is re-probed on demand from is_obs_running().
+## Availability: is_available() = last WebSocket probe result (cached, never
+## binary presence); is_obs_installed() = OBS binary resolved exactly once.
+## A fresh probe runs in the editor on a 5 s TTL; a stale cache is re-probed
+## on demand from is_obs_running().
 ##
-## Locked Phase 2 decisions (A1/B1):
-##   A1 — pending-start polls _is_playing_scene() (v1-proven), NOT
-##        GetRecordStatus; StartRecord is confirmed by its own response
-##        (code 500 "already recording" counts as success).
-##   B1 — start() distinguishes "OBS not installed" from "unreachable":
-##        an explicit is_obs_installed() gate with install instructions first,
-##        then ensure_obs_running(), then _describe_start_error().
+## Startup semantics: pending-start polls _is_playing_scene() (not
+## GetRecordStatus), and StartRecord is confirmed by its own response — OBS
+## status 500 "already recording" counts as success. start() gates on
+## is_obs_installed() with install instructions before launching/connecting.
 
 ## Emitted when a probe result flips the is_available() cache.
 signal availability_changed(available: bool)
 
-## Injected EditorSettings. When null, falls back to the EditorInterface
-## singleton in tool context; GUT injects a fake store. Mirrors
-## EditorSettingsConfigStore._get_es() — the proven 4.x access path.
+## Injected EditorSettings; when null, falls back to the EditorInterface
+## singleton in tool context (GUT injects a fake store).
 ## Engine.has_singleton("EditorSettings") is FALSE even in the 4.7 editor, so
-## the v1 check could never fire — that dead branch is why the password set in
-## Project > Editor Settings never reached _password (Bug 7 plumbing).
+## the settings store must be reached via EditorInterface.get_editor_settings()
+## — the wrong access path silently never reaches the stored password.
 var _editor_settings: Object = null
 
 const DEFAULT_OUTPUT_PATH := "res://media/captures/obs"
@@ -101,7 +97,7 @@ func is_recording() -> bool:
 
 
 func get_native_formats() -> Array:
-	# v1 records MP4 natively; webm/avi/ogv via ffmpeg is deferred (§1).
+	# Records MP4 natively; other formats are handled via ffmpeg elsewhere.
 	return [GdTMOutputFormat.Format.MP4]
 
 
@@ -113,7 +109,7 @@ func is_available() -> bool:
 
 ## True only when a WebSocket probe has succeeded recently. Forces a fresh
 ## probe when the cache is stale, then reports the last known result — the
-## gate ensure_obs_running()/start() use (Bug 3: reachability, not install).
+## gate ensure_obs_running()/start() use (reachability, not install status).
 func is_obs_running() -> bool:
 	if _now() - _last_probe_time >= AVAILABILITY_TTL and not _probe_in_flight:
 		probe_obs_async()
@@ -242,11 +238,11 @@ func _await_auth(client: OBSClient, timeout: float) -> bool:
 
 
 ## Ensures OBS is running and reachable, launching it (auto_launch) if not.
-## Gates on is_obs_running() (reachability) — never on install status (Bug 3).
-## Launched processes are owned via _we_launched/_launched_pid; a pre-existing
-## OBS is never killed. Narrates the launch/wait flow via recording_notice so
-## the plugin's [GdTM] terminal log and the dock status line show what is
-## happening while the user waits (OBS itself may open minimized to the tray).
+## Gates on is_obs_running() (reachability), never on install status. Launched
+## processes are owned via _we_launched/_launched_pid; a pre-existing OBS is
+## never killed. Narrates the launch/wait flow via recording_notice so the
+## plugin's [GdTM] terminal log and the dock status line show what is happening
+## while the user waits (OBS itself may open minimized to the tray).
 func ensure_obs_running() -> bool:
 	if is_obs_running():
 		_we_launched = false
@@ -330,16 +326,13 @@ func start(config: Dictionary) -> void:
 	_output_dir = str(config.get("output_dir", ""))
 	if _output_dir.is_empty():
 		_output_dir = _output_path.get_base_dir()
-	# v1 records MP4 natively; anything else is a Phase-2 guard, not a promise.
+	# OBS records MP4 natively; anything else is rejected here.
 	if GdTMOutputFormat.from_string(_target_output_format) != GdTMOutputFormat.Format.MP4:
 		(
 			recording_error
 			. emit(
 				get_backend_name(),
-				(
-					"OBS records MP4 natively (v1); format '%s' is not available"
-					% _target_output_format
-				),
+				"OBS records MP4 natively; format '%s' is not available" % _target_output_format,
 			)
 		)
 		return
@@ -351,7 +344,7 @@ func start(config: Dictionary) -> void:
 	_stopping = false
 	_pending_start = false
 
-	# B1: distinct, actionable "not installed" error before any launch attempt.
+	# Distinct, actionable "not installed" error before any launch attempt.
 	if not is_obs_installed():
 		_active = false
 		(
@@ -375,7 +368,7 @@ func start(config: Dictionary) -> void:
 			recording_error.emit(get_backend_name(), _describe_start_error())
 			return
 
-	# A1: pending-start — launch the scene, poll _is_playing_scene(), then record.
+	# Pending-start: launch the scene, poll _is_playing_scene(), then record.
 	if not _is_playing_scene():
 		_pending_start = true
 		if _duration > 0.0:
@@ -530,7 +523,7 @@ func stop() -> void:
 
 ## StopRecord outputPath (file name or full path, per OBS version) → the dock's
 ## output_dir. Falls back to scanning _output_dir/output_path base when OBS
-## returns a bare file name (move-after-stop only — SetRecordDirectory deferred).
+## returns a bare file name (move-after-stop only).
 func _resolve_and_move_output() -> void:
 	var src := _resolve_actual_output_path()
 	if src.is_empty():
@@ -603,14 +596,14 @@ func _on_duration_timeout() -> void:
 
 
 func _get_auto_close_setting() -> bool:
-	# Phase 2 keeps _exit_tree best-effort kill only (idle-timer teardown is
-	# deferred, §1). Read via the Phase 0 seam — EditorSettings-first — not the
-	# dead Engine.has_singleton("EditorSettings") branch (Bug 7 root cause).
+	# _exit_tree does a best-effort kill of a launched OBS only. The setting is
+	# read EditorSettings-first via _read_setting, never through a dead
+	# Engine.has_singleton("EditorSettings") branch (see _editor_settings).
 	var v := _read_setting("gd_time_machine/obs/auto_close")
 	return bool(v) if v != null else true
 
 
-# --- settings plumbing (Phase 0, unpinned surface — see PROGRESS > Phase 2) ---
+# --- settings plumbing ---
 
 
 ## Returns the settings store to read, or null when running outside the editor
@@ -625,7 +618,7 @@ func _get_es() -> Object:
 
 ## The single source of OBS connection settings. EditorSettings wins over
 ## ProjectSettings (Editor Settings > project.godot copy); empty password means
-## "server auth disabled" and must be sent as NO authentication field (Phase 1).
+## "server auth disabled" and must be sent as NO authentication field.
 func _get_obs_settings() -> Dictionary:
 	return {
 		"host": _get_setting_string("gd_time_machine/obs/host", OBSClient.DEFAULT_HOST),

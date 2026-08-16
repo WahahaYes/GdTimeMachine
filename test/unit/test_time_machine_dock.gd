@@ -405,7 +405,7 @@ func test_uncheck_untitled_scene_does_not_clear() -> void:
 	assert_eq(store.cleared_scene_calls.size(), 0)
 
 
-# --- IN_PLACE backend behavior (Op 5 screenshot backend) ---
+# --- IN_PLACE backend behavior (screenshot backend) ---
 
 
 func test_in_place_backend_shows_format_row_with_png_jpg() -> void:
@@ -425,7 +425,7 @@ func test_in_place_backend_shows_format_row_with_png_jpg() -> void:
 	# First two remain PNG/JPG per _get_allowed_formats order.
 	assert_eq(option.get_item_text(0), "PNG sequence (.png)")
 	assert_eq(option.get_item_text(1), "JPG sequence (.jpg)")
-	# MP4 must be present (Op6).
+	# MP4 must be present.
 	var has_mp4 := false
 	for i in option.item_count:
 		if option.get_item_text(i).contains(".mp4"):
@@ -499,7 +499,7 @@ func test_recording_notice_sets_status_line() -> void:
 	assert_eq(label.text, "Saved 5 frames @ 14.2 fps (target 60)")
 
 
-# --- Live recording status in the status line (Op 7) ---
+# --- Live recording status in the status line ---
 
 
 func test_format_elapsed_mm_ss() -> void:
@@ -677,7 +677,7 @@ func test_set_record_shortcut_before_ready_applies_later() -> void:
 	assert_eq(dock._record_button.shortcut, shortcut)
 
 
-# --- OBS Phase 3 wiring ---
+# --- OBS backend wiring ---
 #
 # Dock behavior when an OBS backend (which exposes get_native_formats() and
 # availability_changed) is registered: availability gating in the backend
@@ -686,7 +686,7 @@ func test_set_record_shortcut_before_ready_applies_later() -> void:
 # no engine singletons are touched.
 
 
-# Mock OBS backend exercising the BackendOBS surface the dock Phase 3 wiring
+# Mock OBS backend exercising the BackendOBS surface the dock's OBS wiring
 # depends on: two-axis availability + native-formats + the async availability
 # signal. Inner class so GUT doesn't collect it.
 class MockOBSBackend:
@@ -791,8 +791,8 @@ func test_obs_available_item_is_not_marked() -> void:
 
 
 func test_obs_unavailable_tooltip_names_custom_host_port() -> void:
-	# Bug-6 lesson: the tooltip must name the host/port from settings, never a
-	# hardcoded default.
+	# The tooltip must name the host/port from settings, never a hardcoded
+	# default.
 	var settings := FakeSettings.new()
 	settings.values["gd_time_machine/obs/host"] = "10.0.0.7"
 	settings.values["gd_time_machine/obs/port"] = 9999
@@ -867,9 +867,9 @@ func test_dont_show_again_persists_flag_on_confirm() -> void:
 
 
 func test_obs_unavailable_selection_still_selects_backend() -> void:
-	# D1 design decision: the item stays selectable even when unavailable, so
-	# the persisted default profile records the chosen backend by NAME
-	# (metadata), never the " — not available" display text.
+	# The item stays selectable even when unavailable, so the persisted
+	# default profile records the chosen backend by NAME (metadata), never the
+	# " — not available" display text.
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
 	var dock := ctx["dock"] as TimeMachineDock
 	var controller := ctx["controller"] as RecorderController
@@ -881,7 +881,7 @@ func test_obs_unavailable_selection_still_selects_backend() -> void:
 
 
 func test_obs_recording_error_surfaces_in_status_line() -> void:
-	# Spec §6 item 6: B1 errors flow through the existing recording_error
+	# Backend errors flow through the existing recording_error
 	# handler unchanged — "Error:" prefix keeps the backend's actionable
 	# message intact.
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
@@ -897,9 +897,8 @@ func test_obs_recording_error_surfaces_in_status_line() -> void:
 
 
 func test_selecting_available_obs_does_not_request_install_dialog() -> void:
-	# D1 enforcement (validator M1): the hint asserts OBS is NOT reachable, so
-	# it must never appear while an available OBS Studio is selected — even
-	# with the suppression flag unset.
+	# The hint asserts OBS is NOT reachable, so it must never appear while an
+	# available OBS Studio is selected — even with the suppression flag unset.
 	var settings := FakeSettings.new()
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true, settings)
 	var dock := ctx["dock"] as TimeMachineDock
@@ -908,7 +907,7 @@ func test_selecting_available_obs_does_not_request_install_dialog() -> void:
 
 
 func test_obs_stop_shows_saved_not_converting() -> void:
-	# Validator S2: BackendOBS records MP4 natively (get_native_formats →
+	# BackendOBS records MP4 natively (get_native_formats →
 	# [MP4]) and never emits recording_converted, so a stopped OBS recording
 	# must land on "Saved …", not a dangling "Converting to mp4…" status.
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)

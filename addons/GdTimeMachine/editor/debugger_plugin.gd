@@ -5,18 +5,16 @@ class_name GdTMDebuggerPlugin
 ## Editor-side bridge to the running game's debugger channel.
 ##
 ## Two channels share this one plugin registration:
-##   1. Graceful-stop broadcast (Op 2): messages are sent on
-##      EditorDebuggerSession instances via send_message(), using the
-##      gd_time_machine prefix (full "prefix:payload" wire form); the game
-##      side registers a capture on the prefix and receives the payload with
-##      the prefix stripped.
-##   2. Screenshot capture (Op 5): the editor sends scene:rq_screenshot with
-##      an id, and the game replies with game_view:get_screenshot
-##      [id, w, h, path]. The game_view capture prefix is claimed ONLY while
-##      a screenshot recording is active — claiming it while idle would
-##      shadow the engine's GameViewDebugger and break the embedded preview
-##      (spike-verified). Replies are re-emitted as screenshot_received for
-##      the active backend to consume.
+##   1. Graceful-stop broadcast: messages are sent on EditorDebuggerSession
+##      instances via send_message(), using the gd_time_machine prefix (full
+##      "prefix:payload" wire form); the game side registers a capture on the
+##      prefix and receives the payload with the prefix stripped.
+##   2. Screenshot capture: the editor sends scene:rq_screenshot with an id,
+##      and the game replies with game_view:get_screenshot [id, w, h, path].
+##      The game_view capture prefix is claimed only while a screenshot
+##      recording is active — claiming it while idle would shadow the
+##      engine's GameViewDebugger and break the embedded preview. Replies are
+##      re-emitted as screenshot_received for the active backend to consume.
 
 ## Wire message sent to the running game to request a screenshot frame.
 const SCREENSHOT_REQUEST_MESSAGE := "scene:rq_screenshot"
@@ -168,8 +166,8 @@ func _setup_session(session_id: int) -> void:
 
 ## Claims or releases the game_view capture prefix. Call with true while a
 ## screenshot recording runs, false when it stops. The embedded game-view
-## preview stalls while the prefix is claimed (frames are not forwarded back
-## in v1) — documented tradeoff.
+## preview stalls while the prefix is claimed (capture frames are not
+## forwarded back to the preview) — documented tradeoff.
 func set_screenshot_capture_active(active: bool) -> void:
 	_screenshot_capture_active = active
 

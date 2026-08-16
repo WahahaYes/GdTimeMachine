@@ -1,19 +1,17 @@
 extends GutTest
 
-## Phase 0 plumbing proof (PLAN_obs_backend_v2.md §3.2): the OBS password the
-## user sets in Project > Editor Settings must reach _password on the client.
-## These tests prove the read half — _get_obs_settings()/typed readers resolve
-## the password from the settings store, EditorSettings-first then
-## ProjectSettings-fallback. The assign half (connect_to_obs → _password) lives
-## in test_obs_client.gd. The single seam that joins them (the backend's
-## start()/probe forwarding settings-password into connect_to_obs) lands with
-## Phase 2.
+## The OBS password the user sets in Project > Editor Settings must reach
+## _password on the client. These tests prove the read half —
+## _get_obs_settings()/typed readers resolve the password from the settings
+## store, EditorSettings-first then ProjectSettings-fallback. The assign half
+## (connect_to_obs → _password) lives in test_obs_client.gd; the seam joining
+## them (the backend's start()/probe forwarding settings-password into
+## connect_to_obs) is exercised in the start() tests below.
 ##
 ## EditorSettings cannot exist in headless GUT — Engine.has_singleton(
-## "EditorSettings") is FALSE in 4.7 even under --editor (the v1 Bug-7 root
-## cause, see PROGRESS_obs_backend_v2.md §3.2) — so the EditorSettings-present
-## branch is covered by injecting a fake store through _editor_settings, the
-## same seam EditorSettingsConfigStore already uses.
+## "EditorSettings") is FALSE in 4.7 even under --editor — so the
+## EditorSettings-present branch is covered by injecting a fake store through
+## _editor_settings, the same seam EditorSettingsConfigStore already uses.
 
 const PASSWORD_KEY := "gd_time_machine/obs/password"
 const TEST_PASSWORD := "phase0-plumbing-password"
@@ -65,7 +63,7 @@ func test_empty_password_default_when_unset() -> void:
 func test_editor_settings_shadow_project_settings() -> void:
 	# EditorSettings present (fake injected) → its password wins even when
 	# ProjectSettings holds a different value. This is the precedence that
-	# produced the v1 4009 when the two stores disagreed.
+	# produced an OBS auth 4009 close when the two stores disagreed.
 	var fake := FakeEditorSettings.new()
 	fake.set_v(PASSWORD_KEY, TEST_PASSWORD)
 	ProjectSettings.set_setting(PASSWORD_KEY, "shadowed")
@@ -83,7 +81,7 @@ func test_port_reader_falls_back_to_default() -> void:
 	assert_eq(_make_backend()._get_obs_settings().get("port", 0), OBSClient.DEFAULT_PORT)
 
 
-## ─── Phase 2 (PLAN §5) ─────────────────────────────────────────────────────────
+## ───────────────────────────────────────────────────────────────────────────
 
 ## An always-present file so the binary-install fakes resolve deterministically,
 ## independent of whether OBS is installed on the runner.
@@ -184,7 +182,7 @@ class FakeBackendOBS:
 ## End-to-end start/stop backend. is_obs_installed() resolves to EXISTING_BINARY
 ## (or empty), _create_obs_client() returns the configurable FakeOBSClient, and
 ## the scene is faked via the playing flag so start() can drive the
-## pending-start (A1) and begin-recording paths deterministically. A successful
+## pending-start and begin-recording paths deterministically. A successful
 ## "launch" returns a pretend pid; _probe_once() uses the fake client, so ensure
 ## is exercised (no real launch, no real WebSocket).
 class RecordingBackend:
@@ -281,7 +279,7 @@ class LaunchTestBackend:
 ## BackendOBS with a stubbed client factory + binary resolve so the real
 ## probe_obs_async()/start() wiring runs against FakeOBSClient. Keeps the base
 ## probe/start paths so _last_connect_error capture and the start() error
-## assembly are exercised end-to-end (v1 Bug-7 pattern).
+## assembly are exercised end-to-end.
 class ProbeFailureBackend:
 	extends BackendOBS
 	var auth_fail_message := ""
@@ -340,7 +338,7 @@ func test_contract_reports_in_place_mp4_only_backend() -> void:
 	assert_false(backend.is_recording())
 	assert_eq(backend.get_native_formats(), [GdTMOutputFormat.Format.MP4])
 	# is_available() is the probe cache — never true merely because a binary
-	# would resolve (two-axis lock, §2).
+	# would resolve.
 	assert_false(backend.is_available())
 
 
@@ -425,7 +423,7 @@ func test_ensure_obs_running_kills_own_process_on_timeout() -> void:
 	assert_eq(backend._launched_pid, 0)
 
 
-# --- start() paths (B1 + A1) ---
+# --- start() paths ---
 
 
 func test_start_not_installed_emits_actionable_error() -> void:
@@ -477,7 +475,7 @@ func test_start_happy_path_emits_recording_started() -> void:
 
 
 func test_start_pending_start_launches_scene_then_records() -> void:
-	# A1: scene not playing → _play_scene + pending-start poll; when the scene
+	# Scene not playing → _play_scene + pending-start poll; when the scene
 	# starts, _on_poll_timeout() begins recording.
 	var backend := _make_recording_backend()
 	watch_signals(backend)
@@ -591,7 +589,7 @@ func test_file_move_falls_back_to_output_dir_when_output_path_is_bare_name() -> 
 	DirAccess.remove_absolute(dir)
 
 
-# --- error surfacing (v1 Bug-7 pattern, B1 funnel) ---
+# --- error surfacing ---
 
 
 func test_probe_failure_captures_last_connect_error() -> void:

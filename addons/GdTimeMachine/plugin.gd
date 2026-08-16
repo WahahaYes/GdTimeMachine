@@ -619,9 +619,9 @@ func _ensure_editor_settings_defaults() -> void:
 						}
 					)
 				)
-		# OBS backend settings (PLAN_obs_backend_v2.md §6) — the only source
-		# BackendOBS._get_obs_settings() reads. Only set when absent so user
-		# preferences (host/port/password) survive plugin re-enables.
+		# OBS backend settings — the only source BackendOBS._get_obs_settings()
+		# reads. Only set when absent so user preferences (host/port/password)
+		# survive plugin re-enables.
 		var obs_defaults: Array = [
 			[
 				"gd_time_machine/obs/host",
@@ -660,9 +660,9 @@ func _ensure_editor_settings_defaults() -> void:
 					info["name"] = key
 					es.add_property_info(info)
 
-		# Install-hint suppression flag (Phase 3): set when the user ticks "Don't
-		# show again" in the OBS install hint dialog, so the dialog stays
-		# suppressed across restarts. Read/written by the dock via the same
+		# Install-hint suppression flag: set when the user ticks "Don't show
+		# again" in the OBS install hint dialog, so the dialog stays suppressed
+		# across restarts. Read/written by the dock via the same
 		# EditorSettings-first path the backends use.
 		if not es.has_setting("hints/dont_show_obs_hint"):
 			es.set_setting("hints/dont_show_obs_hint", false)

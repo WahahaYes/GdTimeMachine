@@ -1,9 +1,10 @@
 extends GutTest
 
-## OBSClient tests — Phase 0 auth gate (PLAN_obs_backend_v2.md §3.1) + client
-## half of the plumbing proof (§3.2), then the Phase 1 full client port (§4).
+## OBSClient tests: the auth handshake (challenge + salt → encoded sha256
+## response) and the WebSocket state machine (Hello → Identify → Identified →
+## READY), including request/response correlation and close/failure surfacing.
 ##
-## Phase 0: the three vectors below were computed INDEPENDENTLY with python3
+## The three reference vectors below were computed INDEPENDENTLY with python3
 ## hashlib/base64 — NOT by the function under test. They are the hard
 ## regression lock: any auth change that shifts them fails CI immediately.
 ## Reference logic (one-liner):
@@ -12,9 +13,9 @@ extends GutTest
 ##   ("p@ss w0rd", "s01t", "chal-1")     → OviXHTMUDxkuThqADhlITYdX+RovQ9rp+QknwnKk4MY=
 ##   ("", "", "")                        → XEB0z23rR/W2r5xf4+C70OQrlZb+iKxU1ca275h+DyA=
 ##
-## Phase 1: handshake/state-machine tests use the FakeWebSocketPeer seam
-## pattern ported from v1 (obs-backend-wip) — a plain RefCounted standing in
-## for WebSocketPeer, which cannot be subclassed in GDScript.
+## Handshake/state-machine tests use the FakeWebSocketPeer seam — a plain
+## RefCounted standing in for WebSocketPeer, which cannot be subclassed in
+## GDScript.
 
 const REF_PASSWORD_1 := "password"
 const REF_SALT_1 := "salt"
@@ -224,10 +225,10 @@ func test_hello_with_auth_sends_authentication_string() -> void:
 
 
 func test_empty_password_sends_no_authentication_field() -> void:
-	# v2 rule (PLAN §2): challenge present + empty password → NO
-	# authentication field. v1 computed a bogus auth string here, masking the
-	# plumbing bug; the server must be left to either accept (auth disabled)
-	# or close 4009 (auth enabled).
+	# challenge present + empty password → NO
+	# authentication field: an empty password produces no auth string, so the
+	# server must be left to either accept (auth disabled) or close 4009
+	# (auth enabled).
 	var client := _make_client()
 	var peer: FakeWebSocketPeer = client.peer
 	client.connect_to_obs("localhost", 4455, "")

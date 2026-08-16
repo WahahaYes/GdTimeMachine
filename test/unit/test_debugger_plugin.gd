@@ -1,6 +1,6 @@
 extends GutTest
 
-# Op 2 graceful-stop editor plugin tests
+# Graceful-stop editor plugin tests
 # (addons/GdTimeMachine/editor/debugger_plugin.gd).
 #
 # Testability constraint (verified empirically on Godot 4.7 headless):
@@ -236,7 +236,7 @@ func test_wire_contract_constants_present_in_source() -> void:
 func test_screenshot_capture_guard_present_in_source() -> void:
 	# The game_view capture must be claimed only while a screenshot recording
 	# is active, so the engine's GameViewDebugger keeps the embedded preview
-	# when idle (spike-verified).
+	# when idle.
 	var source := FileAccess.get_file_as_string(PLUGIN_SOURCE_PATH)
 	assert_true(source.contains("_screenshot_capture_active"))
 	assert_true(
@@ -266,7 +266,7 @@ func test_has_capture_claims_gd_time_machine_always() -> void:
 func test_has_capture_claims_game_view_only_when_capture_active() -> void:
 	# The game_view prefix must be claimed ONLY while a screenshot recording
 	# is active — claiming it while idle would shadow GameViewDebugger and
-	# break the embedded preview (spike-verified).
+	# break the embedded preview.
 	var plugin := _make_mirror()
 	assert_false(plugin._has_capture("game_view"))
 	plugin.set_screenshot_capture_active(true)

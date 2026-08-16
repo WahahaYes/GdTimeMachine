@@ -1,11 +1,10 @@
 extends GutTest
 
-# Grey-out state transitions for the game-view record button (Op 1 of
-# notes/SESSION_PLAN_engine_native_recording.md). The rule lives in a static
-# function on plugin.gd so the full matrix runs headlessly — no editor UI.
-# Signal re-apply wiring (backend_changed / recording_*) is covered by the
-# interactive playbook; the controller-level re-apply semantics are covered
-# in test_recorder_controller.gd.
+# Grey-out state transitions for the game-view record button. The rule lives
+# in a static function on plugin.gd so the full matrix runs headlessly — no
+# editor UI. Signal re-apply wiring (backend_changed / recording_*) is covered
+# by the interactive playbook; the controller-level re-apply semantics are
+# covered in test_recorder_controller.gd.
 
 const PluginScript := preload("res://addons/GdTimeMachine/plugin.gd")
 

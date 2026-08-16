@@ -23,7 +23,7 @@ signal conversion_failed(error_message: String, stderr_tail: String)
 ## Emitted when ffmpeg binary is not found: frames kept, notice path.
 signal ffmpeg_not_found(message: String)
 
-## Default h264 CRF for MP4 (quality tradeoff from brainstorm spec).
+## Default h264 CRF for MP4 (quality/size tradeoff).
 const DEFAULT_CRF := 18
 
 ## Tail length for stderr on failure (avoid spamming huge logs).
@@ -41,7 +41,7 @@ var _current_output_path: String = ""
 ## Input frames dir for cleanup decision (main thread).
 var _current_frames_dir: String = ""
 
-## Whether to delete the frames dir on success. Default true per 4a spec.
+## Whether to delete the frames dir on success. Default: true.
 var _clean_on_success: bool = true
 
 ## True after _exit_tree started waiting — guards double wait.
@@ -52,7 +52,7 @@ var _finishing := false
 ## otherwise "ffmpeg" on PATH.
 func _get_ffmpeg_binary() -> String:
 	var custom := ""
-	# EditorSettings key lives under gd_time_machine/ffmpeg/path per spec.
+	# EditorSettings key lives under gd_time_machine/ffmpeg/path.
 	# Use Engine.get_singleton("EditorSettings") seam via EditorInterface
 	# when available; fall back to ProjectSettings for testability.
 	if Engine.has_singleton("EditorSettings"):
@@ -140,7 +140,7 @@ func _delete_dir_recursive(dir_path: String) -> bool:
 
 
 ## Computes h264 crf from editor quality setting if present. Quality 0..1 maps
-## 1→18 (high) 0→28 (low); -1 → DEFAULT_CRF. Keeps spec's 18 as high-quality anchor.
+## 1→18 (high) 0→28 (low); -1 → DEFAULT_CRF. 1 = highest quality anchor.
 func _crf_for_quality() -> int:
 	var q := _get_video_quality()
 	if q < 0.0:
@@ -186,11 +186,7 @@ func build_frames_convert_command(
 	# If base already has an extension that matches native frames output,
 	# strip it — we always produce <base>.<ext>.
 	if base.get_extension().to_lower() in ["png", "jpg", "jpeg", "avi", "ogv", "mp4", "webm"]:
-		# Only strip when the extension equals the old-style screenshot base that
-		# _build_output_path_for_profile used to add; for new code base has no ext.
-		# Keep simple: if base ends with .<something> and that something is a known
-		# video ext, treat everything before as base. The caller passes extensionless
-		# base for screenshots, so this branch is rare.
+		# Legacy path helper; no-op for current OBS/Movie Maker flows.
 		pass
 	var out_path := "%s.%s" % [base, ext]
 	# Native frames → no-op.
@@ -216,7 +212,7 @@ func build_frames_convert_command(
 	args.append(pattern)
 	# Overwrite output if exists (user re-records same second).
 	args.append("-y")
-	# Codec map per target — draft from Op6 spec + brainstorm.
+	# Codec map per target.
 	match fmt:
 		GdTMOutputFormat.Format.MP4:
 			args.append("-c:v")
@@ -544,7 +540,6 @@ func _deferred_emit_not_found(message: String) -> void:
 
 
 ## Waits for any running Thread — must be called before free/_exit_tree.
-## Mirrors the lifecycle requirement from the spec (wait_to_finish before free).
 func wait_for_completion() -> void:
 	if _thread != null and _thread.is_started():
 		_thread.wait_to_finish()

@@ -59,8 +59,8 @@ const OBS_BACKEND_NAME := "OBS Studio"
 ## Suffix appended to a dropdown item whose backend reports itself unavailable.
 const UNAVAILABLE_SUFFIX := " — not available"
 
-## EditorSettings key for the install-hint suppression flag (Phase 3; default
-## false, registered in plugin.gd). True = never show the hint again.
+## EditorSettings key for the install-hint suppression flag (default false,
+## registered in plugin.gd). True = never show the hint again.
 const OBS_HINT_DONT_SHOW_SETTING := "hints/dont_show_obs_hint"
 
 ## OBS download/install page opened by the dialog's link.
@@ -176,7 +176,7 @@ var _install_hint_popups := 0
 ## OBS install-hint AcceptDialog (tscn node). Built once; text set per show.
 @onready var _obs_install_dialog: AcceptDialog = $ObsInstallDialog
 
-## Dynamic body of the install hint (rebuilt per show — Bug-6 lesson).
+## Dynamic body of the install hint (rebuilt per show).
 @onready var _obs_hint_label: Label = $ObsInstallDialog/HintContent/HintLabel
 
 ## "Open obsproject.com" link button.
@@ -335,7 +335,7 @@ func _populate_backends() -> void:
 
 
 ## Dropdown label for a backend: the plain name when available, otherwise the
-## name plus the " — not available" suffix (the §6 "greyed" marker).
+## name plus the " — not available" suffix.
 func _backend_label(backend_name: String, available: bool) -> String:
 	if available:
 		return backend_name
@@ -344,8 +344,8 @@ func _backend_label(backend_name: String, available: bool) -> String:
 
 ## Tooltip for an unavailable backend item explaining why it is marked and
 ## what to do. OBS gets actionable WebSocket guidance naming the actual
-## host/port from settings (Bug-6 lesson — never a hardcoded "OBS must be
-## running"); other backends get a generic note.
+## host/port from settings (never a hardcoded "OBS must be running"); other
+## backends get a generic note.
 func _unavailable_tooltip(backend_name: String) -> String:
 	if backend_name != OBS_BACKEND_NAME:
 		return "%s is currently unavailable." % backend_name
@@ -641,7 +641,7 @@ func _update_backend_tooltip() -> void:
 ## (repeatable as a reminder until the user sets hints/dont_show_obs_hint; the
 ## flag is persisted when the box is ticked and the dialog closes). Suppressed
 ## while the flag is true. The body is rebuilt dynamically with the real
-## settings host/port (Bug 6).
+## settings host/port.
 func _maybe_show_obs_install_hint(backend_name: String) -> void:
 	if backend_name != OBS_BACKEND_NAME:
 		return
@@ -650,7 +650,7 @@ func _maybe_show_obs_install_hint(backend_name: String) -> void:
 	if bool(_read_setting(OBS_HINT_DONT_SHOW_SETTING, false)):
 		return
 	# Never hint at an OBS that is actually reachable — the dialog asserts the
-	# opposite, so it must only appear while availability is false (D1).
+	# opposite, so it must only appear while availability is false.
 	if _controller != null and _controller.is_backend_available(backend_name):
 		return
 	_update_obs_install_dialog_text()
@@ -666,9 +666,9 @@ func _obs_target_text() -> String:
 	return "ws://%s:%d" % [host, port]
 
 
-## Builds the install-hint body from the real settings host/port (Bug-6
-## lesson: never assume OBS is running; the text always names the actual
-## target the backend would connect to).
+## Builds the install-hint body from the real settings host/port — never
+## assume OBS is running; the text always names the actual target the backend
+## would connect to.
 func _update_obs_install_dialog_text() -> void:
 	_obs_hint_label.text = (
 		(
@@ -1065,7 +1065,7 @@ func _set_status(text: String, color: Color) -> void:
 	_status_light.color = color
 
 
-# --- Live recording status (Op 7) --------------------------------------------
+# --- Live recording status ---------------------------------------------------
 #
 # While recording, the status line shows "Recording [backend] → file (mm:ss)"
 # refreshed once per second by a lazy timer. The elapsed time is computed from

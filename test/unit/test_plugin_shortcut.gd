@@ -1,7 +1,7 @@
 extends GutTest
 
-# Editor-wide record/stop shortcut (Op 7 of notes/SESSION_PLAN_engine_native_recording.md).
-# The shortcut construction lives in a static pure helper on plugin.gd
+# Editor-wide record/stop shortcut. The shortcut construction lives in a static
+# pure helper on plugin.gd
 # (build_toggle_shortcut) so both platform branches run headlessly — no
 # EditorSettings, no editor UI. The registration/attach wiring (add_shortcut,
 # BaseButton.shortcut) is editor-side and covered by the manual playbook.

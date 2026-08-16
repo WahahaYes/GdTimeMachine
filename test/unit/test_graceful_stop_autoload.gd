@@ -1,6 +1,6 @@
 extends GutTest
 
-# Op 2 graceful-stop autoload tests
+# Graceful-stop autoload tests
 # (addons/GdTimeMachine/autoload/graceful_stop.gd).
 #
 # The real autoload registers a message capture with EngineDebugger in _ready()

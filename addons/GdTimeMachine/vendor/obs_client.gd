@@ -8,12 +8,10 @@ class_name OBSClient
 ## AWAITING_IDENTIFIED → READY → CLOSING. Requests (op 6) correlate to
 ## responses (op 7) by requestId; events (op 5) pass through.
 ##
-## Auth (v2 locked decision, PLAN_obs_backend_v2.md §2): an EMPTY password
-## sends NO `authentication` field in Identify. A server with auth disabled
-## connects; one with auth enabled closes 4009, surfaced by the failure path.
-## A non-empty password is only ever sent when the Hello carries a challenge.
-## (v1 computed auth even for an empty password — that masked the plumbing
-## bug and is the single behavioral change this port makes.)
+## Auth rule: an EMPTY password sends NO `authentication` field in Identify;
+## a server with auth enabled then closes with code 4009 (surfaced by the
+## failure path). A non-empty password only ever accompanies a challenge
+## from Hello.
 ##
 ## @tool-safe: no Thread, no OS.execute — everything happens from _process.
 ## Seams for GUT: _create_websocket_peer() (untyped — native WebSocketPeer
@@ -265,9 +263,8 @@ func _handle_hello(d: Dictionary) -> void:
 	_state = State.AWAITING_IDENTIFIED
 	var authentication: Variant = d.get("authentication", {})
 	var auth_string := ""
-	# v2 rule: only answer a real challenge with a real password. Empty
-	# password → no authentication field (auth-disabled server connects,
-	# auth-enabled server closes 4009 → surfaced by the failure path).
+	# Only answer a real challenge with a real password: empty password →
+	# no authentication field (auth-disabled connects, auth-enabled closes 4009).
 	if _password != "" and authentication is Dictionary:
 		var salt := str(authentication.get("salt", ""))
 		var challenge := str(authentication.get("challenge", ""))
@@ -342,10 +339,9 @@ func _now() -> float:
 
 
 ## OBS WebSocket 5.x auth challenge response:
-## base64(sha256(base64(sha256(password + salt)) + challenge)). Ported
-## verbatim from you-win/obs-websocket-gd (Apache-2.0); upstream takes
-## (password, challenge, salt) — see NOTICE.txt. Pinned to an independent
-## Python (hashlib/base64) reference vector in test_obs_client.gd.
+## base64(sha256(base64(sha256(password + salt)) + challenge)). From
+## you-win/obs-websocket-gd (Apache-2.0); upstream takes (password,
+## challenge, salt) — see NOTICE.txt.
 static func _generate_auth(password: String, salt: String, challenge: String) -> String:
 	var combined_secret := "%s%s" % [password, salt]
 	var base64_secret := Marshalls.raw_to_base64(combined_secret.sha256_buffer())

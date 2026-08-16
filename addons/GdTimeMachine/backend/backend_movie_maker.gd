@@ -168,13 +168,9 @@ func start(config: Dictionary) -> void:
 		_set_movie_fps(fps)
 	_set_movie_maker_enabled(true)
 	_start_polling()
-	# Don't start duration timer yet for RESTART_SCENE — it should measure
-	# actual recording time, not launch overhead. Timer starts when poll sees
-	# playback begin (see _on_poll_timeout). If scene never starts, the
-	# duration expiry still needs to fire, so we arm a separate pending watchdog
-	# that treats lack of start as error (same as before, but via same timer).
-	# Simplest: start timer now for pending detection, but restart it on
-	# recording start so footage duration matches user request.
+	# Start the duration timer now so a scene that never starts still errors
+	# out, but restart it on recording start so footage duration matches the
+	# requested duration (see _on_poll_timeout).
 	if _duration > 0.0:
 		_start_duration_timer()
 	_play_scene(str(config.get("scene_path", "")))
@@ -204,7 +200,7 @@ func stop() -> void:
 ## playback start (emitting recording_started) or a natural scene exit
 ## (finalizing the recording). Duration timer is restarted when playback
 ## actually begins so the requested duration measures footage, not launch
-## overhead (5s request was giving 2.5s file when scene took ~2.5s to start).
+## overhead.
 func _on_poll_timeout() -> void:
 	if not _active:
 		return
@@ -398,7 +394,7 @@ func _get_grace_period() -> float:
 	return GRACE_PERIOD
 
 
-# --- ffmpeg tier-2 conversion (Op6) ------------------------------------------
+# --- ffmpeg tier-2 conversion -------------------------------------------------
 
 
 func _get_auto_convert_setting(config: Dictionary) -> bool:

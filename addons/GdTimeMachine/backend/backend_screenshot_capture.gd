@@ -4,19 +4,18 @@ class_name BackendScreenshotCapture
 
 ## IN_PLACE backend that captures the running scene through the engine's
 ## debugger screenshot channel (scene:rq_screenshot → game_view:get_screenshot)
-## on the Op-2 debugger plugin. The game keeps running — no restart, no
+## on the debugger plugin (editor/debugger_plugin.gd). The game keeps running — no restart, no
 ## graceful quit. Received PNGs are copied into `<output_path>.frames/` on
 ## receipt (the game may clean up its temp files at any point) — optionally
 ## lossily re-encoded as JPG (config output_format "jpg") to cut storage — and
 ## a manifest.json records the measured statistics for the dock notice and for
-## Op 6's converter. Frames smaller than MIN_FRAME_DIMENSION in either axis
+## the ffmpeg converter. Frames smaller than MIN_FRAME_DIMENSION in either axis
 ## (e.g. the debugger channel's occasional 1×1 first-frame stub) are scrubbed.
 ##
 ## The loop paces at the configured target fps with one request in flight at
-## a time; the achievable rate is machine-bound (spike: ~16-18 fps @720p
-## foreground on a low-power laptop, faster machines may reach 60). When the
-## game window is backgrounded/occluded Godot throttles it to ~1 fps — the
-## window must stay visible and focused.
+## a time; the achievable rate is machine-bound. When the game window is
+## backgrounded/occluded Godot throttles it to ~1 fps — the window must stay
+## visible and focused.
 
 ## State machine: idle → start() → [pending-start] → recording → stopped.
 ## start() normally begins capturing immediately when a scene is already
@@ -43,7 +42,7 @@ const POLL_INTERVAL := 0.5
 ## frames received so far (game hung, occluded, or crashed mid-capture).
 ## Restarted on every reply AND on every successful send so a slow debugger
 ## handshake (session not yet active at launch) doesn't trip it prematurely.
-## Increased to 15s — covers slow launches and first-frame PNG encode cost.
+## 15s covers slow launches and first-frame PNG encode cost.
 const NO_REPLY_TIMEOUT := 15.0
 
 ## Pacing fallback when the config provides no fps: ~15 fps.
@@ -389,7 +388,7 @@ func _finalize_stopped() -> void:
 
 
 ## Writes manifest.json (frame count, measured/target fps, elapsed, size)
-## into the frames dir — Op 6 reads it to drive the converter.
+## into the frames dir — the ffmpeg converter reads it to drive conversion.
 func _write_manifest() -> void:
 	var stats := _compute_stats()
 	var data := {
@@ -691,7 +690,7 @@ func _stop_polling() -> void:
 		_poll_timer.stop()
 
 
-# --- ffmpeg tier-2 conversion (Op6) ------------------------------------------
+# --- ffmpeg tier-2 conversion ------------------------------------------
 
 
 ## Reads auto-convert toggle: config override wins, otherwise EditorSettings
