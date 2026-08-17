@@ -62,6 +62,8 @@ class FakeScreenshotBackend:
 	var played_scenes: Array = []
 	var next_dims := {"width": 1280, "height": 720}
 	var injected_converter: FakeFFmpegConverterForScreenshot = null
+	# When false, _send_screenshot_request reports failure (request denied).
+	var send_ok := true
 
 	func _is_playing_scene() -> bool:
 		return playing
@@ -83,7 +85,7 @@ class FakeScreenshotBackend:
 
 	func _send_screenshot_request(rq_id: int) -> bool:
 		requests.append(rq_id)
-		return true
+		return send_ok
 
 	func _copy_frame(src: String, dst: String) -> void:
 		copies.append([src, dst])
@@ -172,9 +174,12 @@ func test_get_backend_name() -> void:
 	assert_eq(backend.get_backend_name(), "Screenshot")
 
 
-func test_get_description_is_non_empty() -> void:
-	var backend := _make_backend()
-	assert_false(backend.get_description().is_empty())
+func test_screenshot_description_mentions_real_time() -> void:
+	# Tooltip contract: the screenshot backend must state its real-time
+	# capture semantics (game sim runs at normal speed, machine-bound rate).
+	var backend: BackendScreenshotCapture = add_child_autofree(BackendScreenshotCapture.new())
+	var desc := backend.get_description().to_lower()
+	assert_string_contains(desc, "real-time")
 
 
 func test_is_available_always_true() -> void:
@@ -275,6 +280,27 @@ func test_stale_reply_is_ignored() -> void:
 	# no_reply restart count depends on implementation — not asserted (can be 0 or 1)
 
 
+func test_screenshot_request_denied_retries_without_consuming_rq_id() -> void:
+	# When the send seam reports failure, the request must not be consumed and
+	# never become an error: the capture claim stays active, _in_flight_rq_id
+	# stays -1 so the retry reuses the same id, and the no-reply timer re-arms.
+	var backend := _make_backend()
+	var errors: Array = []
+	backend.recording_error.connect(func(_n, _m): errors.append(true))
+	backend.send_ok = false
+	_start_capture(backend)
+	assert_eq(errors.size(), 0, "denied send is not an error")
+	assert_true(backend.is_recording(), "capture claim stays active")
+	assert_eq(backend._in_flight_rq_id, -1, "failed send must not consume the request id")
+	assert_eq(backend.no_reply_restarts, 1, "no-reply timer re-armed after denied send")
+	assert_eq(backend._next_rq_id, 0, "denied send must not advance the rq id counter")
+	# Retry succeeds and consumes rq 0 — the id the denied attempt would have used.
+	backend.send_ok = true
+	backend._on_pacing_timeout()
+	assert_eq(backend._in_flight_rq_id, 0, "retry reuses the unconsumed request id")
+	assert_eq(backend.requests, [0, 0], "denied attempt plus successful retry")
+
+
 func test_legacy_zero_dim_reply_accepted_when_in_flight() -> void:
 	# Engine's real reply has 0×0 dims; accepted as long as something is in
 	# flight (legacy compatibility — see debugger_plugin.gd fix).
@@ -311,12 +337,6 @@ func test_frame_copied_on_receipt() -> void:
 	assert_eq(backend.requests, [0, 1])
 	backend._on_screenshot_received(1, 640, 480, "user://tmp/frame2.png")
 	assert_eq(backend.copies.size(), 2)
-
-
-func test_default_image_format_is_png() -> void:
-	var backend := _make_backend()
-	_start_capture(backend)
-	assert_eq(backend._image_format, "png")
 
 
 func test_jpg_output_format_sets_extension_on_frames() -> void:

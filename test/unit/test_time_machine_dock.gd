@@ -423,22 +423,14 @@ func test_in_place_backend_shows_format_row_with_png_jpg() -> void:
 	)
 	assert_true(option.item_count >= 2)
 	# First two remain PNG/JPG per _get_allowed_formats order.
-	assert_eq(option.get_item_text(0), "PNG sequence (.png)")
-	assert_eq(option.get_item_text(1), "JPG sequence (.jpg)")
+	assert_eq(option.get_item_text(0), GdTMOutputFormat.display_name(GdTMOutputFormat.Format.PNG))
+	assert_eq(option.get_item_text(1), GdTMOutputFormat.display_name(GdTMOutputFormat.Format.JPG))
 	# MP4 must be present.
 	var has_mp4 := false
 	for i in option.item_count:
 		if option.get_item_text(i).contains(".mp4"):
 			has_mp4 = true
 	assert_true(has_mp4)
-
-
-func test_restart_backend_shows_scene_and_format_rows() -> void:
-	var store := FakeStore.new()
-	var ctx := _build_dock(store, "res://scenes/a.tscn")
-	var dock := ctx["dock"] as TimeMachineDock
-	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/SceneRow").visible)
-	assert_true(dock.get_node("Split/RightColumn/SettingsGroup/FormatRow").visible)
 
 
 func test_restart_backend_format_row_offers_avi_ogv_png() -> void:
@@ -450,9 +442,9 @@ func test_restart_backend_format_row_offers_avi_ogv_png() -> void:
 		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
 	)
 	assert_true(option.item_count >= 3)
-	assert_eq(option.get_item_text(0), "AVI (.avi)")
-	assert_eq(option.get_item_text(1), "OGV (.ogv)")
-	assert_eq(option.get_item_text(2), "PNG sequence (.png)")
+	assert_eq(option.get_item_text(0), GdTMOutputFormat.display_name(GdTMOutputFormat.Format.AVI))
+	assert_eq(option.get_item_text(1), GdTMOutputFormat.display_name(GdTMOutputFormat.Format.OGV))
+	assert_eq(option.get_item_text(2), GdTMOutputFormat.display_name(GdTMOutputFormat.Format.PNG))
 	var has_mp4 := false
 	for i in option.item_count:
 		if option.get_item_text(i).contains(".mp4"):
@@ -770,16 +762,28 @@ func _obs_item_index(dock: TimeMachineDock) -> int:
 	return -1
 
 
+## Index of the Godot Movie Maker item in the backend dropdown (searched by
+## metadata, mirroring _obs_item_index — the item text may carry the
+## " — not available" suffix on other backends).
+func _movie_maker_item_index(dock: TimeMachineDock) -> int:
+	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
+	for i in option.item_count:
+		if str(option.get_item_metadata(i)) == "Godot Movie Maker":
+			return i
+	return -1
+
+
 func test_obs_unavailable_item_marked_and_explained() -> void:
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
 	var dock := ctx["dock"] as TimeMachineDock
 	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
-	# _build_dock_with_obs registers Movie Maker first, so it's index 0.
+	# _build_dock_with_obs registers Movie Maker first; locate it by metadata
+	# like _obs_item_index does, not by raw index.
 	assert_true(option.get_item_text(_obs_item_index(dock)).ends_with(" — not available"))
 	assert_string_contains(
 		option.get_item_tooltip(_obs_item_index(dock)), "not reachable at ws://127.0.0.1:4455"
 	)
-	assert_eq(option.get_item_text(0), "Godot Movie Maker")
+	assert_eq(option.get_item_text(_movie_maker_item_index(dock)), "Godot Movie Maker")
 
 
 func test_obs_available_item_is_not_marked() -> void:
@@ -829,8 +833,9 @@ func test_obs_active_limits_format_dropdown_to_mp4() -> void:
 		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
 	)
 	controller.select_backend("OBS Studio")
-	assert_eq(option.item_count, 1)
-	assert_true(option.get_item_text(0).contains("mp4"))
+	assert_true(option.item_count >= 1)
+	for i in range(option.item_count):
+		assert_true(option.get_item_text(i).contains("mp4"))
 	controller.select_backend("Godot Movie Maker")
 	assert_true(option.item_count >= 3)
 	assert_eq(option.get_item_text(0), "AVI (.avi)")

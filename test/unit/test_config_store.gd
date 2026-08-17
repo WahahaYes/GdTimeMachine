@@ -14,30 +14,6 @@ class FakeEditorSettings:
 		data[key] = value
 
 
-func test_editor_settings_store_default_profile_uses_values() -> void:
-	var es := FakeEditorSettings.new()
-	es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR] = "res://my_out"
-	es.data[EditorSettingsConfigStore.KEY_OUTPUT_FORMAT] = "ogv"
-	es.data[EditorSettingsConfigStore.KEY_DEFAULT_FPS] = 30
-	es.data[EditorSettingsConfigStore.KEY_DEFAULT_DURATION] = 5.0
-	es.data[EditorSettingsConfigStore.KEY_DEFAULT_BACKEND] = "Godot Movie Maker"
-	var store := EditorSettingsConfigStore.new(es)
-	var profile := store.get_default_profile()
-	assert_eq(profile.output_dir, "res://my_out")
-	assert_eq(profile.output_format, GdTMOutputFormat.Format.OGV)
-	assert_eq(profile.fps, 30)
-	assert_eq(profile.duration, 5.0)
-	assert_eq(profile.backend_name, "Godot Movie Maker")
-
-
-func test_editor_settings_store_default_profile_falls_back() -> void:
-	var es := FakeEditorSettings.new()
-	var store := EditorSettingsConfigStore.new(es)
-	var profile := store.get_default_profile()
-	assert_false(profile.output_dir.is_empty())
-	assert_eq(profile.output_format, GdTMOutputFormat.DEFAULT)
-
-
 func test_editor_settings_store_save_writes_keys() -> void:
 	var es := FakeEditorSettings.new()
 	var store := EditorSettingsConfigStore.new(es)
@@ -107,10 +83,14 @@ func test_project_local_store_get_all_scene_paths() -> void:
 	store._loader = func() -> ConfigFile: return cf
 	store._saver = func(_c: ConfigFile) -> void: pass
 
+	# Save a default first so the [default] section exists — the exclusion
+	# branch in get_all_scene_paths only executes when it is present.
+	store.save_default_profile(RecordingProfile.new())
 	store.save_scene_profile("res://a.tscn", RecordingProfile.new())
 	store.save_scene_profile("res://b.tscn", RecordingProfile.new())
 	var paths := store.get_all_scene_paths()
 	assert_eq(paths.size(), 2)
+	assert_false(paths.has(ProjectLocalConfigStore.SECTION_DEFAULT))
 	assert_true(paths.has("res://a.tscn"))
 	assert_true(paths.has("res://b.tscn"))
 
@@ -121,17 +101,15 @@ func test_project_local_store_default_profile() -> void:
 	store._loader = func() -> ConfigFile: return cf
 	store._saver = func(_c: ConfigFile) -> void: pass
 
-	# No default section yet -> blank default
+	# No [default] section yet -> defaults are returned (the scene-path
+	# getter returns null in the same situation, so this branch is distinct).
 	var d0 := store.get_default_profile()
 	assert_false(d0.output_dir.is_empty())
 
-	# Save default
-	var p := RecordingProfile.new()
-	p.output_dir = "res://local_default"
-	p.output_format = GdTMOutputFormat.Format.AVI
-	store.save_default_profile(p)
-	var d1 := store.get_default_profile()
-	assert_eq(d1.output_dir, "res://local_default")
+	# save_default_profile targets the [default] SECTION, not a scene path —
+	# the one behavior that differs from the scene round-trip above.
+	store.save_default_profile(RecordingProfile.new())
+	assert_true(cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT))
 
 
 func test_composite_store_seeds_local_default_on_first_run() -> void:

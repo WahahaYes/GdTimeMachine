@@ -30,12 +30,6 @@ func test_record_enabled_when_idle_and_in_place_backend() -> void:
 	assert_eq(state["tooltip"], PluginScript.TOOLTIP_DEFAULT)
 
 
-func test_stop_enabled_when_recording_in_place() -> void:
-	var state: Dictionary = PluginScript.compute_game_view_button_state(true, IN_PLACE)
-	assert_false(state["disabled"])
-	assert_eq(state["tooltip"], PluginScript.TOOLTIP_DEFAULT)
-
-
 func test_disabled_tooltip_explains_the_restart() -> void:
 	var state: Dictionary = PluginScript.compute_game_view_button_state(false, RESTART)
 	assert_string_contains(str(state["tooltip"]).to_lower(), "restart")

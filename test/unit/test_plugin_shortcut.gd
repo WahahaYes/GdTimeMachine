@@ -52,10 +52,11 @@ func test_meta_branch_get_as_text_contains_combo() -> void:
 	assert_string_contains(text, "R")
 
 
-func test_should_use_meta_returns_bool() -> void:
-	# Platform seam: deterministic per-OS; smoke-check it returns a bool so
-	# _register_recording_shortcut's branch selection is exercised headlessly.
-	assert_true(PluginScript._should_use_meta() is bool)
+func test_should_use_meta_matches_running_os() -> void:
+	# Platform seam: _should_use_meta() is exactly (running OS == macOS). Pin
+	# the concrete branch on the live OS so a wrong platform string or an
+	# inverted comparison fails instead of a tautological bool check.
+	assert_eq(PluginScript._should_use_meta(), OS.get_name() == "macOS")
 
 
 func test_palette_action_and_key_are_distinct() -> void:

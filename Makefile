@@ -12,10 +12,37 @@ launch-editor: ## Launch the Godot editor with this project (uses godotenv pinne
 
 ##@ Testing
 
+# test-godot runs the GUT suite and reports failures concisely.
+# Exits 0 to preserve context; GUT-SUITE-OK/FAILED summary at end.
+SHELL := /bin/bash
+
 .PHONY: test-godot
-test-godot: ## Run Godot unit tests with GUT (headless)
+test-godot: ## Run Godot unit tests with GUT (headless); concise output, exits 0
 	@echo "Running tests..."
-	@godot --headless -s --path . addons/gut/gut_cmdln.gd -gexit 2>&1 | grep -E "(Failed|Error|PASSED|passed)" || true
+	@LOG=$$(mktemp /tmp/gut-XXXXXX.log); \
+	godot --headless -s --path . addons/gut/gut_cmdln.gd -gexit 2>&1 > $$LOG; \
+	STATUS=$$?; \
+	OK=1; \
+	for PAT in "SCRIPT ERROR" "Failed to load script" "Parse error"; do \
+		if grep -qF "$$PAT" $$LOG; then \
+			echo "GUT-SUITE-FAILED: output contains '$$PAT' (a test file failed to LOAD/parse)"; \
+			OK=0; \
+		fi; \
+	done; \
+	if [ $$STATUS -ne 0 ]; then \
+		echo "GUT-SUITE-FAILED: gut_cmdln exited with $$STATUS"; \
+		OK=0; \
+	fi; \
+	if [ $$OK -ne 1 ]; then \
+		echo "GUT-SUITE-FAILED: see full log at $$LOG"; \
+		grep -E "^(Passing Tests|Failing Tests|Asserts|Scripts|Warnings|Orphans)" $$LOG || cat $$LOG; \
+	else \
+		PASS=$$(grep -E "^Passing Tests" $$LOG | awk '{print $$NF}'); \
+		FAIL=$$(grep -E "^Failing Tests" $$LOG | awk '{print $$NF}'); \
+		[ -z "$$FAIL" ] && FAIL=0; \
+		echo "GUT-SUITE-OK ($$PASS passing, $$FAIL failing)"; \
+	fi; \
+	exit 0
 
 ##@ Addons
 

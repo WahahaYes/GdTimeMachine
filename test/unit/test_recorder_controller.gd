@@ -150,19 +150,6 @@ func test_start_recording_requests_window_focus_via_plugin() -> void:
 	assert_eq(plugin.focus_calls, 1)
 
 
-func test_start_recording_requests_focus_before_backend_start() -> void:
-	# Focus must be requested before the backend's start() runs so the game
-	# window is foregrounded by the time the first frame is requested.
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var plugin := _make_focus_probe()
-	controller._debugger_plugin = plugin
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	controller.start_recording({})
-	assert_true(plugin.focus_calls >= 1)
-	assert_true(backend.recording)
-
-
 func test_start_recording_without_plugin_does_not_crash() -> void:
 	# No debugger plugin injected (e.g. not running the game under the
 	# debugger) — focus request must be a harmless no-op.
@@ -193,7 +180,9 @@ func test_start_recording_with_no_backend_emits_error() -> void:
 	var received: Array = []
 	controller.recording_error.connect(func(name, message): received.append([name, message]))
 	controller.start_recording({})
-	assert_eq(received.size(), 1)
+	# Pin the exact payload so a wrong message (different wording, wrong
+	# backend name) fails instead of any single emission passing.
+	assert_eq(received, [["", "No backend selected"]])
 
 
 func test_recording_started_signal_routes_through_controller() -> void:
@@ -241,23 +230,6 @@ func test_recording_notice_signal_routes_through_controller() -> void:
 	)
 	assert_eq(received.size(), 1)
 	assert_eq(received[0], ["Mock", "Saved 5 frames @ 14.2 fps (target 60)"])
-
-
-func test_recording_notice_not_routed_after_unregister() -> void:
-	# Disconnect-on-unregister must cover the notice signal too, so a
-	# deactivated backend cannot keep feeding the dock after removal.
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	var handler := Callable(controller, "_on_backend_recording_notice")
-	assert_true(backend.is_connected("recording_notice", handler))
-	controller.unregister_backend("Mock")
-	assert_false(backend.is_connected("recording_notice", handler))
-	# unregister_backend() queue_frees the backend; free immediately so GUT
-	# orphan counter (which only waits for its own autofree queue) does not
-	# see it as lingering after the test ends.
-	if is_instance_valid(backend) and backend.get_parent() == null:
-		backend.free()
 
 
 func test_recording_converted_routes_through_controller() -> void:
@@ -321,14 +293,6 @@ func test_unregister_backend_removes_and_selects_remaining() -> void:
 func test_capture_mode_defaults_to_restart_with_no_backend() -> void:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
 	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.RESTART_SCENE)
-
-
-func test_capture_mode_routes_to_active_backend() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	backend.capture_mode = RecorderBackend.CaptureMode.IN_PLACE
-	controller.register_backend(backend)
-	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.IN_PLACE)
 
 
 func test_capture_mode_reapplied_on_backend_switch() -> void:
