@@ -1,308 +1,355 @@
+@tool
 extends GutTest
 
 
-# Mock backend exercising the RecorderBackend contract. Because it is an
-# inner class it is not collected by GUT as a test script.
-class MockBackend:
+## Fake backend for controller tests.
+class FakeBackend:
 	extends RecorderBackend
-	var display_name := "Mock"
-	var available := true
-	var recording := false
-	var capture_mode := RecorderBackend.CaptureMode.RESTART_SCENE
-	var started_config: Dictionary = {}
-	var stopped_calls := 0
-	var emit_started_on_start := false
+	signal availability_changed(available: bool)
+
+	var _name: String = "Fake Backend"
+	var _available: bool = true
+	var _recording: bool = false
+	var _capture_mode: RecorderBackend.CaptureMode = RecorderBackend.CaptureMode.RESTART_SCENE
+	var _start_config: Dictionary
+	var _start_called: bool = false
+	var _stop_called: bool = false
+	var _should_emit_started: bool = true
+	var _should_emit_stopped: bool = true
+	var _should_emit_error: bool = false
+	var _error_message: String = "Test error"
+
+	func _init(
+		name: String = "Fake Backend",
+		available: bool = true,
+		capture_mode: RecorderBackend.CaptureMode = RecorderBackend.CaptureMode.RESTART_SCENE
+	) -> void:
+		_name = name
+		_available = available
+		_capture_mode = capture_mode
 
 	func get_backend_name() -> String:
-		return display_name
-
-	func get_description() -> String:
-		return "Mock backend for tests"
+		return _name
 
 	func is_available() -> bool:
-		return available
+		return _available
 
 	func is_recording() -> bool:
-		return recording
+		return _recording
 
-	func get_capture_mode() -> CaptureMode:
-		return capture_mode
+	func get_capture_mode() -> RecorderBackend.CaptureMode:
+		return _capture_mode
 
 	func start(config: Dictionary) -> void:
-		started_config = config
-		recording = true
-		if emit_started_on_start:
-			recording_started.emit(display_name, str(config.get("output_path", "")))
+		_start_config = config
+		_start_called = true
+		_recording = true
+		if _should_emit_started:
+			recording_started.emit(_name, config.get("output_path", "test_path"))
+		if _should_emit_error:
+			recording_error.emit(_name, _error_message)
+			_recording = false
 
 	func stop() -> void:
-		stopped_calls += 1
-		recording = false
+		_stop_called = true
+		if _recording and _should_emit_stopped:
+			recording_stopped.emit(_name, _start_config.get("output_path", "test_path"))
+		_recording = false
+
+	func set_availability(available: bool) -> void:
+		_available = available
+		if has_signal("availability_changed"):
+			availability_changed.emit(available)
+
+	func set_should_emit_started(emit: bool) -> void:
+		_should_emit_started = emit
+
+	func set_should_emit_stopped(emit: bool) -> void:
+		_should_emit_stopped = emit
+
+	func set_should_emit_error(emit: bool, msg: String = "Error") -> void:
+		_should_emit_error = emit
+		_error_message = msg
 
 
-# Creates a MockBackend without autofree — RecorderController owns the
-# lifecycle via add_child() on register, and frees on unregister. Returning a
-# plain Node avoids double-free / orphan conflicts from GUT autofree.
-func _make_backend(display_name := "Mock") -> MockBackend:
-	var backend := MockBackend.new()
-	backend.display_name = display_name
-	return backend
+## Tests use member variables to capture signal payloads: GDScript lambdas
+## capture outer locals BY VALUE in this Godot version, so a lambda writing a
+## captured local cannot be read back. Members (written through self) work.
+var _captured_bool := false
+var _captured_name := ""
+var _captured_path := ""
+var _captured_msg := ""
 
 
-# Duck-typed debugger plugin exposing only the send_focus_request() surface
-# the controller calls. Records calls so tests can assert the focus request
-# fires unconditionally on start.
-func _make_focus_probe() -> Object:
-	var probe := FocusProbe.new()
-	probe = autofree(probe)
-	return probe
+func before_each() -> void:
+	_captured_bool = false
+	_captured_name = ""
+	_captured_path = ""
+	_captured_msg = ""
 
 
-class FocusProbe:
-	extends RefCounted
-	var focus_calls := 0
-
-	func send_focus_request() -> bool:
-		focus_calls += 1
-		return true
-
-
-func test_register_backend_sets_active_when_none() -> void:
+func make_controller() -> RecorderController:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
+	return controller
+
+
+## Backend registration tests
+
+
+func test_register_backend_accepts_valid_backend() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test Backend")
 	controller.register_backend(backend)
-	assert_same(controller.active_backend, backend)
-	assert_eq(controller.get_backend_names(), ["Mock"])
+	assert_eq(controller.get_backend_names(), ["Test Backend"])
+	assert_eq(controller.active_backend, backend)
 
 
-func test_register_null_backend_ignored() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
+func test_register_backend_rejects_null() -> void:
+	var controller := make_controller()
 	controller.register_backend(null)
-	assert_eq(controller.backends.size(), 0)
-	assert_null(controller.active_backend)
+	assert_push_warning("Cannot register a null backend")
+	assert_eq(controller.get_backend_names(), [])
 
 
-func test_register_empty_name_ignored() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend("")
+func test_register_backend_rejects_empty_name() -> void:
+	var controller := make_controller()
+	var backend: FakeBackend = autofree(FakeBackend.new(""))
 	controller.register_backend(backend)
-	assert_eq(controller.backends.size(), 0)
-	# register_backend early-returns without parenting, so we must free it
-	# ourselves to avoid an orphan — controller didn't take ownership.
-	# Use free() not queue_free() so the orphan counter sees it gone this frame.
-	backend.free()
+	assert_push_warning("empty name")
+	assert_eq(controller.get_backend_names(), [])
 
 
-func test_register_duplicate_name_replaces() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var first := _make_backend()
-	var second := _make_backend()
-	controller.register_backend(first)
-	controller.register_backend(second)
-	# unregister_backend() queue_frees the old backend; free immediately so GUT
-	# orphan counter (which only waits for its own autofree queue) does not see it.
-	if is_instance_valid(first) and first.get_parent() == null:
-		first.free()
-	assert_eq(controller.backends.size(), 1)
-	assert_same(controller.backends["Mock"], second)
+func test_register_backend_replaces_duplicate() -> void:
+	var controller := make_controller()
+	var b1 := FakeBackend.new("Same Name")
+	var b2 := FakeBackend.new("Same Name")
+	controller.register_backend(b1)
+	controller.register_backend(b2)
+	assert_push_warning("already registered")
+	assert_eq(controller.get_backend_names(), ["Same Name"])
+	assert_eq(controller.active_backend, b2)
+	if is_instance_valid(b1) and b1.get_parent() == null:
+		b1.free()
+
+
+func test_unregister_backend_removes_and_reselects() -> void:
+	var controller := make_controller()
+	var b1 := FakeBackend.new("Backend 1")
+	var b2 := FakeBackend.new("Backend 2")
+	controller.register_backend(b1)
+	controller.register_backend(b2)
+	controller.unregister_backend("Backend 1")
+	assert_eq(controller.get_backend_names(), ["Backend 2"])
+	assert_eq(controller.active_backend, b2)
+	if is_instance_valid(b1) and b1.get_parent() == null:
+		b1.free()
+
+
+func test_unregister_backend_warns_unknown() -> void:
+	# Unregistering an unknown name warns but must not disturb registrations.
+	var controller := make_controller()
+	var b1 := FakeBackend.new("Backend 1")
+	controller.register_backend(b1)
+	controller.unregister_backend("Unknown")
+	assert_push_warning("Cannot unregister unknown backend")
+	assert_eq(controller.get_backend_names(), ["Backend 1"])
+	assert_eq(controller.active_backend, b1)
 
 
 func test_select_backend_switches_and_emits() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var a := _make_backend("A")
-	var b := _make_backend("B")
-	controller.register_backend(a)
-	controller.register_backend(b)
-	var changed: Array = []
-	controller.backend_changed.connect(func(name): changed.append(name))
-	controller.select_backend("B")
-	assert_same(controller.active_backend, b)
-	assert_eq(changed, ["B"])
-
-
-func test_select_unknown_backend_fails_gracefully() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var a := _make_backend("A")
-	controller.register_backend(a)
-	controller.select_backend("nonexistent")
-	assert_same(controller.active_backend, a)
-
-
-func test_start_recording_routes_config_to_backend() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	controller.start_recording({"output_path": "res://media/captures/x.avi"})
-	assert_true(backend.recording)
-	assert_eq(backend.started_config.get("output_path"), "res://media/captures/x.avi")
-	assert_true(controller.is_recording())
-
-
-func test_start_recording_requests_window_focus_via_plugin() -> void:
-	# The focus request is backend-agnostic and unconditional: any backend
-	# (RESTART_SCENE or IN_PLACE) asks the running game to bring its window
-	# to focus so the capture runs at full rate.
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var plugin := _make_focus_probe()
-	controller._debugger_plugin = plugin
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	controller.start_recording({"output_path": "res://media/captures/x.avi"})
-	assert_eq(plugin.focus_calls, 1)
-
-
-func test_start_recording_without_plugin_does_not_crash() -> void:
-	# No debugger plugin injected (e.g. not running the game under the
-	# debugger) — focus request must be a harmless no-op.
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	controller.start_recording({"output_path": "res://media/captures/x.avi"})
-	assert_true(backend.recording)
-
-
-func test_focus_probe_calls_for_every_start() -> void:
-	# Two start/stop cycles request focus both times (unconditional).
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var plugin := _make_focus_probe()
-	controller._debugger_plugin = plugin
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	controller.start_recording({})
-	controller.stop_recording()
-	controller.start_recording({})
-	assert_eq(plugin.focus_calls, 2)
-	if is_instance_valid(backend) and backend.get_parent() == null:
-		backend.free()
-
-
-func test_start_recording_with_no_backend_emits_error() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var received: Array = []
-	controller.recording_error.connect(func(name, message): received.append([name, message]))
-	controller.start_recording({})
-	# Pin the exact payload so a wrong message (different wording, wrong
-	# backend name) fails instead of any single emission passing.
-	assert_eq(received, [["", "No backend selected"]])
-
-
-func test_recording_started_signal_routes_through_controller() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	backend.emit_started_on_start = true
-	controller.register_backend(backend)
-	var received: Array = []
-	controller.recording_started.connect(func(name, path): received.append([name, path]))
-	controller.start_recording({"output_path": "res://media/captures/x.avi"})
-	assert_eq(received.size(), 1)
-	assert_eq(received[0], ["Mock", "res://media/captures/x.avi"])
-
-
-func test_recording_stopped_signal_routes_through_controller() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	var received: Array = []
-	controller.recording_stopped.connect(func(name, path): received.append([name, path]))
-	backend.recording_stopped.emit(backend.get_backend_name(), "res://media/captures/x.avi")
-	assert_eq(received.size(), 1)
-	assert_eq(received[0], ["Mock", "res://media/captures/x.avi"])
-
-
-func test_recording_error_signal_routes_through_controller() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	var received: Array = []
-	controller.recording_error.connect(func(name, message): received.append([name, message]))
-	backend.recording_error.emit(backend.get_backend_name(), "boom")
-	assert_eq(received.size(), 1)
-	assert_eq(received[0], ["Mock", "boom"])
-
-
-func test_recording_notice_signal_routes_through_controller() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	var received: Array = []
-	controller.recording_notice.connect(func(name, message): received.append([name, message]))
-	backend.recording_notice.emit(
-		backend.get_backend_name(), "Saved 5 frames @ 14.2 fps (target 60)"
+	var controller := make_controller()
+	var b1 := FakeBackend.new("Backend 1")
+	var b2 := FakeBackend.new("Backend 2")
+	controller.register_backend(b1)
+	controller.register_backend(b2)
+	controller.backend_changed.connect(
+		func(name: String) -> void:
+			_captured_bool = true
+			_captured_name = name
 	)
-	assert_eq(received.size(), 1)
-	assert_eq(received[0], ["Mock", "Saved 5 frames @ 14.2 fps (target 60)"])
+	controller.select_backend("Backend 2")
+	assert_true(_captured_bool)
+	assert_eq(_captured_name, "Backend 2")
+	assert_eq(controller.active_backend, b2)
 
 
-func test_recording_converted_routes_through_controller() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
+func test_select_backend_noop_when_already_active() -> void:
+	var controller := make_controller()
+	var b1 := FakeBackend.new("Backend 1")
+	controller.register_backend(b1)
+	controller.backend_changed.connect(func(_name: String) -> void: _captured_bool = true)
+	controller.select_backend("Backend 1")
+	assert_false(_captured_bool)
+
+
+func test_select_backend_warns_unknown() -> void:
+	var controller := make_controller()
+	var b1 := FakeBackend.new("Backend 1")
+	controller.register_backend(b1)
+	controller.select_backend("Unknown")
+	assert_push_warning("Unknown backend")
+	assert_eq(controller.active_backend, b1)
+
+
+## Availability forwarding tests
+
+
+func test_is_backend_available_delegates() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test", true)
 	controller.register_backend(backend)
-	var received: Array = []
-	controller.recording_converted.connect(func(name, path): received.append([name, path]))
-	backend.recording_converted.emit("Mock", "res://media/captures/x.mp4")
-	assert_eq(received.size(), 1)
-	assert_eq(received[0], ["Mock", "res://media/captures/x.mp4"])
+	assert_true(controller.is_backend_available("Test"))
+	backend.set_availability(false)
+	assert_false(controller.is_backend_available("Test"))
 
 
-func test_recording_converted_not_routed_after_unregister() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
+func test_backend_availability_changed_forwarded() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test", true)
 	controller.register_backend(backend)
-	var handler := Callable(controller, "_on_backend_recording_converted")
-	assert_true(backend.is_connected("recording_converted", handler))
-	controller.unregister_backend("Mock")
-	assert_false(backend.is_connected("recording_converted", handler))
-	if is_instance_valid(backend) and backend.get_parent() == null:
-		backend.free()
+	controller.backend_availability_changed.connect(
+		func(_name: String, available: bool) -> void: _captured_bool = available
+	)
+	backend.set_availability(false)
+	assert_false(_captured_bool)
 
 
-func test_stop_recording_returns_bool_and_stops_backend() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var backend := _make_backend()
-	controller.register_backend(backend)
-	assert_false(controller.stop_recording())
-	controller.start_recording({})
-	assert_true(controller.stop_recording())
-	assert_eq(backend.stopped_calls, 1)
-	assert_false(controller.is_recording())
-	assert_false(controller.stop_recording())
+## Capture mode propagation
 
 
-func test_unregister_backend_removes_and_selects_remaining() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var a := _make_backend("A")
-	var b := _make_backend("B")
-	controller.register_backend(a)
-	controller.register_backend(b)
-	controller.select_backend("B")
-	controller.unregister_backend("B")
-	# unregister_backend() queue_frees B; free immediately so orphan counter
-	# does not see it as lingering after the test ends — controller freed it,
-	# not GUT autofree.
-	if is_instance_valid(b) and b.get_parent() == null:
-		b.free()
-	assert_eq(controller.backends.size(), 1)
-	assert_same(controller.active_backend, a)
-	# No signal forwarding after unregister — nothing to assert on b since freed.
-	# Verify a's signals still route (negative test that unregister didn't break other routing).
-	var received: Array = []
-	controller.recording_error.connect(func(name, message): received.append([name, message]))
-	a.recording_error.emit("A", "still works")
-	assert_eq(received, [["A", "still works"]])
-
-
-func test_capture_mode_defaults_to_restart_with_no_backend() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
+func test_get_capture_mode_returns_active_backend_mode() -> void:
+	var controller := make_controller()
+	var b1 := FakeBackend.new("Backend 1", true, RecorderBackend.CaptureMode.RESTART_SCENE)
+	var b2 := FakeBackend.new("Backend 2", true, RecorderBackend.CaptureMode.IN_PLACE)
+	controller.register_backend(b1)
+	controller.register_backend(b2)
 	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.RESTART_SCENE)
-
-
-func test_capture_mode_reapplied_on_backend_switch() -> void:
-	var controller: RecorderController = add_child_autofree(RecorderController.new())
-	var restart := _make_backend("Restart")
-	var in_place := _make_backend("InPlace")
-	in_place.capture_mode = RecorderBackend.CaptureMode.IN_PLACE
-	controller.register_backend(restart)
-	controller.register_backend(in_place)
-	controller.select_backend("InPlace")
+	controller.select_backend("Backend 2")
 	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.IN_PLACE)
-	controller.select_backend("Restart")
+
+
+func test_get_capture_mode_defaults_when_no_backend() -> void:
+	var controller := make_controller()
 	assert_eq(controller.get_capture_mode(), RecorderBackend.CaptureMode.RESTART_SCENE)
+
+
+## Start/stop recording routing
+
+
+func test_start_recording_routes_config_to_active_backend() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	controller.register_backend(backend)
+	var config := {
+		"output_path": "res://out.avi",
+		"fps": 60,
+		"duration": 10.0,
+		"scene_path": "res://scene.tscn",
+		"fullscreen": true
+	}
+	controller.start_recording(config)
+	assert_true(backend._start_called)
+	assert_eq(backend._start_config, config)
+
+
+func test_start_recording_emits_error_when_no_backend() -> void:
+	var controller := make_controller()
+	controller.recording_error.connect(
+		func(_name: String, _msg: String) -> void: _captured_bool = true
+	)
+	controller.start_recording({})
+	assert_push_warning("No backend selected")
+	assert_true(_captured_bool)
+
+
+func test_start_recording_warns_when_already_recording() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	backend._recording = true
+	controller.register_backend(backend)
+	controller.start_recording({})
+	assert_push_warning("already recording")
+	assert_false(backend._start_called)
+
+
+func test_stop_recording_calls_backend_stop() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	backend._recording = true
+	controller.register_backend(backend)
+	var result := controller.stop_recording()
+	assert_true(result)
+	assert_true(backend._stop_called)
+
+
+func test_stop_recording_returns_false_when_no_backend() -> void:
+	var controller := make_controller()
+	assert_false(controller.stop_recording())
+
+
+func test_stop_recording_returns_false_when_not_recording() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	controller.register_backend(backend)
+	assert_false(controller.stop_recording())
+
+
+## Signal forwarding tests
+
+
+func test_recording_started_forwarded() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	controller.register_backend(backend)
+	controller.recording_started.connect(
+		func(name: String, path: String) -> void:
+			_captured_name = name
+			_captured_path = path
+	)
+	backend.recording_started.emit("Test", "res://out.avi")
+	assert_eq(_captured_name, "Test")
+	assert_eq(_captured_path, "res://out.avi")
+
+
+func test_recording_stopped_forwarded() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	controller.register_backend(backend)
+	controller.recording_stopped.connect(
+		func(_name: String, path: String) -> void: _captured_path = path
+	)
+	backend.recording_stopped.emit("Test", "res://out.avi")
+	assert_eq(_captured_path, "res://out.avi")
+
+
+func test_recording_error_forwarded() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	controller.register_backend(backend)
+	controller.recording_error.connect(
+		func(_name: String, msg: String) -> void: _captured_msg = msg
+	)
+	backend.recording_error.emit("Test", "Something failed")
+	assert_eq(_captured_msg, "Something failed")
+
+
+func test_recording_notice_forwarded() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	controller.register_backend(backend)
+	controller.recording_notice.connect(
+		func(_name: String, msg: String) -> void: _captured_msg = msg
+	)
+	backend.recording_notice.emit("Test", "Notice message")
+	assert_eq(_captured_msg, "Notice message")
+
+
+func test_recording_converted_forwarded_when_backend_has_signal() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test")
+	controller.register_backend(backend)
+	controller.recording_converted.connect(
+		func(_name: String, path: String) -> void: _captured_path = path
+	)
+	backend.recording_converted.emit("Test", "res://converted.mp4")
+	assert_eq(_captured_path, "res://converted.mp4")

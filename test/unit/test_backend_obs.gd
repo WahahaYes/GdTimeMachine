@@ -1,25 +1,27 @@
+@tool
 extends GutTest
 
-## The OBS password the user sets in Project > Editor Settings must reach
-## _password on the client. These tests prove the read half —
-## _get_obs_settings()/typed readers resolve the password from the settings
-## store, EditorSettings-first then ProjectSettings-fallback. The assign half
-## (connect_to_obs → _password) lives in test_obs_client.gd; the seam joining
-## them (the backend's start()/probe forwarding settings-password into
-## connect_to_obs) is exercised in the start() tests below.
+## BackendOBS tests: settings plumbing, two-axis availability, launch/ownership +
+## D2/D3 orphan lifecycle, start/stop paths, file-move fallback, error surfacing.
 ##
-## EditorSettings cannot exist in headless GUT — Engine.has_singleton(
-## "EditorSettings") is FALSE in 4.7 even under --editor — so the
-## EditorSettings-present branch is covered by injecting a fake store through
-## _editor_settings, the same seam EditorSettingsConfigStore already uses.
+## Every fake overrides _ready() with pass — the real orphan sweep must never
+## touch user://gdtime_obs_launched.cfg in tests. Reply-gated tests await
+## wait_for_signal(sig, REPLY_BUDGET) (the fake defers replies one process_frame;
+## never wait_frames/call_deferred). The --minimize-to-tray argv and the /proc
+## ownership proof are unseamable; normalization tests + narration pin are the proxies.
 
 const PASSWORD_KEY := "gd_time_machine/obs/password"
+const PORT_KEY := "gd_time_machine/obs/port"
 const TEST_PASSWORD := "phase0-plumbing-password"
-## Budget for awaiting fake-deferred request replies (wait_for_signal).
-## Must stay < the backend's 3.0 s StopRecord fallback timer so a test can
-## never pass via the fallback; the fake replies ~1 frame later, so 2.0 s is
-## orders of magnitude above the reply latency.
+## Budget for fake-deferred replies; must stay < the 3 s StopRecord fallback.
 const REPLY_BUDGET := 2.0
+
+## An always-present file so the binary-install fakes resolve deterministically,
+## independent of whether OBS is installed on the runner.
+const EXISTING_BINARY := "res://addons/GdTimeMachine/plugin.gd"
+## The exact message OBSClient._describe_connect_failure() produces for close
+## code 4009 — what the probe's on_fail lambda must capture, not discard.
+const AUTH_FAIL_MESSAGE := "Authentication failed — OBS rejected the password"
 
 
 ## Fake EditorSettings store: get_setting() returns per-key values or null,
@@ -36,68 +38,16 @@ class FakeEditorSettings:
 
 
 func before_each() -> void:
-	if ProjectSettings.has_setting(PASSWORD_KEY):
-		ProjectSettings.clear(PASSWORD_KEY)
-
-
-func _read_password(backend: BackendOBS) -> String:
-	return str(backend._get_obs_settings().get("password", ""))
-
-
-func _make_backend() -> BackendOBS:
-	# add_child_autofree returns an untyped value, so the caller must annotate.
-	return add_child_autofree(SettingsBackend.new())
-
-
-func test_password_read_from_project_settings_fallback() -> void:
-	# EditorSettings absent (headless; _editor_settings null) → readers must
-	# fall through to ProjectSettings, not to the default.
-	ProjectSettings.set_setting(PASSWORD_KEY, TEST_PASSWORD)
-	assert_eq(_read_password(_make_backend()), TEST_PASSWORD)
-
-
-func test_empty_password_default_when_unset() -> void:
-	# Nothing set anywhere → empty password (server auth disabled case).
-	assert_eq(_read_password(_make_backend()), "")
-
-
-func test_editor_settings_shadow_project_settings() -> void:
-	# EditorSettings present (fake injected) → its password wins even when
-	# ProjectSettings holds a different value. This is the precedence that
-	# produced an OBS auth 4009 close when the two stores disagreed.
-	var fake := FakeEditorSettings.new()
-	fake.set_v(PASSWORD_KEY, TEST_PASSWORD)
-	ProjectSettings.set_setting(PASSWORD_KEY, "shadowed")
-	var backend: BackendOBS = _make_backend()
-	backend._editor_settings = fake
-	assert_eq(_read_password(backend), TEST_PASSWORD)
-
-
-func test_project_settings_reads_through_typed_reader() -> void:
-	ProjectSettings.set_setting(PASSWORD_KEY, TEST_PASSWORD)
-	assert_eq(_make_backend()._get_setting_string(PASSWORD_KEY, "default"), TEST_PASSWORD)
-
-
-func test_port_reader_falls_back_to_default() -> void:
-	assert_eq(_make_backend()._get_obs_settings().get("port", 0), OBSClient.DEFAULT_PORT)
-
-
-## ───────────────────────────────────────────────────────────────────────────
-
-## An always-present file so the binary-install fakes resolve deterministically,
-## independent of whether OBS is installed on the runner.
-const EXISTING_BINARY := "res://addons/GdTimeMachine/plugin.gd"
-const MISSING_BINARY := "/nonexistent/gd_time_machine_obs_binary"
-## The exact message OBSClient._describe_connect_failure() produces for close
-## code 4009 — what the probe's on_fail lambda must capture, not discard.
-const AUTH_FAIL_MESSAGE := "Authentication failed — OBS rejected the password"
+	for key in [PASSWORD_KEY, PORT_KEY]:
+		if ProjectSettings.has_setting(key):
+			ProjectSettings.clear(key)
 
 
 ## Fake OBSClient whose connect_to_obs() never opens a socket: with
 ## fail_message set it emits connection_failed synchronously (probe capture is
 ## deterministic); otherwise it jumps straight to READY. send_request() records
-## the call and replies synchronously via signal so request→response wiring runs
-## without a live OBS.
+## the call and replies via request_completed, deferred one process_frame so
+## request→response wiring runs against the backend's real ordering contract.
 class FakeOBSClient:
 	extends OBSClient
 	var fail_message := ""
@@ -105,9 +55,10 @@ class FakeOBSClient:
 	var respond_code := OBSClient.STATUS_SUCCESS
 	var respond_data := {}
 	var requests: Array = []
-	# Test seam: if true, replies synchronously (no call_deferred defer)
-	# Default false: existing tests rely on async reply (emitted after start() returns).
-	# Gap tests set sync_reply = true explicitly for synchronous behavior.
+	# Test seam: when true, request_completed is emitted inline (no defer) for
+	# tests that drive replies manually. Default false: the one-process_frame
+	# defer matches the real-OBS async ordering. Currently unused and reserved
+	# — no active test sets it today.
 	var sync_reply := false
 
 	func connect_to_obs(
@@ -132,30 +83,28 @@ class FakeOBSClient:
 		var ok := respond_result
 		var code := respond_code
 		var data: Dictionary = respond_data
-		# A real OBS answers asynchronously, so the backend's
-		# _pending_request_id/_kind are already assigned by the time a reply
-		# lands. Emit on the next main-loop iteration via call_deferred
-		# (fires before physics frames, avoiding GUT's wait_for_signal timeout).
 		if sync_reply:
 			emit_signal("request_completed", rid, ok, code, data)
 			return rid
+		# Real-OBS ordering contract: the op 7 reply lands only after the
+		# backend has already assigned _pending_request_id/_pending_request_kind,
+		# so it is deferred by one tree.process_frame emission (CONNECT_ONE_SHOT)
+		# — never call_deferred (fires before the frame boundary) and never
+		# emitted inline (would race the pending-request assignment).
 		var tree := get_tree()
 		if tree == null:
 			emit_signal("request_completed", rid, ok, code, data)
 			return rid
-		call_deferred("_emit_reply", rid, ok, code, data)
+		tree.process_frame.connect(
+			func() -> void: emit_signal("request_completed", rid, ok, code, data),
+			CONNECT_ONE_SHOT,
+		)
 		return rid
 
-func _emit_reply(rid: String, ok: bool, code: int, data: Dictionary) -> void:
-	emit_signal("request_completed", rid, ok, code, data)
 
-}  # end of FakeOBSClient class
-
-
-## Neutralized BackendOBS for binary/availability tests.
-## (base's editor-only probe wiring never runs headless anyway); settings and
-## the binary resolve are injected. probe_obs_async() is stubbed to a counter
-## so is_available()/is_obs_running() dynamics are deterministic.
+## Neutralized BackendOBS for binary/availability tests: settings and the
+## binary resolve are injected, probe_obs_async() is stubbed to a counter so
+## is_available()/is_obs_running() dynamics are deterministic.
 class FakeBackendOBS:
 	extends BackendOBS
 	var binary_path := ""
@@ -201,12 +150,10 @@ class SettingsBackend:
 		pass
 
 
-## End-to-end start/stop backend. is_obs_installed() resolves to EXISTING_BINARY
-## (or empty), _create_obs_client() returns the configurable FakeOBSClient, and
-## the scene is faked via the playing flag so start() can drive the
-## pending-start and begin-recording paths deterministically. A successful
-## "launch" returns a pretend pid; _probe_once() uses the fake client, so ensure
-## is exercised (no real launch, no real WebSocket).
+## End-to-end start/stop backend: installed resolves to EXISTING_BINARY,
+## _create_obs_client() returns the configurable FakeOBSClient, and the scene is
+## faked via the playing flag so start() drives pending-start/begin-recording
+## deterministically (no real launch or WebSocket).
 class RecordingBackend:
 	extends BackendOBS
 	var installed := true
@@ -214,11 +161,13 @@ class RecordingBackend:
 	var play_calls: Array = []
 	var kill_calls := 0
 	var client_fail_message := ""
+	var client_result := true
+	var client_code := OBSClient.STATUS_SUCCESS
+	var scene_name := ""
 	var fake_now := 0.0
 	var persisted_pid := 0
 	var ledger_cleared := false
 	var killed_pids: Array = []
-	var _test_obs_client: OBSClient = null
 
 	func _ready() -> void:
 		pass
@@ -228,7 +177,7 @@ class RecordingBackend:
 			"host": OBSClient.DEFAULT_HOST,
 			"port": OBSClient.DEFAULT_PORT,
 			"password": "",
-			"scene": "",
+			"scene": scene_name,
 			"auto_launch": true,
 			"binary_path": "",
 		}
@@ -251,9 +200,8 @@ class RecordingBackend:
 	func _create_obs_client() -> OBSClient:
 		var client := FakeOBSClient.new()
 		client.fail_message = client_fail_message
-		# Test seam: if _test_obs_client is set, use it instead
-		if _test_obs_client != null:
-			return _test_obs_client
+		client.respond_result = client_result
+		client.respond_code = client_code
 		return client
 
 	func _launch_obs_process(_binary: String) -> int:
@@ -445,6 +393,14 @@ class ProbeFailureBackend:
 		return 0  # pretend the spawn failed → ensure_obs_running() bails out
 
 
+func _make_backend() -> SettingsBackend:
+	return add_child_autofree(SettingsBackend.new())
+
+
+func _read_password(backend: BackendOBS) -> String:
+	return str(backend._get_obs_settings().get("password", ""))
+
+
 func _make_fake_backend() -> FakeBackendOBS:
 	return add_child_autofree(FakeBackendOBS.new())
 
@@ -465,18 +421,57 @@ func _make_probe_backend() -> ProbeFailureBackend:
 	return add_child_autofree(ProbeFailureBackend.new())
 
 
-func _make_custom_recording_backend(client: FakeOBSClient) -> RecordingBackend:
-	var backend: RecordingBackend = add_child_autofree(RecordingBackend.new())
-	backend._test_obs_client = client
-	# Don't connect here - _ensure_obs_client will do it during start()
-	return backend
-
-
 func _obs_path(name: String) -> String:
 	return "res://media/captures/obs/%s.mp4" % name
 
 
-# --- contract ---
+## Settings plumbing
+
+
+func test_password_read_from_project_settings_fallback() -> void:
+	# EditorSettings absent (headless; _editor_settings null) → readers must
+	# fall through to ProjectSettings, not to the default.
+	ProjectSettings.set_setting(PASSWORD_KEY, TEST_PASSWORD)
+	assert_eq(_read_password(_make_backend()), TEST_PASSWORD)
+
+
+func test_empty_password_default_when_unset() -> void:
+	# Nothing set anywhere → empty password (server auth disabled case).
+	assert_eq(_read_password(_make_backend()), "")
+
+
+func test_editor_settings_shadow_project_settings() -> void:
+	# EditorSettings present (fake injected) → its password wins even when
+	# ProjectSettings holds a different value. This is the precedence that
+	# produced an OBS auth 4009 close when the two stores disagreed.
+	var fake := FakeEditorSettings.new()
+	fake.set_v(PASSWORD_KEY, TEST_PASSWORD)
+	ProjectSettings.set_setting(PASSWORD_KEY, "shadowed")
+	var backend := _make_backend()
+	backend._editor_settings = fake
+	assert_eq(_read_password(backend), TEST_PASSWORD)
+
+
+func test_project_settings_reads_through_typed_reader() -> void:
+	ProjectSettings.set_setting(PASSWORD_KEY, TEST_PASSWORD)
+	assert_eq(_make_backend()._get_setting_string(PASSWORD_KEY, "default"), TEST_PASSWORD)
+
+
+func test_port_reader_falls_back_to_default() -> void:
+	assert_eq(_make_backend()._get_obs_settings().get("port", 0), OBSClient.DEFAULT_PORT)
+
+
+func test_port_reader_coerces_string_setting_to_int() -> void:
+	# A hand-edited project.godot (or an older config) can carry the port as a
+	# String; the typed reader must coerce it with int(v) — never pass the
+	# String through into the WebSocket URL.
+	ProjectSettings.set_setting(PORT_KEY, "9999")
+	var backend := _make_backend()
+	assert_eq(backend._get_setting_int(PORT_KEY, OBSClient.DEFAULT_PORT), 9999)
+	assert_eq(backend._get_obs_settings().get("port", 0), 9999)
+
+
+## Contract
 
 
 func test_contract_reports_in_place_mp4_only_backend() -> void:
@@ -491,7 +486,7 @@ func test_contract_reports_in_place_mp4_only_backend() -> void:
 	assert_false(backend.is_available())
 
 
-# --- two-axis availability ---
+## Two-axis availability
 
 
 func test_is_obs_installed_true_when_binary_exists() -> void:
@@ -539,13 +534,13 @@ func test_is_obs_running_reprobes_only_when_stale() -> void:
 	assert_eq(backend.probe_calls, 1, "stale cache must force a fresh probe")
 
 
-# --- ensure_obs_running (launch/ownership) ---
+## ensure_obs_running (launch/ownership)
 
 
 func test_ensure_obs_running_returns_true_without_launch_when_reachable() -> void:
 	var backend := _make_launch_backend()
 	backend._available = true
-	var result = await backend.ensure_obs_running()
+	var result: bool = await backend.ensure_obs_running()
 	assert_true(result)
 	assert_eq(backend.launch_calls, 0, "reachable OBS must not be (re)launched")
 	assert_false(backend._we_launched)
@@ -554,17 +549,20 @@ func test_ensure_obs_running_returns_true_without_launch_when_reachable() -> voi
 func test_ensure_obs_running_launches_and_owns_launched_obs() -> void:
 	var backend := _make_launch_backend()
 	backend.probe_ok = true
-	var result = await backend.ensure_obs_running()
+	var result: bool = await backend.ensure_obs_running()
 	assert_true(result)
 	assert_eq(backend.launch_calls, 1)
 	assert_true(backend._we_launched)
+	assert_eq(
+		backend.persisted_pid, 4711, "a successful launch must record ownership in the ledger"
+	)
 	assert_eq(backend.kill_calls, 0)
 
 
 func test_ensure_obs_running_kills_own_process_on_timeout() -> void:
 	var backend := _make_launch_backend()
 	backend.probe_ok = false
-	var result = await backend.ensure_obs_running()
+	var result: bool = await backend.ensure_obs_running()
 	assert_false(result)
 	assert_eq(backend.launch_calls, 1)
 	assert_eq(backend.kill_calls, 1, "must kill only the OBS it launched")
@@ -583,7 +581,7 @@ func test_ensure_obs_running_notices_launch_progress() -> void:
 	backend.recording_notice.connect(
 		func(_backend_name: String, message: String) -> void: messages.append(message)
 	)
-	var result = await backend.ensure_obs_running()
+	var result: bool = await backend.ensure_obs_running()
 	assert_true(result)
 	assert_eq(backend.launch_calls, 1)
 	assert_eq(
@@ -607,7 +605,7 @@ func test_ensure_obs_running_notices_reuse_when_already_reachable() -> void:
 	backend.recording_notice.connect(
 		func(_backend_name: String, message: String) -> void: messages.append(message)
 	)
-	var result = await backend.ensure_obs_running()
+	var result: bool = await backend.ensure_obs_running()
 	assert_true(result)
 	assert_eq(backend.launch_calls, 0)
 	assert_eq(
@@ -617,7 +615,7 @@ func test_ensure_obs_running_notices_reuse_when_already_reachable() -> void:
 	)
 
 
-# --- orphan sweep (D2) / kill escalation (D3) ---
+## Orphan sweep (D2) / kill escalation (D3)
 
 
 func test_orphan_sweep_reaps_live_ours_obs() -> void:
@@ -701,39 +699,79 @@ func test_kill_process_and_wait_escalates_when_ter_ignored() -> void:
 	# reports the process is not confirmed gone.
 	var backend := _make_reap_backend()
 	backend.alive = true
-	var confirmed := await backend._kill_process_and_wait(4711)
+	var confirmed: bool = await backend._kill_process_and_wait(4711)
 	assert_eq(backend.term_calls, 1)
 	assert_eq(backend.force_calls, 1)
 	assert_false(confirmed)
 
 
-# --- start() paths ---
+## Ownership proof (normalization)
+
+
+func test_normalize_binary_path_resolves_res_path_to_absolute() -> void:
+	var backend := _make_backend()
+	assert_eq(
+		backend._normalize_binary_path("res://addons/GdTimeMachine/plugin.gd"),
+		ProjectSettings.globalize_path("res://addons/GdTimeMachine/plugin.gd"),
+	)
+
+
+func test_normalize_binary_path_resolves_user_path_to_absolute() -> void:
+	var backend := _make_backend()
+	assert_eq(
+		backend._normalize_binary_path("user://gdtime_obs_launched.cfg"),
+		ProjectSettings.globalize_path("user://gdtime_obs_launched.cfg"),
+	)
+
+
+func test_normalize_binary_path_strips_edges_keeps_absolute_path() -> void:
+	var backend := _make_backend()
+	assert_eq(backend._normalize_binary_path("  /usr/bin/obs  "), "/usr/bin/obs")
+
+
+func test_process_is_ours_rejects_invalid_pid_or_binary() -> void:
+	var backend := _make_backend()
+	# Linux guards: pid <= 0 and an empty stored binary can never be a launch
+	# we own; neither call may touch a real /proc/<pid> entry.
+	assert_false(backend._process_is_ours(0, "/usr/bin/obs"))
+	assert_false(backend._process_is_ours(4711, ""))
+
+
+## start() paths
 
 
 func test_start_not_installed_emits_actionable_error() -> void:
 	var backend := _make_recording_backend()
 	backend.installed = false
-	watch_signals(backend)
+	var errors: Array[String] = []
+	backend.recording_error.connect(
+		func(_backend_name: String, message: String) -> void: errors.append(message)
+	)
 	await backend.start({"output_path": "res://media/captures/obs/obs_missing"})
-	assert_signal_emitted(backend, "recording_error")
-	var params = get_signal_parameters(backend, "recording_error")
+	assert_eq(errors.size(), 1, "not-installed start must emit exactly one error")
 	assert_true(
-		str(params[1]).contains("OBS Studio not found"),
-		"not-installed error must say so, got: '%s'" % params[1],
+		errors[0].contains("OBS Studio not found"),
+		"not-installed error must say so, got: '%s'" % errors[0],
 	)
 	assert_false(backend.is_recording())
 
 
 func test_start_rejects_non_native_format() -> void:
 	var backend := _make_recording_backend()
-	watch_signals(backend)
+	var errors: Array[String] = []
+	var started: Array = []
+	backend.recording_error.connect(
+		func(_backend_name: String, message: String) -> void: errors.append(message)
+	)
+	backend.recording_started.connect(
+		func(_backend_name: String, _path: String) -> void: started.append(true)
+	)
 	await backend.start(
 		{"output_path": "res://media/captures/obs/obs_fmt", "output_format": "webm"}
 	)
-	assert_signal_emitted(backend, "recording_error")
-	var params = get_signal_parameters(backend, "recording_error")
-	assert_true(str(params[1]).contains("MP4"), "got: '%s'" % params[1])
-	assert_signal_not_emitted(backend, "recording_started")
+	assert_eq(errors.size(), 1, "non-native format must emit exactly one error")
+	assert_true(errors[0].contains("MP4"), "got: '%s'" % errors[0])
+	assert_eq(started.size(), 0, "rejected format must never start recording")
 
 
 func test_start_happy_path_emits_recording_started() -> void:
@@ -743,8 +781,9 @@ func test_start_happy_path_emits_recording_started() -> void:
 	await backend.start({"output_path": "res://media/captures/obs/obs_happy"})
 	# wait_for_signal, not wait_frames: the StartRecord reply rides a
 	# process_frame one-shot while GUT's wait_frames clocks physics frames,
-	# and headless process↔physics interleaving let the reply miss the short
-	# window (recording stayed pending, recording_started never fired).
+	# and headless process↔physics interleaving can let the reply miss the
+	# short window (recording stays pending, recording_started never fires).
+	# REPLY_BUDGET stays under the backend's 3.0 s StopRecord fallback timer.
 	assert_true(
 		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
 		"the StartRecord reply must arrive",
@@ -756,6 +795,26 @@ func test_start_happy_path_emits_recording_started() -> void:
 	var client := backend._obs_client as FakeOBSClient
 	assert_eq(client.requests[0][0], "StartRecord")
 	assert_eq(client.requests[0][1], {})
+
+
+func test_start_switches_scene_before_recording() -> void:
+	# §9 start chain: SetCurrentProgramScene (from the obs/scene setting) must
+	# be sent before StartRecord, and recording_started gates on StartRecord.
+	var backend := _make_recording_backend()
+	backend.scene_name = "Main"
+	backend.playing = true
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_scene"})
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"the StartRecord reply must arrive after the scene switch",
+	)
+	assert_true(backend.is_recording())
+	var client := backend._obs_client as FakeOBSClient
+	assert_eq(client.requests[0][0], "SetCurrentProgramScene")
+	assert_eq(client.requests[0][1], {"sceneName": "Main"})
+	assert_eq(client.requests[1][0], "StartRecord")
+	assert_eq(client.requests[1][1], {})
 
 
 func test_start_pending_start_launches_scene_then_records() -> void:
@@ -810,7 +869,24 @@ func test_duration_auto_stops_recording() -> void:
 	assert_false(backend.is_recording())
 
 
-# --- stop()/single emission/no-kill ---
+func test_start_record_already_recording_counts_as_success() -> void:
+	# OBS answers a StartRecord sent while the output is already active with
+	# status 500 (OUTPUT_RUNNING); the backend must treat that as success even
+	# though the request result is false.
+	var backend := _make_recording_backend()
+	backend.client_result = false
+	backend.client_code = OBSClient.STATUS_OUTPUT_RUNNING
+	backend.playing = true
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_already"})
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"code OUTPUT_RUNNING must count as a successful start",
+	)
+	assert_true(backend.is_recording())
+
+
+## stop()/single emission/no-kill
 
 
 func test_stop_never_kills_and_emits_once() -> void:
@@ -851,7 +927,7 @@ func test_stop_while_pending_start_finalizes_without_connecting() -> void:
 	assert_eq(backend.kill_calls, 0)
 
 
-# --- file move fallback ---
+## File move fallback
 
 
 func test_file_move_falls_back_to_output_dir_when_output_path_is_bare_name() -> void:
@@ -873,7 +949,42 @@ func test_file_move_falls_back_to_output_dir_when_output_path_is_bare_name() -> 
 	DirAccess.remove_absolute(dir)
 
 
-# --- error surfacing ---
+func test_stop_reply_output_path_is_moved_into_output_dir() -> void:
+	# End-to-end stop chain: the StopRecord reply carries OBS's outputPath, the
+	# backend clips it, moves it into _intermediate_path (the output_dir
+	# target), then finalizes and emits recording_stopped exactly once. The
+	# reply is driven directly rather than through the fake client.
+	var dir := "user://gdtm_test_move"
+	var src := dir.path_join("shoot.mp4")
+	var dst := dir.path_join("cap.mp4")
+	DirAccess.make_dir_recursive_absolute(dir)
+	FileAccess.open(src, FileAccess.WRITE).store_string("x")
+	var backend := _make_recording_backend()
+	backend._output_dir = dir
+	backend._output_path = dir.path_join("cap")
+	backend._intermediate_path = dst
+	backend._final_output_path = dst
+	backend._active = true
+	backend._stopping = true
+	backend._pending_request_id = "req_9"
+	backend._pending_request_kind = "stop"
+	watch_signals(backend)
+	backend._on_request_completed(
+		"req_9", true, OBSClient.STATUS_SUCCESS, {"outputPath": "shoot.mp4"}
+	)
+	assert_true(FileAccess.file_exists(dst), "OBS outputPath must be moved into output_dir")
+	assert_false(FileAccess.file_exists(src), "source must be renamed away")
+	assert_signal_emit_count(
+		backend, "recording_stopped", 1, "stop finalization must emit exactly once"
+	)
+	# GDScript has no try/finally, so cleanup is best-effort after an assertion
+	# failure — same pattern as the fallback test above.
+	DirAccess.remove_absolute(src)
+	DirAccess.remove_absolute(dst)
+	DirAccess.remove_absolute(dir)
+
+
+## Error surfacing
 
 
 func test_probe_failure_captures_last_connect_error() -> void:
@@ -891,13 +1002,15 @@ func test_probe_failure_captures_last_connect_error() -> void:
 func test_start_error_surfaces_auth_failure_with_password_guidance() -> void:
 	var backend := _make_probe_backend()
 	backend.auth_fail_message = AUTH_FAIL_MESSAGE
-	watch_signals(backend)
+	var errors: Array[String] = []
+	backend.recording_error.connect(
+		func(_backend_name: String, message: String) -> void: errors.append(message)
+	)
 	await backend.start({})
 	# Auth failure propagates synchronously; the tick is just a settle buffer.
 	await wait_process_frames(1)
-	assert_signal_emitted(backend, "recording_error")
-	var params = get_signal_parameters(backend, "recording_error")
-	var error_message := str(params[1])
+	assert_eq(errors.size(), 1, "start must surface exactly one error")
+	var error_message := errors[0]
 	assert_true(
 		error_message.contains("Authentication failed"),
 		"start() error must surface the auth failure, got: '%s'" % error_message,
@@ -913,9 +1026,3 @@ func test_start_error_stays_generic_without_connect_failure() -> void:
 	var msg := backend._describe_start_error()
 	assert_false(msg.contains("Authentication failed"), "good: '%s'" % msg)
 	assert_true(msg.contains("port 4455"), "generic hint must remain, got: '%s'" % msg)
-
-# --- OBSClient auth harden / gap tests ---
-# TODO: Debug and re-enable gap tests that hang on signal waits
-# func test_start_record_status_500_emits_recording_error() -> void:
-# func test_screenshot_reply_wrong_rq_id_ignored() -> void:
-# func test_begin_recording_connect_failure_emits_recording_error() -> void:

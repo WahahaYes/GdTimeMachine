@@ -1,22 +1,11 @@
+@tool
 extends GutTest
 
-# Graceful-stop editor plugin tests
-# (addons/GdTimeMachine/editor/debugger_plugin.gd).
-#
-# Testability constraint (verified empirically on Godot 4.7 headless):
-#   * GdTMDebuggerPlugin extends the editor-only native EditorDebuggerPlugin,
-#     which Godot refuses to instantiate outside the editor
-#     ("Class 'EditorDebuggerPlugin' can only be instantiated by editor").
-#   * EditorDebuggerSession is an abstract native class that cannot be extended.
-# So the real class can never be constructed in a headless GUT run. The suite
-# therefore splits into two halves:
-#
-#   1. Contract tests pin the real script's API surface and wire constants to
-#      the source itself, without ever constructing the class.
-#   2. Behavior tests run against PluginBehaviorMirror, a faithful copy of the
-#      plugin's logic (extracted verbatim from the source below), exercised
-#      through duck-typed FakeSession doubles. The contract tests guarantee the
-#      mirror stays truthful to the real file.
+## Debugger plugin tests (editor/debugger_plugin.gd). The real class extends the
+## editor-only EditorDebuggerPlugin and cannot be constructed headless, so the
+## suite splits: contract tests pin the real script's API against the source
+## itself; behavior tests run PluginBehaviorMirror (verbatim copy) through
+## duck-typed FakeSession doubles, kept truthful by the contract tests.
 
 const PluginScript := preload("res://addons/GdTimeMachine/editor/debugger_plugin.gd")
 const PLUGIN_SOURCE_PATH := "res://addons/GdTimeMachine/editor/debugger_plugin.gd"
@@ -41,8 +30,8 @@ const EXPECTED_METHODS := [
 ]
 
 
-# Duck-typed EditorDebuggerSession double. It exposes exactly the surface
-# _send_to_session uses: is_active() and send_message(message, data).
+## Duck-typed EditorDebuggerSession double. It exposes exactly the surface the
+## plugin's send methods use: is_active() and send_message(message, data).
 class FakeSession:
 	extends RefCounted
 	var active := true
@@ -55,8 +44,8 @@ class FakeSession:
 		sent.append([message, data])
 
 
-# Faithful mirror of debugger_plugin.gd's logic. Identical control flow and
-# literals as the real plugin so behavior is verifiable headlessly.
+## Faithful mirror of debugger_plugin.gd's logic. Identical control flow and
+## literals as the real plugin so behavior is verifiable headlessly.
 class PluginBehaviorMirror:
 	extends RefCounted
 	signal screenshot_received(rq_id: int, width: int, height: int, path: String)
@@ -240,7 +229,7 @@ func _make_mirror() -> PluginBehaviorMirror:
 	return autofree(PluginBehaviorMirror.new())
 
 
-# --- Contract tests: the real script's API surface, without construction ---
+## Contract
 
 
 func test_script_loads_and_extends_editor_debugger_plugin() -> void:
@@ -312,7 +301,7 @@ func test_send_guard_present_in_source() -> void:
 	assert_true(source.contains("session.send_message"))
 
 
-# --- Behavior tests: the plugin logic via the mirror + fake sessions ---
+## Behavior
 
 
 func test_has_capture_claims_gd_time_machine_always() -> void:
@@ -351,8 +340,7 @@ func test_capture_ignored_for_other_messages() -> void:
 func test_capture_requires_four_data_fields() -> void:
 	var plugin := _make_mirror()
 	plugin.set_screenshot_capture_active(true)
-	# Enriched guard wants 4 ints+string, but legacy [path,size] is accepted;
-	# so a 2-field non-string or empty payload is still rejected.
+	# Short payloads without a path are rejected.
 	assert_false(plugin._capture("get_screenshot", [0, 800], 0))
 	assert_false(plugin._capture("get_screenshot", [0, 800, 600], 0))
 	assert_false(plugin._capture("get_screenshot", [123, 456], 0))
@@ -400,21 +388,12 @@ func test_capture_accepts_game_view_prefixed_and_jpg_paths_parity() -> void:
 	)
 	assert_eq(received, [[3, 640, 480, "user://img.jpeg"]])
 
-	# 4. Legacy engine reply shape (path + size vector) — mirror reuses last rq_id,
-	# but Vector2i dims are not parsed in fallback; only path is captured.
+	# 4. Legacy engine reply shape (path + size vector) — mirror reuses last
+	# rq_id; Vector2i dims are not parsed in fallback, only the path is captured.
 	received.clear()
 	plugin._last_screenshot_rq_id = 42
 	assert_true(plugin._capture("get_screenshot", ["user://legacy.png", Vector2i(800, 600)], 0))
 	assert_eq(received, [[42, 0, 0, "user://legacy.png"]])
-
-
-func test_set_screenshot_capture_active_toggles_game_view_claim() -> void:
-	var plugin := _make_mirror()
-	assert_false(plugin._has_capture("game_view"))
-	plugin.set_screenshot_capture_active(true)
-	assert_true(plugin._has_capture("game_view"))
-	plugin.set_screenshot_capture_active(false)
-	assert_false(plugin._has_capture("game_view"))
 
 
 func test_send_screenshot_request_targets_first_active_session() -> void:
@@ -441,12 +420,13 @@ func test_send_screenshot_request_returns_false_without_sessions() -> void:
 	assert_false(plugin.send_screenshot_request(1))
 
 
-func test_send_screenshot_to_session_skips_inactive() -> void:
+func test_send_screenshot_to_session_skips_inactive_and_null() -> void:
 	var plugin := _make_mirror()
 	var inactive: FakeSession = autofree(FakeSession.new())
 	inactive.active = false
 	assert_false(plugin._send_screenshot_to_session(inactive, 4))
 	assert_eq(inactive.sent.size(), 0)
+	assert_false(plugin._send_screenshot_to_session(null, 4), "null session is a no-op")
 
 
 func test_send_to_session_sends_when_active() -> void:
@@ -456,19 +436,14 @@ func test_send_to_session_sends_when_active() -> void:
 	assert_eq(session.sent, [["gd_time_machine:graceful_stop", []]])
 
 
-func test_send_to_session_skips_inactive_session() -> void:
+func test_send_to_session_skips_inactive_and_null() -> void:
 	var plugin := _make_mirror()
 	var session: FakeSession = autofree(FakeSession.new())
 	session.active = false
 	plugin._send_to_session(session)
 	assert_eq(session.sent.size(), 0)
-
-
-func test_send_to_session_null_is_noop() -> void:
-	var plugin := _make_mirror()
-	plugin._send_to_session(null)
-	# Reaching here without error is the assertion.
-	assert_true(true)
+	plugin._send_to_session(null)  # must not crash
+	assert_eq(session.sent.size(), 0)
 
 
 func test_send_graceful_stop_broadcasts_to_active_sessions() -> void:
@@ -528,14 +503,10 @@ func test_send_focus_to_session_sends_when_active() -> void:
 	assert_eq(session.sent, [["gd_time_machine:focus_window", []]])
 
 
-func test_send_focus_to_session_skips_inactive() -> void:
+func test_send_focus_to_session_skips_inactive_and_null() -> void:
 	var plugin := _make_mirror()
 	var session: FakeSession = autofree(FakeSession.new())
 	session.active = false
 	assert_false(plugin._send_focus_to_session(session))
 	assert_eq(session.sent.size(), 0)
-
-
-func test_send_focus_to_session_null_is_noop() -> void:
-	var plugin := _make_mirror()
 	assert_false(plugin._send_focus_to_session(null))

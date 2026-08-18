@@ -1,202 +1,217 @@
+@tool
 extends GutTest
 
 
-# Fake EditorSettings that wraps a Dictionary so tests never touch engine singletons.
+## Fake EditorSettings for tests. No has_method override — Object.has_method
+## already resolves script methods, and an override would clash with the
+## native signature.
 class FakeEditorSettings:
-	var data := {}
+	var _data: Dictionary = {}
 
 	func get_setting(key: String) -> Variant:
-		if data.has(key):
-			return data[key]
-		return null
+		return _data.get(key)
 
 	func set_setting(key: String, value: Variant) -> void:
-		data[key] = value
+		_data[key] = value
 
 
-func test_editor_settings_store_save_writes_keys() -> void:
-	var es := FakeEditorSettings.new()
-	var store := EditorSettingsConfigStore.new(es)
-	var p := RecordingProfile.new()
-	p.output_dir = "res://out2"
-	p.output_format = GdTMOutputFormat.Format.PNG
-	p.fps = 24
-	p.duration = 10.0
-	p.backend_name = "Godot Movie Maker"
-	store.save_default_profile(p)
-	assert_eq(es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR], "res://out2")
-	assert_eq(es.data[EditorSettingsConfigStore.KEY_OUTPUT_FORMAT], "png")
-	assert_eq(es.data[EditorSettingsConfigStore.KEY_DEFAULT_FPS], 24)
-	assert_eq(es.data[EditorSettingsConfigStore.KEY_DEFAULT_DURATION], 10.0)
+func before_each() -> void:
+	pass
 
 
-func test_editor_settings_store_scene_profile_always_null() -> void:
-	var es := FakeEditorSettings.new()
-	var store := EditorSettingsConfigStore.new(es)
-	assert_null(store.get_scene_profile("res://a.tscn"))
+## EditorSettingsConfigStore tests
 
 
-func test_project_local_store_save_and_load_scene_profile() -> void:
-	var cf := ConfigFile.new()
-	var captured: Array = []
-	var loader := func() -> ConfigFile: return cf
-	var saver := func(c: ConfigFile) -> void: captured.append(c)
-
-	var store := ProjectLocalConfigStore.new("res://test_local.cfg")
-	store._loader = loader
-	store._saver = saver
-
-	var p := RecordingProfile.new()
-	p.output_dir = "res://scene_out"
-	p.output_format = GdTMOutputFormat.Format.OGV
-	p.fps = 30
-	p.duration = 15.0
-
-	store.save_scene_profile("res://scenes/foo.tscn", p)
-
-	assert_eq(captured.size(), 1)
-	# Now load back
-	var loaded := store.get_scene_profile("res://scenes/foo.tscn")
-	assert_not_null(loaded)
-	assert_eq(loaded.output_dir, "res://scene_out")
-	assert_eq(loaded.output_format, GdTMOutputFormat.Format.OGV)
-	assert_eq(loaded.fps, 30)
-	assert_eq(loaded.duration, 15.0)
+func test_editor_store_returns_defaults_when_no_settings() -> void:
+	var fake_es := FakeEditorSettings.new()
+	var store := EditorSettingsConfigStore.new(fake_es)
+	var profile := store.get_default_profile()
+	assert_eq(profile.output_dir, "res://media/captures")
+	assert_eq(profile.fps, 60)
+	assert_eq(profile.duration, 30.0)
+	assert_eq(profile.output_format, GdTMOutputFormat.DEFAULT)
+	assert_eq(profile.backend_name, "")
 
 
-func test_project_local_store_clear_scene() -> void:
-	var cf := ConfigFile.new()
-	var store := ProjectLocalConfigStore.new("res://test_local.cfg")
+func test_editor_store_reads_custom_settings() -> void:
+	var fake_es := FakeEditorSettings.new()
+	fake_es.set_setting("gd_time_machine/recorder/output_dir", "res://custom")
+	fake_es.set_setting("gd_time_machine/recorder/default_fps", 30)
+	fake_es.set_setting("gd_time_machine/recorder/default_duration", 10.0)
+	fake_es.set_setting("gd_time_machine/recorder/output_format", "mp4")
+	fake_es.set_setting("gd_time_machine/recorder/default_backend", "OBS Studio")
+	var store := EditorSettingsConfigStore.new(fake_es)
+	var profile := store.get_default_profile()
+	assert_eq(profile.output_dir, "res://custom")
+	assert_eq(profile.fps, 30)
+	assert_eq(profile.duration, 10.0)
+	assert_eq(profile.output_format, GdTMOutputFormat.Format.MP4)
+	assert_eq(profile.backend_name, "OBS Studio")
+
+
+func test_editor_store_save_write_through() -> void:
+	var fake_es := FakeEditorSettings.new()
+	var store := EditorSettingsConfigStore.new(fake_es)
+	var profile := RecordingProfile.new()
+	profile.output_dir = "res://saved"
+	profile.fps = 45
+	profile.duration = 15.0
+	profile.output_format = GdTMOutputFormat.Format.OGV
+	profile.backend_name = "Custom Backend"
+	store.save_default_profile(profile)
+	assert_eq(fake_es.get_setting("gd_time_machine/recorder/output_dir"), "res://saved")
+	assert_eq(fake_es.get_setting("gd_time_machine/recorder/default_fps"), 45)
+	assert_eq(fake_es.get_setting("gd_time_machine/recorder/default_duration"), 15.0)
+	assert_eq(fake_es.get_setting("gd_time_machine/recorder/output_format"), "ogv")
+	assert_eq(fake_es.get_setting("gd_time_machine/recorder/default_backend"), "Custom Backend")
+
+
+func test_editor_store_scene_profile_returns_null() -> void:
+	var store := EditorSettingsConfigStore.new()
+	assert_null(store.get_scene_profile("res://scene.tscn"))
+	assert_eq(store.get_all_scene_paths(), [])
+
+
+## ProjectLocalConfigStore tests.
+## The _loader/_saver seams take no-arg/one-arg callables; the loader must
+## return the in-memory ConfigFile the store mutates.
+
+
+func _wire_store(store: ProjectLocalConfigStore, cf: ConfigFile) -> void:
 	store._loader = func() -> ConfigFile: return cf
 	store._saver = func(_c: ConfigFile) -> void: pass
 
+
+func test_project_local_store_returns_defaults_when_no_file() -> void:
+	var store := ProjectLocalConfigStore.new("")
+	store._loader = func() -> ConfigFile: return ConfigFile.new()
+	store._saver = func(_c: ConfigFile) -> void: pass
+	var profile := store.get_default_profile()
+	assert_eq(profile.output_dir, "res://media/captures")
+	assert_eq(profile.fps, 60)
+	assert_eq(profile.duration, 30.0)
+
+
+func test_project_local_store_reads_default_section() -> void:
+	var cf := ConfigFile.new()
+	cf.set_value("default", "output_dir", "res://local")
+	cf.set_value("default", "fps", 24)
+	cf.set_value("default", "duration", 5.0)
+	cf.set_value("default", "output_format", "png")
+	cf.set_value("default", "backend_name", "Local Backend")
+	var store := ProjectLocalConfigStore.new("")
+	_wire_store(store, cf)
+	var profile := store.get_default_profile()
+	assert_eq(profile.output_dir, "res://local")
+	assert_eq(profile.fps, 24)
+	assert_eq(profile.duration, 5.0)
+	assert_eq(profile.output_format, GdTMOutputFormat.Format.PNG)
+	assert_eq(profile.backend_name, "Local Backend")
+
+
+func test_project_local_store_scene_override() -> void:
+	var cf := ConfigFile.new()
+	cf.set_value("default", "output_dir", "res://default")
+	# Section keys are stored unquoted in memory (the INI writer only quotes
+	# on disk); the store reads them via the raw scene path.
+	cf.set_value("res://scenes/level1.tscn", "output_dir", "res://scene_override")
+	var store := ProjectLocalConfigStore.new("")
+	_wire_store(store, cf)
+	var default_p := store.get_default_profile()
+	var scene_p := store.get_scene_profile("res://scenes/level1.tscn")
+	assert_eq(default_p.output_dir, "res://default")
+	assert_eq(scene_p.output_dir, "res://scene_override")
+
+
+func test_project_local_store_save_and_clear_scene_profile() -> void:
+	var cf := ConfigFile.new()
+	var store := ProjectLocalConfigStore.new("")
+	store._loader = func() -> ConfigFile: return cf
+	store._saver = func(_c: ConfigFile) -> void: pass
 	var p := RecordingProfile.new()
-	store.save_scene_profile("res://a.tscn", p)
-	assert_not_null(store.get_scene_profile("res://a.tscn"))
-	store.clear_scene_profile("res://a.tscn")
-	assert_null(store.get_scene_profile("res://a.tscn"))
+	p.output_dir = "res://new_scene"
+	p.fps = 120
+	store.save_scene_profile("res://new.tscn", p)
+	assert_true(cf.has_section("res://new.tscn"))
+	assert_eq(cf.get_value("res://new.tscn", "fps"), 120)
+	store.clear_scene_profile("res://new.tscn")
+	assert_false(cf.has_section("res://new.tscn"))
 
 
 func test_project_local_store_get_all_scene_paths() -> void:
 	var cf := ConfigFile.new()
-	var store := ProjectLocalConfigStore.new("res://test_local.cfg")
-	store._loader = func() -> ConfigFile: return cf
-	store._saver = func(_c: ConfigFile) -> void: pass
-
-	# Save a default first so the [default] section exists — the exclusion
-	# branch in get_all_scene_paths only executes when it is present.
-	store.save_default_profile(RecordingProfile.new())
-	store.save_scene_profile("res://a.tscn", RecordingProfile.new())
-	store.save_scene_profile("res://b.tscn", RecordingProfile.new())
+	cf.set_value("default", "output_dir", "res://default")
+	cf.set_value("res://a.tscn", "output_dir", "res://a")
+	cf.set_value("res://b.tscn", "output_dir", "res://b")
+	var store := ProjectLocalConfigStore.new("")
+	_wire_store(store, cf)
 	var paths := store.get_all_scene_paths()
-	assert_eq(paths.size(), 2)
-	assert_false(paths.has(ProjectLocalConfigStore.SECTION_DEFAULT))
-	assert_true(paths.has("res://a.tscn"))
-	assert_true(paths.has("res://b.tscn"))
+	assert_true("res://a.tscn" in paths)
+	assert_true("res://b.tscn" in paths)
+	assert_false("default" in paths)
 
 
-func test_project_local_store_default_profile() -> void:
-	var cf := ConfigFile.new()
-	var store := ProjectLocalConfigStore.new("res://test_local.cfg")
-	store._loader = func() -> ConfigFile: return cf
-	store._saver = func(_c: ConfigFile) -> void: pass
-
-	# No [default] section yet -> defaults are returned (the scene-path
-	# getter returns null in the same situation, so this branch is distinct).
-	var d0 := store.get_default_profile()
-	assert_false(d0.output_dir.is_empty())
-
-	# save_default_profile targets the [default] SECTION, not a scene path —
-	# the one behavior that differs from the scene round-trip above.
-	store.save_default_profile(RecordingProfile.new())
-	assert_true(cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT))
+## CompositeConfigStore tests
 
 
 func test_composite_store_seeds_local_default_on_first_run() -> void:
-	var es := FakeEditorSettings.new()
-	es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR] = "res://editor_default"
-	var editor_store := EditorSettingsConfigStore.new(es)
-
+	var fake_es := FakeEditorSettings.new()
+	fake_es.set_setting("gd_time_machine/recorder/output_dir", "res://editor")
 	var cf := ConfigFile.new()
-	var local_store := ProjectLocalConfigStore.new("res://test_local.cfg")
-	local_store._loader = func() -> ConfigFile: return cf
-	local_store._saver = func(_c: ConfigFile) -> void: pass
-
-	var composite := CompositeConfigStore.new(editor_store, local_store)
-
-	# No [default] section yet -> first read returns editor default AND seeds
-	# the local [default] section so profiles.cfg becomes the source of truth.
-	var def_profile := composite.get_default_profile()
-	assert_eq(def_profile.output_dir, "res://editor_default")
-	assert_true(cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT))
-	assert_eq(
-		cf.get_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_dir"), "res://editor_default"
+	var comp := CompositeConfigStore.new(
+		EditorSettingsConfigStore.new(fake_es), ProjectLocalConfigStore.new("")
 	)
+	(comp.get_local_store() as ProjectLocalConfigStore)._loader = func() -> ConfigFile: return cf
+	(comp.get_local_store() as ProjectLocalConfigStore)._saver = func(_c: ConfigFile) -> void: pass
+	# No local [default] section yet → first read returns the editor default
+	# AND seeds profiles.cfg so it becomes the source of truth.
+	var p1 := comp.get_default_profile()
+	assert_eq(p1.output_dir, "res://editor")
+	assert_true(cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT))
 
-	# Second read: local [default] now exists -> comes from the local file.
-	# Change the local file directly to prove it is now authoritative.
-	cf.set_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_dir", "res://user_edited")
-	var def2 := composite.get_default_profile()
-	assert_eq(def2.output_dir, "res://user_edited")
 
-
-func test_composite_store_save_default_writes_through_to_local() -> void:
-	var es := FakeEditorSettings.new()
-	var editor_store := EditorSettingsConfigStore.new(es)
-
+func test_composite_store_precedence_scene_over_local_default_over_editor() -> void:
+	var fake_es := FakeEditorSettings.new()
+	fake_es.set_setting("gd_time_machine/recorder/output_dir", "res://editor")
 	var cf := ConfigFile.new()
-	var local_store := ProjectLocalConfigStore.new("res://test_local.cfg")
-	local_store._loader = func() -> ConfigFile: return cf
-	local_store._saver = func(_c: ConfigFile) -> void: pass
+	cf.set_value("default", "output_dir", "res://local_default")
+	var comp := CompositeConfigStore.new(
+		EditorSettingsConfigStore.new(fake_es), ProjectLocalConfigStore.new("")
+	)
+	(comp.get_local_store() as ProjectLocalConfigStore)._loader = func() -> ConfigFile: return cf
+	(comp.get_local_store() as ProjectLocalConfigStore)._saver = func(_c: ConfigFile) -> void: pass
+	# Local [default] present → it wins over the editor default.
+	var p1 := comp.get_default_profile()
+	assert_eq(p1.output_dir, "res://local_default")
+	# Scene override wins over both.
+	cf.set_value("res://scene.tscn", "output_dir", "res://scene_override")
+	var p2 := comp.get_scene_profile("res://scene.tscn")
+	assert_eq(p2.output_dir, "res://scene_override")
 
-	var composite := CompositeConfigStore.new(editor_store, local_store)
 
+func test_composite_store_save_default_writes_both() -> void:
+	var fake_es := FakeEditorSettings.new()
+	var cf := ConfigFile.new()
+	var comp := CompositeConfigStore.new(
+		EditorSettingsConfigStore.new(fake_es), ProjectLocalConfigStore.new("")
+	)
+	(comp.get_local_store() as ProjectLocalConfigStore)._loader = func() -> ConfigFile: return cf
+	(comp.get_local_store() as ProjectLocalConfigStore)._saver = func(_c: ConfigFile) -> void: pass
 	var p := RecordingProfile.new()
-	p.output_dir = "res://my_defaults"
-	p.output_format = GdTMOutputFormat.Format.OGV
-	p.fps = 30
-	p.duration = 45.0
-	p.backend_name = "Godot Movie Maker"
-	composite.save_default_profile(p)
-
-	# Both stores get the default.
-	assert_eq(es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR], "res://my_defaults")
-	assert_true(cf.has_section(ProjectLocalConfigStore.SECTION_DEFAULT))
-	assert_eq(
-		cf.get_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_dir"), "res://my_defaults"
-	)
-	assert_eq(cf.get_value(ProjectLocalConfigStore.SECTION_DEFAULT, "output_format"), "ogv")
-
-	# And the composite reads it back as the authoritative default.
-	var loaded := composite.get_default_profile()
-	assert_eq(loaded.output_dir, "res://my_defaults")
-	assert_eq(loaded.output_format, GdTMOutputFormat.Format.OGV)
+	p.output_dir = "res://written"
+	comp.save_default_profile(p)
+	assert_eq(fake_es.get_setting("gd_time_machine/recorder/output_dir"), "res://written")
+	assert_true(cf.has_section("default"))
+	assert_eq(cf.get_value("default", "output_dir"), "res://written")
 
 
-func test_composite_store_resolves_scene_over_default() -> void:
-	var es := FakeEditorSettings.new()
-	es.data[EditorSettingsConfigStore.KEY_OUTPUT_DIR] = "res://editor_default"
-	var editor_store := EditorSettingsConfigStore.new(es)
-
+func test_composite_store_get_all_scene_paths_delegates() -> void:
 	var cf := ConfigFile.new()
-	var local_store := ProjectLocalConfigStore.new("res://test_local.cfg")
-	local_store._loader = func() -> ConfigFile: return cf
-	local_store._saver = func(_c: ConfigFile) -> void: pass
-
-	var composite := CompositeConfigStore.new(editor_store, local_store)
-
-	# No scene override -> editor default
-	var def_profile := composite.get_default_profile()
-	assert_eq(def_profile.output_dir, "res://editor_default")
-
-	# Save scene override
-	var scene_p := RecordingProfile.new()
-	scene_p.output_dir = "res://scene_specific"
-	local_store.save_scene_profile("res://scenes/special.tscn", scene_p)
-
-	var resolved := composite.resolve_profile("res://scenes/special.tscn")
-	assert_eq(resolved.output_dir, "res://scene_specific")
-
-	# Different scene -> default
-	var other := composite.resolve_profile("res://scenes/other.tscn")
-	assert_eq(other.output_dir, "res://editor_default")
+	cf.set_value("res://a.tscn", "output_dir", "res://a")
+	var comp := CompositeConfigStore.new(
+		EditorSettingsConfigStore.new(), ProjectLocalConfigStore.new("")
+	)
+	(comp.get_local_store() as ProjectLocalConfigStore)._loader = func() -> ConfigFile: return cf
+	(comp.get_local_store() as ProjectLocalConfigStore)._saver = func(_c: ConfigFile) -> void: pass
+	var paths := comp.get_all_scene_paths()
+	assert_eq(paths, ["res://a.tscn"])

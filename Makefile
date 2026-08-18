@@ -20,7 +20,7 @@ SHELL := /bin/bash
 test-godot: ## Run Godot unit tests with GUT (headless); concise output, exits 0
 	@echo "Running tests..."
 	@LOG=$$(mktemp /tmp/gut-XXXXXX.log); \
-	godot --headless -s --path . addons/gut/gut_cmdln.gd -gexit 2>&1 > $$LOG; \
+	godot --headless -s --path . addons/gut/gut_cmdln.gd -gexit > $$LOG 2>&1; \
 	STATUS=$$?; \
 	OK=1; \
 	for PAT in "SCRIPT ERROR" "Failed to load script" "Parse error"; do \

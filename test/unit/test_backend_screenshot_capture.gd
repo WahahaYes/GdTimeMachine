@@ -1,10 +1,18 @@
+@tool
 extends GutTest
 
+## BackendScreenshotCapture tests: the IN_PLACE capture state machine, frame
+## receipt handling (copy/scrub/rq-mismatch), stats/notice composition, the
+## pending-start flow, and the ffmpeg tier-2 handoff. All synchronous — the
+## fake backend neutralizes every EditorInterface/DirAccess/timer seam and
+## records side effects for assertions; timeout handlers are driven directly.
 
-# Fake backend overriding every EditorInterface/DirAccess/timer seam so the
-# state machine runs fully headlessly. Timers are neutralized — tests drive
-# the _on_*_timeout handlers directly — while every side effect (frame dir,
-# capture claim, request, copy, manifest) is recorded for assertions.
+## IN_PLACE output base (no extension — the backend owns the layout).
+const OUTPUT := "res://media/captures/demo_2026-01-01T00-00-00"
+
+
+## Fake converter: records the convert call and emits synchronously so stop()
+## hands off to tier-2 without any async/thread involvement.
 class FakeFFmpegConverterForScreenshot:
 	extends GdTMFFmpegConvert
 	var probe_result := true
@@ -27,8 +35,6 @@ class FakeFFmpegConverterForScreenshot:
 		convert_calls.append(
 			[frames_dir, base_output_path, target_format, measured_fps, frame_ext, clean_on_success]
 		)
-		# Immediate synchronous "success" path for tests — emit deferred would need idle,
-		# so emit directly.
 		if not probe_result:
 			ffmpeg_not_found.emit("ffmpeg not found — frames kept at %s" % frames_dir)
 			return
@@ -37,12 +43,13 @@ class FakeFFmpegConverterForScreenshot:
 				"ffmpeg failed (exit %d)" % execute_code, "\n".join(execute_output)
 			)
 			return
-		# Simulate clean
 		if clean_on_success:
 			deletes.append(frames_dir)
 		conversion_succeeded.emit("%s.%s" % [base_output_path, target_format])
 
 
+## Backend under test: every environment/timer seam is a recorded no-op or a
+## test-driven stub.
 class FakeScreenshotBackend:
 	extends BackendScreenshotCapture
 	var playing := false
@@ -132,19 +139,13 @@ class FakeScreenshotBackend:
 		injected_converter = FakeFFmpegConverterForScreenshot.new()
 		return injected_converter
 
-	func _get_auto_convert_setting(_config: Dictionary) -> bool:
-		# Force true for tests that need trigger, unless overridden by
-		# config containing auto_convert key — respect that.
-		if _config.has("auto_convert"):
-			return bool(_config["auto_convert"])
+	func _get_auto_convert_setting(config: Dictionary) -> bool:
+		if config.has("auto_convert"):
+			return bool(config["auto_convert"])
 		return true
 
 	func _get_clean_on_success_setting() -> bool:
 		return true
-
-
-## IN_PLACE output base (no extension — the backend owns the layout).
-const OUTPUT := "res://media/captures/demo_2026-01-01T00-00-00"
 
 
 func _make_backend() -> FakeScreenshotBackend:
@@ -169,59 +170,33 @@ func _receive_frame(
 	backend._on_pacing_timeout()
 
 
-func test_get_backend_name() -> void:
+## Contract
+
+
+func test_contract_name_in_place_and_always_available() -> void:
 	var backend := _make_backend()
 	assert_eq(backend.get_backend_name(), "Screenshot")
-
-
-func test_screenshot_description_mentions_real_time() -> void:
-	# Tooltip contract: the screenshot backend must state its real-time
-	# capture semantics (game sim runs at normal speed, machine-bound rate).
-	var backend: BackendScreenshotCapture = add_child_autofree(BackendScreenshotCapture.new())
-	var desc := backend.get_description().to_lower()
-	assert_string_contains(desc, "real-time")
-
-
-func test_is_available_always_true() -> void:
-	var backend := _make_backend()
 	assert_true(backend.is_available())
-
-
-func test_get_capture_mode_is_in_place() -> void:
-	var backend := _make_backend()
 	assert_eq(backend.get_capture_mode(), RecorderBackend.CaptureMode.IN_PLACE)
-
-
-func test_is_recording_false_by_default() -> void:
-	var backend := _make_backend()
 	assert_false(backend.is_recording())
 
 
-func test_start_without_running_scene_emits_error() -> void:
-	# Without duration, should launch then wait, not error immediately.
-	# We still keep a fast-path for launch-less error? Now it launches.
-	# So this test becomes: without duration it goes pending, no error.
-	var backend := _make_backend()
-	var errors: Array = []
-	var started: Array = []
-	backend.recording_error.connect(func(name, message): errors.append([name, message]))
-	backend.recording_started.connect(func(name, path): started.append([name, path]))
-	backend.playing = false
-	backend.start({"output_path": OUTPUT, "scene_path": "", "fps": 60})
-	assert_eq(errors.size(), 0, "no immediate error without duration — waits for scene")
-	assert_eq(started.size(), 0)
-	assert_true(backend.is_recording(), "active while pending")
-	assert_eq(backend.frames_dirs_made.size(), 1)
-	assert_eq(backend.played_scenes.size(), 1)
+func test_description_mentions_real_time_capture() -> void:
+	# Tooltip contract: the backend must state its real-time capture semantics
+	# (machine-bound rate, window must stay visible).
+	var backend: BackendScreenshotCapture = add_child_autofree(BackendScreenshotCapture.new())
+	assert_string_contains(backend.get_description().to_lower(), "real-time")
+
+
+## Start
 
 
 func test_start_claims_capture_and_sends_first_request() -> void:
 	var backend := _make_backend()
 	var started: Array = []
-	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	backend.recording_started.connect(func(_n: String, path: String) -> void: started.append(path))
 	_start_capture(backend)
-	assert_eq(started.size(), 1)
-	assert_eq(started[0], ["Screenshot", OUTPUT])
+	assert_eq(started, [OUTPUT])
 	assert_true(backend.is_recording())
 	assert_eq(backend.frames_dirs_made, [OUTPUT + ".frames"])
 	assert_eq(backend.capture_active_calls, [true])
@@ -238,12 +213,33 @@ func test_start_defaults_output_path_when_empty() -> void:
 	assert_eq(backend.frames_dirs_made, [BackendScreenshotCapture.DEFAULT_OUTPUT_PATH + ".frames"])
 
 
+func test_start_without_running_scene_launches_and_waits() -> void:
+	# No scene playing → pending-start: launch the scene, no error, no capture
+	# claim and no requests until playback begins.
+	var backend := _make_backend()
+	var errors: Array = []
+	var started: Array = []
+	backend.recording_error.connect(func(_n: String, _m: String) -> void: errors.append(true))
+	backend.recording_started.connect(func(_n: String, _p: String) -> void: started.append(true))
+	backend.playing = false
+	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/a.tscn", "fps": 60})
+	assert_eq(errors.size(), 0, "no immediate error — waits for the scene")
+	assert_eq(started.size(), 0)
+	assert_true(backend.is_recording(), "active while pending")
+	assert_eq(backend.frames_dirs_made.size(), 1)
+	assert_eq(backend.played_scenes, ["res://scenes/a.tscn"])
+	assert_eq(backend.poll_starts, 1)
+	assert_eq(backend.capture_active_calls.size(), 0, "no capture claim while pending")
+	assert_eq(backend.requests.size(), 0, "no screenshot requests while pending")
+
+
 func test_start_twice_is_ignored() -> void:
 	var backend := _make_backend()
 	var started: Array = []
-	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	backend.recording_started.connect(func(_n: String, _p: String) -> void: started.append(true))
 	_start_capture(backend)
 	_start_capture(backend)
+	assert_push_warning("already recording")
 	assert_eq(started.size(), 1)
 	assert_eq(backend.requests, [0])
 
@@ -257,73 +253,47 @@ func test_duration_timer_starts_only_with_duration() -> void:
 	assert_eq(with_duration.duration_timer_starts, 1)
 
 
+## Request loop
+
+
 func test_pacing_keeps_one_request_in_flight() -> void:
-	# The loop must never issue a second request before the game replies to
-	# the first (one-in-flight pacing).
 	var backend := _make_backend()
 	_start_capture(backend)
 	assert_eq(backend.requests, [0])
 	backend._on_pacing_timeout()
-	assert_eq(backend.requests, [0], "pacing must not double-issue while a request is in flight")
+	assert_eq(backend.requests, [0], "pacing must not double-issue while in flight")
 	backend._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
-	# Pacing timeout after reply should issue next
 	backend._on_pacing_timeout()
-	assert_eq(backend.requests.size(), 2)
+	assert_eq(backend.requests, [0, 1])
 
 
 func test_stale_reply_is_ignored() -> void:
 	var backend := _make_backend()
 	_start_capture(backend)
-	# Stale enriched reply with w/h non-zero should be ignored
 	backend._on_screenshot_received(99, 1280, 720, "user://tmp/frame.png")
 	assert_eq(backend.copies.size(), 0)
-	# no_reply restart count depends on implementation — not asserted (can be 0 or 1)
 
 
-func test_screenshot_request_denied_retries_without_consuming_rq_id() -> void:
-	# When the send seam reports failure, the request must not be consumed and
-	# never become an error: the capture claim stays active, _in_flight_rq_id
-	# stays -1 so the retry reuses the same id, and the no-reply timer re-arms.
+func test_denied_request_retries_without_consuming_rq_id() -> void:
+	# When the send seam reports failure the request must not be consumed and
+	# never become an error: in-flight stays -1 so the retry reuses the same id.
 	var backend := _make_backend()
 	var errors: Array = []
-	backend.recording_error.connect(func(_n, _m): errors.append(true))
+	backend.recording_error.connect(func(_n: String, _m: String) -> void: errors.append(true))
 	backend.send_ok = false
 	_start_capture(backend)
 	assert_eq(errors.size(), 0, "denied send is not an error")
 	assert_true(backend.is_recording(), "capture claim stays active")
 	assert_eq(backend._in_flight_rq_id, -1, "failed send must not consume the request id")
-	assert_eq(backend.no_reply_restarts, 1, "no-reply timer re-armed after denied send")
 	assert_eq(backend._next_rq_id, 0, "denied send must not advance the rq id counter")
-	# Retry succeeds and consumes rq 0 — the id the denied attempt would have used.
+	assert_eq(backend.no_reply_restarts, 1, "no-reply timer re-armed after denied send")
 	backend.send_ok = true
 	backend._on_pacing_timeout()
 	assert_eq(backend._in_flight_rq_id, 0, "retry reuses the unconsumed request id")
-	assert_eq(backend.requests, [0, 0], "denied attempt plus successful retry")
+	assert_eq(backend.requests, [0, 0])
 
 
-func test_legacy_zero_dim_reply_accepted_when_in_flight() -> void:
-	# Engine's real reply has 0×0 dims; accepted as long as something is in
-	# flight (legacy compatibility — see debugger_plugin.gd fix).
-	var backend := _make_backend()
-	_start_capture(backend)
-	backend.next_dims = {"width": 800, "height": 600}
-	# id 99 would be stale for enriched, but legacy 0×0 is accepted.
-	backend._on_screenshot_received(99, 0, 0, "user://tmp/frame.png")
-	assert_eq(backend.copies.size(), 1)
-	assert_eq(backend.copies[0], ["user://tmp/frame.png", OUTPUT + ".frames/frame_00001.png"])
-	assert_eq(backend.manifests.size(), 0)  # not finalized yet — just copied.
-
-
-func test_legacy_zero_dim_populates_dimensions_via_seam() -> void:
-	var backend := _make_backend()
-	_start_capture(backend)
-	backend.next_dims = {"width": 1920, "height": 1080}
-	backend._on_screenshot_received(0, 0, 0, "user://tmp/frame.png")
-	backend.stop()
-	assert_eq(backend.manifests.size(), 1)
-	var data: Dictionary = backend.manifests[0][1]
-	assert_eq(data["width"], 1920)
-	assert_eq(data["height"], 1080)
+## Frame receipt
 
 
 func test_frame_copied_on_receipt() -> void:
@@ -332,60 +302,57 @@ func test_frame_copied_on_receipt() -> void:
 	backend._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
 	assert_eq(backend.copies.size(), 1)
 	assert_eq(backend.copies[0], ["user://tmp/frame.png", OUTPUT + ".frames/frame_00001.png"])
-	# After receiving, pacing drives next request
 	backend._on_pacing_timeout()
 	assert_eq(backend.requests, [0, 1])
 	backend._on_screenshot_received(1, 640, 480, "user://tmp/frame2.png")
 	assert_eq(backend.copies.size(), 2)
 
 
-func test_jpg_output_format_sets_extension_on_frames() -> void:
-	# Config output_format "jpg" → frames are written as .jpg (the backend
-	# re-encodes PNG receipts lossily in _copy_frame).
+func test_legacy_zero_dim_reply_accepted_and_dimensions_filled() -> void:
+	# The engine's real reply carries 0×0 dims; accepted while something is in
+	# flight, with dimensions filled via the seam for the manifest.
 	var backend := _make_backend()
-	_start_capture(backend, {"output_format": "jpg"})
-	assert_eq(backend._image_format, "jpg")
-	backend._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
-	assert_eq(backend.copies.size(), 1)
-	assert_eq(backend.copies[0][1], OUTPUT + ".frames/frame_00001.jpg")
+	_start_capture(backend)
+	backend.next_dims = {"width": 1920, "height": 1080}
+	backend._on_screenshot_received(0, 0, 0, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 1, "legacy 0×0 reply still copies the frame")
+	backend.stop()
+	assert_eq(backend.manifests.size(), 1)
+	assert_eq(backend.manifests[0][1]["width"], 1920)
+	assert_eq(backend.manifests[0][1]["height"], 1080)
 
 
-func test_jpeg_alias_selects_jpg() -> void:
-	var backend := _make_backend()
-	_start_capture(backend, {"output_format": "jpeg"})
-	assert_eq(backend._image_format, "jpg")
+func test_image_format_selection() -> void:
+	# "jpg"/"jpeg" → frames re-encoded as .jpg; anything else stays .png.
+	var jpg := _make_backend()
+	_start_capture(jpg, {"output_format": "jpg"})
+	assert_eq(jpg._image_format, "jpg")
+	jpg._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
+	assert_eq(jpg.copies[0][1], OUTPUT + ".frames/frame_00001.jpg")
+	var jpeg := _make_backend()
+	_start_capture(jpeg, {"output_format": "jpeg"})
+	assert_eq(jpeg._image_format, "jpg")
+	var fallback := _make_backend()
+	_start_capture(fallback, {"output_format": "avi"})
+	assert_eq(fallback._image_format, "png")
 
 
-func test_unknown_format_falls_back_to_png() -> void:
-	var backend := _make_backend()
-	_start_capture(backend, {"output_format": "avi"})
-	assert_eq(backend._image_format, "png")
-
-
-func test_tiny_frames_are_scrubbed_and_loop_continues() -> void:
-	# The debugger channel occasionally returns a 1×1 placeholder stub for the
-	# first request. It must not be copied, must not advance frame count/stats,
-	# and the loop must immediately issue the next request.
+func test_tiny_and_narrow_frames_scrubbed_loop_continues() -> void:
+	# The debugger channel sometimes returns a 1×1 placeholder; anything below
+	# MIN_FRAME_DIMENSION on either axis is scrubbed (no copy, no stats), and
+	# the loop immediately issues the next request.
 	var backend := _make_backend()
 	_start_capture(backend)
 	backend._on_screenshot_received(0, 1, 1, "user://tmp/frame.png")
 	assert_eq(backend.copies.size(), 0, "1px placeholder must not be copied")
 	assert_eq(backend.requests, [0, 1], "next request issues right after a scrub")
-	# A real frame after the scrub is still accepted and numbered normally.
-	backend._on_screenshot_received(1, 1280, 720, "user://tmp/frame.png")
-	assert_eq(backend.copies.size(), 1)
-	assert_eq(backend.copies[0], ["user://tmp/frame.png", OUTPUT + ".frames/frame_00001.png"])
-
-
-func test_narrow_dimension_frame_scrubbed_and_manifest_unaffected() -> void:
-	# A 640×2 frame is below MIN_FRAME_DIMENSION on one axis → scrubbed too.
-	var backend := _make_backend()
-	_start_capture(backend)
-	backend._on_screenshot_received(0, 640, 2, "user://tmp/frame.png")
-	assert_eq(backend.copies.size(), 0)
+	backend._on_screenshot_received(1, 640, 2, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 0, "narrow frame scrubbed too")
 	backend.stop()
-	assert_eq(backend.manifests.size(), 1)
-	assert_eq(backend.manifests[0][1]["frame_count"], 0)
+	assert_eq(backend.manifests[0][1]["frame_count"], 0, "scrubs never reach the manifest")
+
+
+## Stop / finalize
 
 
 func test_manifest_written_on_stop() -> void:
@@ -405,108 +372,87 @@ func test_manifest_written_on_stop() -> void:
 	assert_eq(data["height"], 720)
 
 
-func test_stop_emits_stopped_once_then_notice() -> void:
+func test_stop_emits_once_then_notice_and_releases_capture() -> void:
 	var backend := _make_backend()
 	var events: Array = []
-	backend.recording_stopped.connect(func(name, path): events.append(["stopped", name, path]))
-	backend.recording_notice.connect(func(name, message): events.append(["notice", name, message]))
+	backend.recording_stopped.connect(
+		func(_n: String, p: String) -> void: events.append(["stopped", p])
+	)
+	backend.recording_notice.connect(
+		func(_n: String, m: String) -> void: events.append(["notice", m])
+	)
 	_start_capture(backend)
 	_receive_frame(backend, 10.0, 0)
-	_receive_frame(backend, 10.25, 1)
 	backend.stop()
 	assert_eq(events.size(), 2)
-	assert_eq(events[0], ["stopped", "Screenshot", OUTPUT])
+	assert_eq(events[0], ["stopped", OUTPUT])
 	assert_eq(events[1][0], "notice", "notice must be emitted after stopped")
-	# Capture claim released and plugin disconnected on finalize.
 	assert_eq(backend.capture_active_calls, [true, false])
 	assert_false(backend.signal_connected)
 	assert_false(backend.is_recording())
 
 
-func test_zero_frames_still_emits_stopped_and_notice() -> void:
-	# Zero/low-frame captures are normal (occluded window); they finalize as
-	# stopped with a notice, never as an error. recording_error stays
-	# reserved for the no-game case.
-	var backend := _make_backend()
-	var stopped: Array = []
-	var errors: Array = []
+func test_notice_composition_zero_single_and_rate_hint() -> void:
 	var notices: Array = []
-	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
-	backend.recording_error.connect(func(name, message): errors.append([name, message]))
-	backend.recording_notice.connect(func(name, message): notices.append([name, message]))
-	_start_capture(backend)
-	backend.stop()
-	assert_eq(stopped.size(), 1)
-	assert_eq(stopped[0], ["Screenshot", OUTPUT])
-	assert_eq(errors.size(), 0)
-	assert_eq(notices.size(), 1)
-	assert_true(notices[0][1].contains("No frames captured"))
+	var zero := _make_backend()
+	zero.recording_notice.connect(func(_n: String, m: String) -> void: notices.append(m))
+	_start_capture(zero)
+	zero.stop()
+	assert_true(notices[0].contains("No frames captured"))
 
+	notices = []
+	var single := _make_backend()
+	single.recording_notice.connect(func(_n: String, m: String) -> void: notices.append(m))
+	_start_capture(single, {"fps": 30})
+	_receive_frame(single, 10.0, 0)
+	single.stop()
+	assert_eq(notices[0], "Saved 1 frame (target 30 fps)")
 
-func test_single_frame_notice() -> void:
-	var backend := _make_backend()
-	var notices: Array = []
-	backend.recording_notice.connect(func(name, message): notices.append([name, message]))
-	_start_capture(backend, {"fps": 30})
-	_receive_frame(backend, 10.0, 0)
-	backend.stop()
-	assert_eq(notices.size(), 1)
-	assert_eq(notices[0][1], "Saved 1 frame (target 30 fps)")
+	notices = []
+	var low := _make_backend()
+	low.recording_notice.connect(func(_n: String, m: String) -> void: notices.append(m))
+	_start_capture(low, {"fps": 60})
+	_receive_frame(low, 10.0, 0)
+	_receive_frame(low, 10.25, 1)
+	low.stop()
+	# measured 4.0 < 25% of target 60 → foreground hint appended.
+	assert_true(notices[0].contains("Saved 2 frames @ 4.0 fps (target 60)"))
+	assert_true(notices[0].contains("keep the game window visible and focused"))
 
-
-func test_low_rate_notice_appends_foreground_hint() -> void:
-	# measured (4.0 fps) < 25% of target 60 → the foreground hint fires.
-	var backend := _make_backend()
-	var notices: Array = []
-	backend.recording_notice.connect(func(name, message): notices.append([name, message]))
-	_start_capture(backend)
-	_receive_frame(backend, 10.0, 0)
-	_receive_frame(backend, 10.25, 1)
-	backend.stop()
-	assert_eq(notices.size(), 1)
-	assert_true(notices[0][1].contains("Saved 2 frames @ 4.0 fps (target 60)"))
-	assert_true(notices[0][1].contains("keep the game window visible and focused"))
-
-
-func test_full_rate_notice_omits_hint() -> void:
-	# measured (4.0 fps) ≥ 25% of target 15 → no hint.
-	var backend := _make_backend()
-	var notices: Array = []
-	backend.recording_notice.connect(func(name, message): notices.append([name, message]))
-	_start_capture(backend, {"fps": 15})
-	_receive_frame(backend, 10.0, 0)
-	_receive_frame(backend, 10.25, 1)
-	backend.stop()
-	assert_eq(notices.size(), 1)
-	assert_true(notices[0][1].contains("Saved 2 frames @ 4.0 fps (target 15)"))
-	assert_false(notices[0][1].contains("keep the game window"))
+	notices = []
+	var full := _make_backend()
+	full.recording_notice.connect(func(_n: String, m: String) -> void: notices.append(m))
+	_start_capture(full, {"fps": 15})
+	_receive_frame(full, 10.0, 0)
+	_receive_frame(full, 10.25, 1)
+	full.stop()
+	# measured 4.0 ≥ 25% of target 15 → no hint.
+	assert_true(notices[0].contains("Saved 2 frames @ 4.0 fps (target 15)"))
+	assert_false(notices[0].contains("keep the game window"))
 
 
 func test_duration_timeout_stops_recording() -> void:
 	var backend := _make_backend()
 	var stopped: Array = []
-	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.recording_stopped.connect(func(_n: String, p: String) -> void: stopped.append(p))
 	_start_capture(backend, {"duration": 2.0})
 	backend._on_duration_timeout()
-	assert_eq(stopped.size(), 1)
-	assert_eq(stopped[0], ["Screenshot", OUTPUT])
+	assert_eq(stopped, [OUTPUT])
 	assert_false(backend.is_recording())
 
 
 func test_no_reply_timeout_finalizes_with_frames_so_far() -> void:
-	# Game stopped answering (hung/occluded/crashed): finalize with whatever
-	# frames were received, then a notice. The game is never sent anything.
+	# Game stopped answering: finalize with whatever frames were received,
+	# then a notice — the game is never sent anything.
 	var backend := _make_backend()
 	var stopped: Array = []
 	var notices: Array = []
-	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
-	backend.recording_notice.connect(func(name, message): notices.append([name, message]))
+	backend.recording_stopped.connect(func(_n: String, p: String) -> void: stopped.append(p))
+	backend.recording_notice.connect(func(_n: String, m: String) -> void: notices.append(m))
 	_start_capture(backend)
 	_receive_frame(backend, 10.0, 0)
 	backend._on_no_reply_timeout()
-	assert_eq(stopped.size(), 1)
-	assert_eq(stopped[0], ["Screenshot", OUTPUT])
-	assert_eq(backend.manifests.size(), 1)
+	assert_eq(stopped, [OUTPUT])
 	assert_eq(backend.manifests[0][1]["frame_count"], 1)
 	assert_eq(notices.size(), 1)
 	assert_false(backend.is_recording())
@@ -515,7 +461,7 @@ func test_no_reply_timeout_finalizes_with_frames_so_far() -> void:
 func test_timeout_after_stop_does_not_double_emit() -> void:
 	var backend := _make_backend()
 	var stopped: Array = []
-	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.recording_stopped.connect(func(_n: String, _p: String) -> void: stopped.append(true))
 	_start_capture(backend)
 	backend.stop()
 	backend._on_no_reply_timeout()
@@ -527,7 +473,7 @@ func test_timeout_after_stop_does_not_double_emit() -> void:
 func test_stop_when_not_recording_is_noop() -> void:
 	var backend := _make_backend()
 	var stopped: Array = []
-	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
+	backend.recording_stopped.connect(func(_n: String, _p: String) -> void: stopped.append(true))
 	backend.stop()
 	assert_eq(stopped.size(), 0)
 	assert_eq(backend.capture_active_calls.size(), 0)
@@ -538,13 +484,9 @@ func test_frame_interval_uses_target_fps() -> void:
 	_start_capture(backend, {"fps": 30})
 	assert_almost_eq(backend._get_frame_interval(), 1.0 / 30.0, 0.0001)
 	var default_backend := _make_backend()
-	_default_start(default_backend)
+	default_backend.playing = true
+	default_backend.start({"output_path": OUTPUT})
 	assert_almost_eq(default_backend._get_frame_interval(), 1.0 / 15.0, 0.0001)
-
-
-func _default_start(backend: FakeScreenshotBackend) -> void:
-	backend.playing = true
-	backend.start({"output_path": OUTPUT})
 
 
 func test_no_reply_timeout_default_is_fifteen_seconds() -> void:
@@ -552,31 +494,19 @@ func test_no_reply_timeout_default_is_fifteen_seconds() -> void:
 	assert_eq(backend._get_no_reply_timeout(), 15.0)
 
 
-func test_pending_start_launches_scene_and_waits() -> void:
-	var backend := _make_backend()
-	var started: Array = []
-	backend.recording_started.connect(func(name, path): started.append([name, path]))
-	backend.playing = false
-	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/a.tscn", "fps": 60})
-	assert_eq(started.size(), 0)
-	assert_true(backend.is_recording())
-	assert_eq(backend.played_scenes, ["res://scenes/a.tscn"])
-	assert_eq(backend.poll_starts, 1)
-	assert_eq(backend.capture_active_calls.size(), 0, "no capture claim while pending")
-	assert_eq(backend.requests.size(), 0, "no screenshot requests while pending")
+## Pending-start flow
 
 
 func test_poll_transitions_to_recording_when_scene_starts() -> void:
 	var backend := _make_backend()
 	var started: Array = []
-	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	backend.recording_started.connect(func(_n: String, p: String) -> void: started.append(p))
 	backend.playing = false
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/a.tscn"})
 	assert_eq(started.size(), 0)
 	backend.playing = true
 	backend._on_poll_timeout()
-	assert_eq(started.size(), 1)
-	assert_eq(started[0], ["Screenshot", OUTPUT])
+	assert_eq(started, [OUTPUT])
 	assert_eq(backend.capture_active_calls, [true])
 	assert_true(backend.signal_connected)
 	assert_eq(backend.requests, [0])
@@ -585,64 +515,65 @@ func test_poll_transitions_to_recording_when_scene_starts() -> void:
 func test_duration_expiry_while_pending_emits_error() -> void:
 	var backend := _make_backend()
 	var errors: Array = []
-	var started: Array = []
-	backend.recording_error.connect(func(name, msg): errors.append([name, msg]))
-	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	backend.recording_error.connect(func(_n: String, m: String) -> void: errors.append(m))
 	backend.playing = false
 	backend.start({"output_path": OUTPUT, "scene_path": "res://scenes/a.tscn", "duration": 1.0})
-	assert_eq(started.size(), 0)
 	backend._on_duration_timeout()
 	assert_eq(errors.size(), 1)
-	assert_eq(errors[0][0], "Screenshot")
-	assert_true(errors[0][1].contains("Scene did not start"))
+	assert_true(errors[0].contains("Scene did not start"))
 	assert_false(backend.is_recording())
-	assert_eq(started.size(), 0)
 
 
 func test_stop_while_pending_cancels_and_finalizes() -> void:
 	var backend := _make_backend()
 	var stopped: Array = []
 	var notices: Array = []
-	backend.recording_stopped.connect(func(name, path): stopped.append([name, path]))
-	backend.recording_notice.connect(func(name, msg): notices.append([name, msg]))
+	backend.recording_stopped.connect(func(_n: String, p: String) -> void: stopped.append(p))
+	backend.recording_notice.connect(func(_n: String, _m: String) -> void: notices.append(true))
 	backend.playing = false
 	backend.start({"output_path": OUTPUT})
 	backend.stop()
-	assert_eq(stopped.size(), 1)
-	assert_eq(stopped[0], ["Screenshot", OUTPUT])
+	assert_eq(stopped, [OUTPUT])
 	assert_eq(notices.size(), 1)
 	assert_false(backend.is_recording())
 	assert_eq(backend.poll_stops, 1)
+
+
+## ffmpeg tier-2 handoff
 
 
 func test_ffmpeg_convert_triggered_for_mp4_target() -> void:
 	var backend := _make_backend()
 	var conv := FakeFFmpegConverterForScreenshot.new()
 	backend.injected_converter = conv
-	var started: Array = []
-	backend.recording_started.connect(func(name, path): started.append([name, path]))
+	var converted: Array = []
+	backend.recording_converted.connect(func(_n: String, p: String) -> void: converted.append(p))
 	_start_capture(backend, {"output_format": "mp4"})
 	_receive_frame(backend, 10.0, 0)
-	var converted: Array = []
-	backend.recording_converted.connect(func(name, path): converted.append([name, path]))
 	backend.stop()
-	# finalize should have triggered ffmpeg convert with mp4 target
-	assert_true(conv.convert_calls.size() >= 1)
+	assert_eq(conv.convert_calls.size(), 1)
 	assert_true(str(conv.convert_calls[0][2]).to_lower().contains("mp4"))
 	assert_eq(converted.size(), 1, "fake converter emits converted synchronously")
 
 
-func test_ffmpeg_convert_not_triggered_for_png_target() -> void:
-	var backend := _make_backend()
-	var conv := FakeFFmpegConverterForScreenshot.new()
-	# Not in tree — backend will not own it when no conversion happens, so we must free manually.
-	backend.injected_converter = conv
-	_start_capture(backend, {"output_format": "png"})
-	_receive_frame(backend, 10.0, 0)
-	backend.stop()
-	assert_eq(conv.convert_calls.size(), 0, "PNG native — no convert")
-	if conv.get_parent() == null:
-		conv.free()
+func test_ffmpeg_convert_not_triggered_for_native_or_disabled() -> void:
+	var png := _make_backend()
+	var conv_png := FakeFFmpegConverterForScreenshot.new()
+	png.injected_converter = conv_png
+	_start_capture(png, {"output_format": "png"})
+	_receive_frame(png, 10.0, 0)
+	png.stop()
+	assert_eq(conv_png.convert_calls.size(), 0, "PNG native — no convert")
+	conv_png.free()
+
+	var off := _make_backend()
+	var conv_off := FakeFFmpegConverterForScreenshot.new()
+	off.injected_converter = conv_off
+	_start_capture(off, {"output_format": "mp4", "auto_convert": false})
+	_receive_frame(off, 10.0, 0)
+	off.stop()
+	assert_eq(conv_off.convert_calls.size(), 0, "auto_convert off — no convert")
+	conv_off.free()
 
 
 func test_ffmpeg_not_found_keeps_frames_and_emits_notice() -> void:
@@ -650,46 +581,35 @@ func test_ffmpeg_not_found_keeps_frames_and_emits_notice() -> void:
 	var conv := FakeFFmpegConverterForScreenshot.new()
 	conv.probe_result = false
 	backend.injected_converter = conv
+	var notices: Array = []
+	backend.recording_notice.connect(func(_n: String, m: String) -> void: notices.append(m))
+	var converted: Array = []
+	backend.recording_converted.connect(
+		func(_n: String, _p: String) -> void: converted.append(true)
+	)
 	_start_capture(backend, {"output_format": "mp4"})
 	_receive_frame(backend, 10.0, 0)
-	var notices: Array = []
-	backend.recording_notice.connect(func(name, msg): notices.append([name, msg]))
-	var converted: Array = []
-	backend.recording_converted.connect(func(name, path): converted.append([name, path]))
 	backend.stop()
 	assert_eq(converted.size(), 0)
 	assert_eq(conv.deletes.size(), 0, "frames kept when ffmpeg missing")
-	# notice stream contains ffmpeg not found
 	var found := false
 	for n in notices:
-		if str(n[1]).to_lower().contains("ffmpeg not found"):
+		if str(n).to_lower().contains("ffmpeg not found"):
 			found = true
 	assert_true(found)
 
 
-func test_ffmpeg_nonzero_keeps_frames_and_emits_error_tail() -> void:
+func test_ffmpeg_failure_emits_error_with_tail_and_keeps_frames() -> void:
 	var backend := _make_backend()
 	var conv := FakeFFmpegConverterForScreenshot.new()
 	conv.execute_code = 1
 	conv.execute_output = ["frame pattern invalid"]
 	backend.injected_converter = conv
+	var errors: Array = []
+	backend.recording_error.connect(func(_n: String, m: String) -> void: errors.append(m))
 	_start_capture(backend, {"output_format": "mp4"})
 	_receive_frame(backend, 10.0, 0)
-	var errors: Array = []
-	backend.recording_error.connect(func(name, msg): errors.append([name, msg]))
 	backend.stop()
 	assert_eq(errors.size(), 1)
-	assert_true(str(errors[0][1]).contains("invalid") or str(errors[0][1]).contains("failed"))
+	assert_true(errors[0].contains("invalid") or errors[0].contains("failed"))
 	assert_eq(conv.deletes.size(), 0)
-
-
-func test_auto_convert_off_skips_converter() -> void:
-	var backend := _make_backend()
-	var conv := FakeFFmpegConverterForScreenshot.new()
-	backend.injected_converter = conv
-	_start_capture(backend, {"output_format": "mp4", "auto_convert": false})
-	_receive_frame(backend, 10.0, 0)
-	backend.stop()
-	assert_eq(conv.convert_calls.size(), 0)
-	if conv.get_parent() == null:
-		conv.free()

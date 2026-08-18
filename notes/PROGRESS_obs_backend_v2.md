@@ -321,3 +321,48 @@ An OBS we launched at 10:22 survived ~7 h after its godot parent died — the on
 - `make test-godot` → **265 passing, exit 0** (GUT-SUITE-OK).
 - All pre-commit hooks (gdformat, trailing-whitespace, end-of-file-fixer, gitleaks) green on changed files.
 - Remaining audit debt: 3 commented-out gap tests in `test_backend_obs.gd` (debug async signal waits).
+
+## Test suite rewrite verification 2026-08-17 — rewrite made green
+
+The monolithic unit suite was replaced per `notes/TEST_SUITE_REWRITE_SPEC.md` (16 files → 5: `test_backend_base.gd`, `test_backend_movie_maker.gd`, `test_config_store.gd`, `test_output_format.gd`, `test_recorder_controller.gd`). The rewrite landed as commit `580b744 "check in test state, rewrite but with issues"`. This session fixed every reported issue; the suite is now green with zero leak noise.
+
+### Issues found and fixed (all in `test/unit/` — production untouched)
+
+- **`test_backend_movie_maker.gd` was silently skipped by GUT** (47 parse errors → "does not extend GutTest"). Root causes: invalid `@staticmethod` annotations (`static func` instead), GUT `autofree()` returns Variant so `var x := autofree(...)` cannot infer a type (needs explicit `var x: T = autofree(...)`), `FakeTimer.connect` overrode native `Object.connect`, `FakeFFmpegConvert` didn't extend `GdTMFFmpegConvert` (override signature mismatch), `Callable = null`, `callable_mp` ambiguity, undeclared identifier + typed-setters-receiving-null in the fakes.
+- **All remaining 12 failures + 3 risky tests traced to one root cause**: this Godot version captures lambdas' outer LOCALS BY VALUE, so `var started_emitted := false` written inside a `signal.connect(lambda)` is never visible outside. Fixed with member capture vars (`_captured_*`) reset in `before_each`, the same pattern `test_recorder_controller.gd` already uses.
+- **Tests asserting non-existent behavior**: tier-2 start tests now pass `"output_format"` (production reads `config.get("output_format")` — a `.mp4` path alone never triggers tier-2); `test_poll_while_recording_checks_avi_size` needed `_playing_scene = true` (the size guard only runs while the scene plays); `test_avi_size_limit_noop_for_non_avi` body contradicted its name — flipped to `assert_false` (the RIFF guard skips non-AVI `_output_path`); **`test_start_requests_window_focus` deleted** — `BackendMovieMaker` has no focus seam; `send_focus_request` lives only in `RecorderController._request_window_focus()`.
+- **Fake async removed**: `FakeFFmpegConvert.convert_file_async` now emits synchronously (no `call_deferred`), and the `while not converted_emitted: OS.delay_msec(10)` busy-wait in the conversion test was deleted — both were the exact async-deadlock pattern the rewrite spec bans.
+- **Orphan leaks eliminated (60 → 0)** in `test_backend_base.gd` and `test_recorder_controller.gd` via explicitly-typed `autofree(...)`/`add_child_autofree(...)` plus guarded `is_instance_valid` cleanup for queue-freed unregistered backends. The "65 ObjectDB instances leaked at exit / 2 resources still in use" exit noise is gone.
+- 3 previously no-assert ("Risky") tests now assert real observable behavior (no-op start, idempotent stop, grace-timeout no-op).
+
+### Final state
+
+- `make test-godot` → **GUT-SUITE-OK (95 passing, 0 failing)**, 211 asserts, 5 scripts. Zero `SCRIPT ERROR`/`Parse error`/orphan/risky/leak lines in the log.
+- `gdformat` (pre-commit) green on all three edited test files.
+- Validator (read-only review) found no must-fix issues; approved after checks (production untouched, forbidden patterns absent, deletion justified, assertions behavior-accurate).
+- No production code was modified. Nothing committed (per protocol, only on user request).
+
+## Warning suppression & Makefile stderr routing 2026-08-17
+
+Question: are all warnings in the test output expected, and can they be suppressed?
+
+### Audit result — yes, every warning is deliberate
+
+- **8 stderr warnings**, one per warn-path test (each exists to verify a `push_warning` fires and code continues safely): `test_register_backend_rejects_null`, `test_register_backend_rejects_empty_name`, `test_register_backend_replaces_duplicate`, `test_unregister_backend_warns_unknown`, `test_select_backend_warns_unknown`, `test_start_recording_emits_error_when_no_backend`, `test_start_recording_warns_when_already_recording` (controller), `test_start_warns_when_already_recording` (movie maker). Verified 1:1 against stderr backtraces — zero unexpected warnings.
+- **2 log-only GUT notices**: "Ignoring Inner Class TestBackend / TestableMovieMaker" — informational (GUT correctly ignoring fake inner classes as test scripts).
+
+### Why they were noisy, and the fix
+
+- `make test-godot` ran `godot ... 2>&1 > $$LOG` — stderr (engine warnings, `SCRIPT ERROR`s) went to the **terminal**, stdout (GUT report) to the log. Fixed to `> $$LOG 2>&1`: terminal now shows only `Running tests...` + `GUT-SUITE-OK`. Warnings stay in the log file for diagnosis.
+- **Latent Makefile bug fixed by the same change**: the failure-detection greps (`SCRIPT ERROR` / `Failed to load script` / `Parse error`) run against the log, but those engine messages previously went to stderr → terminal, so a parse/load failure could pass as GUT-SUITE-OK (exactly how the movie-maker file slipped through as "green" earlier).
+- Dead-end options tested and rejected: Godot `--quiet` suppresses `print()` but **not** `push_warning`/`push_error`; GUT's `assert_push_warning` verifies the warning (works headless, even from production code) but does **not** suppress the engine's raw stderr line — suppression must happen at output routing, hence the Makefile change.
+
+### Tests strengthened
+
+All 8 warn-path tests now end with `assert_push_warning("...")`, turning the noise into verified expectations (each warning is tracked, matched, and consumed by GUT). Assert count 211 → 220 (8 new).
+
+### Final state
+
+- `make test-godot` → **GUT-SUITE-OK (95 passing, 0 failing)**, 220 asserts, 5 scripts; terminal output clean; log retains the 8 expected warning backtraces; zero orphan/risky/SCRIPT ERROR lines.
+- `gdformat` could not be run in this environment (gdtoolkit/pip unavailable) — edits are single-line insertions matching surrounding style; pre-commit will verify at commit time.
+- Production untouched. Nothing committed (per protocol, only on user request).
