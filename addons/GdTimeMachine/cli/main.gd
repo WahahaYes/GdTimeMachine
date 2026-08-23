@@ -516,11 +516,32 @@ func _run_build_command(
 		return false
 	print("build ok for %s" % label)
 	return true
-	DirAccess.remove_absolute(script_path)
+
+
+func _record_in_worktree(
+	worktree_path: String,
+	godot_bin: String,
+	scene: String,
+	output: String,
+	duration: float,
+	fps: int,
+	backend: String
+) -> bool:
+	var out_log := "/tmp/gdtm_record_%s.log" % output.get_file().replace(".", "_")
+	var cmd := (
+		"%s --headless --path '%s' -s res://addons/GdTimeMachine/cli/record.gd -- --scene '%s' --output '%s' --duration %s --fps %d --backend '%s' > '%s' 2>&1"
+		% [godot_bin, worktree_path, scene, output, str(duration), fps, backend, out_log]
+	)
+	var code := OS.execute("sh", PackedStringArray(["-c", cmd]), [], false)
+	if FileAccess.file_exists(out_log):
+		var content := FileAccess.get_file_as_string(out_log)
+		for line in content.split("\n"):
+			if not str(line).strip_edges().is_empty():
+				print(line)
+		DirAccess.remove_absolute(out_log)
 	if code != 0:
-		printerr("build failed for %s (exit %d): %s" % [label, code, build_command])
+		printerr("record failed (exit %d) for %s" % [code, scene])
 		return false
-	print("build ok for %s" % label)
 	return true
 
 
@@ -684,6 +705,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 		print("dry-run preview for %s (project_root=%s):" % [manifest_path, project_root])
 		var top_godot_path := str(dict.get("godot_path", "godot"))
 		var top_build := str(dict.get("build_command", ""))
+		var top_output_dir := str(dict.get("output_dir", "res://media/captures/history"))
 		for entry in arr:
 			if typeof(entry) != TYPE_DICTIONARY:
 				continue
@@ -696,6 +718,12 @@ func _cmd_run(args: PackedStringArray) -> void:
 				if entry.has("build_command")
 				else top_build
 			)
+			var dur := float(entry.get("duration", 30))
+			var fps_v := int(entry.get("fps", 60))
+			var outp := str(entry.get("output_path", ""))
+			if outp.is_empty():
+				outp = top_output_dir.path_join(lbl)
+			var backend_dry := str(entry.get("backend", "OBS Studio"))
 			print("[dry-run] would create worktree .worktrees/%s for %s" % [lbl, cm])
 			if not sc.is_empty():
 				print("  scene: %s" % sc)
@@ -708,6 +736,12 @@ func _cmd_run(args: PackedStringArray) -> void:
 				print("  build: none (GDScript-only)")
 			else:
 				print("  build: %s" % bcmd)
+			print(
+				(
+					"  record: %s -> %s (duration %s, fps %d, backend %s)"
+					% [sc, outp, str(dur), fps_v, backend_dry]
+				)
+			)
 		print("dry-run complete — no worktrees created")
 		quit(0)
 		return
@@ -743,8 +777,20 @@ func _cmd_run(args: PackedStringArray) -> void:
 			printerr("✘ build failed for %s" % lbl)
 			failed_labels.append(lbl)
 			continue
+		var top_output_dir_r := str(dict.get("output_dir", "res://media/captures/history"))
+		var scene_r := str(entry.get("scene", ""))
+		var fps_r := int(entry.get("fps", 60))
+		var dur_r := float(entry.get("duration", 30))
+		var out_r := str(entry.get("output_path", ""))
+		if out_r.is_empty():
+			out_r = top_output_dir_r.path_join(lbl)
+		var backend_r := str(entry.get("backend", "OBS Studio"))
+		if not _record_in_worktree(wt_path, godot_bin, scene_r, out_r, dur_r, fps_r, backend_r):
+			printerr("✘ record failed for %s" % lbl)
+			failed_labels.append(lbl)
+			continue
 		created.append(lbl)
-		print("✔ worktree .worktrees/%s ready (godot + build ok)" % lbl)
+		print("✔ %s done (worktree + build + record)" % lbl)
 
 	# --- cleanup: atexit/SIGINT trap equivalent — ensure no orphans ---
 	if keep_worktrees:
