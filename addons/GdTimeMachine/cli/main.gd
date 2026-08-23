@@ -413,6 +413,117 @@ func _cleanup_worktrees(project_root: String, keep_failed: bool, failed_labels: 
 	OS.execute("git", PackedStringArray(["-C", project_root, "worktree", "prune"]), out_final, true)
 
 
+func _resolve_godot_binary(worktree_path: String, godot_path: String, hint: String) -> String:
+	var bin := ""
+	# Try godotenv in worktree
+	var out_env: Array = []
+	var env_code := OS.execute(
+		"godotenv", PackedStringArray(["godot", "env", "get"]), out_env, true
+	)
+	# godotenv expects to run in project dir; try with -C worktree via shell
+	if env_code != 0 or out_env.is_empty():
+		var out_sh: Array = []
+		OS.execute(
+			"sh",
+			PackedStringArray(
+				["-c", "cd '%s' && godotenv godot env get 2>/dev/null" % worktree_path]
+			),
+			out_sh,
+			true
+		)
+		if not out_sh.is_empty():
+			var cand := str(out_sh[0]).strip_edges()
+			if not cand.is_empty() and FileAccess.file_exists(cand):
+				bin = cand
+	if bin.is_empty() and not out_env.is_empty():
+		var cand2 := str(out_env[0]).strip_edges()
+		if not cand2.is_empty():
+			bin = cand2
+	if not bin.is_empty() and FileAccess.file_exists(bin):
+		return bin
+	# Fallback to manifest godot_path
+	if not godot_path.is_empty() and godot_path != "godot":
+		if FileAccess.file_exists(godot_path):
+			return godot_path
+		var out_which: Array = []
+		OS.execute("which", PackedStringArray([godot_path]), out_which, true)
+		if not out_which.is_empty() and FileAccess.file_exists(str(out_which[0]).strip_edges()):
+			return str(out_which[0]).strip_edges()
+		return godot_path
+	# Final fallback: godot on PATH or GODOT_BIN env
+	var godot_bin_env := OS.get_environment("GODOT_BIN")
+	if not godot_bin_env.is_empty():
+		return godot_bin_env
+	var out_which2: Array = []
+	OS.execute("which", PackedStringArray(["godot"]), out_which2, true)
+	if not out_which2.is_empty():
+		return str(out_which2[0]).strip_edges()
+	return "godot"
+
+
+func _regenerate_godot_cache(worktree_path: String, godot_bin: String) -> bool:
+	var cache_dir := worktree_path.path_join(".godot")
+	# Remove existing cache
+	if DirAccess.dir_exists_absolute(cache_dir):
+		_delete_dir_recursive(cache_dir)
+	var out: Array = []
+	var args := PackedStringArray(["--editor", "--headless", "--quit"])
+	# Use -C worktree via shell to ensure correct project path
+	var cmd := "%s --path '%s' --editor --headless --quit 2>&1" % [godot_bin, worktree_path]
+	var code := OS.execute("sh", PackedStringArray(["-c", cmd]), out, true)
+	if code != 0:
+		var msg := "\n".join(out) if not out.is_empty() else "exit %d" % code
+		printerr("warning: Godot cache regeneration failed in %s: %s" % [worktree_path, msg])
+		return false
+	return true
+
+
+func _run_build_command(
+	worktree_path: String, build_command: String, label: String, commit: String
+) -> bool:
+	if build_command.strip_edges().is_empty():
+		return true
+	print("running build for %s: %s" % [label, build_command])
+	OS.set_environment("GDTM_LABEL", label)
+	OS.set_environment("GDTM_COMMIT", commit)
+	OS.set_environment("GDTM_SCENE", "")
+	var log_path := "/tmp/gdtm_build_%s.log" % label
+	var script_path := "/tmp/gdtm_build_%s.sh" % label
+	var script_content := (
+		"#!/usr/bin/env sh\nexec > '%s' 2>&1\ncd '%s'\n%s\n"
+		% [log_path, worktree_path, build_command]
+	)
+	var fa := FileAccess.open(script_path, FileAccess.WRITE)
+	if fa == null:
+		printerr("failed to create build script for %s" % label)
+		return false
+	fa.store_string(script_content)
+	fa.close()
+	var code: int = 0
+	if OS.get_name() == "Windows":
+		code = OS.execute("cmd", PackedStringArray(["/c", 'call "%s"' % script_path]), [], false)
+	else:
+		code = OS.execute("sh", PackedStringArray([script_path]), [], false)
+	if FileAccess.file_exists(log_path):
+		var content := FileAccess.get_file_as_string(log_path)
+		for line in content.split("\n"):
+			if not str(line).strip_edges().is_empty():
+				print(line)
+		DirAccess.remove_absolute(log_path)
+	DirAccess.remove_absolute(script_path)
+	if code != 0:
+		printerr("build failed for %s (exit %d): %s" % [label, code, build_command])
+		return false
+	print("build ok for %s" % label)
+	return true
+	DirAccess.remove_absolute(script_path)
+	if code != 0:
+		printerr("build failed for %s (exit %d): %s" % [label, code, build_command])
+		return false
+	print("build ok for %s" % label)
+	return true
+
+
 func _extract_manifest_path(args: PackedStringArray) -> String:
 	var manifest_path := ""
 	for i in range(1, args.size()):
@@ -569,22 +680,40 @@ func _cmd_run(args: PackedStringArray) -> void:
 		quit(1)
 		return
 
-	# --- dry-run: preview without side effects ---
 	if dry_run:
 		print("dry-run preview for %s (project_root=%s):" % [manifest_path, project_root])
+		var top_godot_path := str(dict.get("godot_path", "godot"))
+		var top_build := str(dict.get("build_command", ""))
 		for entry in arr:
 			if typeof(entry) != TYPE_DICTIONARY:
 				continue
 			var lbl := str(entry.get("label", ""))
 			var cm := str(entry.get("commit", ""))
 			var sc := str(entry.get("scene", ""))
+			var hint := str(entry.get("godot_version_hint", ""))
+			var bcmd: String = (
+				str(entry.get("build_command", top_build))
+				if entry.has("build_command")
+				else top_build
+			)
 			print("[dry-run] would create worktree .worktrees/%s for %s" % [lbl, cm])
 			if not sc.is_empty():
 				print("  scene: %s" % sc)
+			var gpath := top_godot_path
+			if not hint.is_empty():
+				print("  godot hint: %s (would resolve via godotenv, fallback %s)" % [hint, gpath])
+			else:
+				print("  godot: %s" % gpath)
+			if bcmd.strip_edges().is_empty():
+				print("  build: none (GDScript-only)")
+			else:
+				print("  build: %s" % bcmd)
 		print("dry-run complete — no worktrees created")
 		quit(0)
 		return
 
+	var top_godot_path_r := str(dict.get("godot_path", "godot"))
+	var top_build_r := str(dict.get("build_command", ""))
 	var created: Array = []
 	var failed_labels: Array = []
 	for entry in arr:
@@ -592,14 +721,30 @@ func _cmd_run(args: PackedStringArray) -> void:
 			continue
 		var lbl := str(entry.get("label", ""))
 		var cm := str(entry.get("commit", ""))
+		var hint_r := str(entry.get("godot_version_hint", ""))
+		var bcmd_r: String = (
+			str(entry.get("build_command", top_build_r))
+			if entry.has("build_command")
+			else top_build_r
+		)
 		print("creating worktree for %s (%s)..." % [lbl, cm])
 		var wt_path := _add_worktree(lbl, cm, project_root, force)
 		if wt_path.is_empty():
 			printerr("✘ failed to create worktree .worktrees/%s for %s" % [lbl, cm])
 			failed_labels.append(lbl)
 			continue
+		var godot_bin := _resolve_godot_binary(wt_path, top_godot_path_r, hint_r)
+		print("  godot: %s" % godot_bin)
+		if not _regenerate_godot_cache(wt_path, godot_bin):
+			printerr("✘ cache regeneration failed for %s" % lbl)
+			failed_labels.append(lbl)
+			continue
+		if not _run_build_command(wt_path, bcmd_r, lbl, cm):
+			printerr("✘ build failed for %s" % lbl)
+			failed_labels.append(lbl)
+			continue
 		created.append(lbl)
-		print("✔ worktree .worktrees/%s ready" % lbl)
+		print("✔ worktree .worktrees/%s ready (godot + build ok)" % lbl)
 
 	# --- cleanup: atexit/SIGINT trap equivalent — ensure no orphans ---
 	if keep_worktrees:
