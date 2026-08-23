@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://gdtime.example/schema/batch_manifest.json",
+  "title": "GdTimeMachine Batch Manifest",
+  "description": "Manifest for GdTimeMachine CLI batch capture. Written by dock, validated before execution.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "project_root": {
+      "type": "string",
+      "pattern": "^/.+",
+      "description": "Absolute path to the Godot project root (validated via git rev-parse)."
+    },
+    "godot_path": {
+      "type": "string",
+      "default": "godot",
+      "description": "Fallback Godot binary on PATH."
+    },
+    "build_command": {
+      "type": "string",
+      "description": "Generic build hook — opaque shell string. Empty or absent means no build (GDScript-only)."
+    },
+    "output_dir": {
+      "type": "string",
+      "description": "Default output directory for captures (res:// or absolute path)."
+    },
+    "obs": {
+      "type": "object",
+      "description": "OBS WebSocket defaults for batch recording.",
+      "additionalProperties": false,
+      "properties": {
+        "host": {
+          "type": "string",
+          "default": "localhost"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535,
+          "default": 4455
+        },
+        "password_env_var": {
+          "type": "string",
+          "description": "Environment variable name holding the OBS WebSocket password."
+        },
+        "scene_name": {
+          "type": "string",
+          "description": "OBS scene name to record."
+        }
+      }
+    },
+    "captures": {
+      "type": "array",
+      "description": "Ordered list of captures to batch-record. Must be non-empty; labels must be unique and filesystem-safe.",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "commit": {
+            "type": "string",
+            "pattern": "^[0-9a-fA-F]{4,40}$",
+            "description": "Git commit SHA (short or full hex)."
+          },
+          "scene": {
+            "type": "string",
+            "pattern": "^res://.+",
+            "description": "Scene resource path inside the Godot project."
+          },
+          "label": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]+$",
+            "description": "Filesystem-safe slug for worktree dir and output file; must be unique within captures."
+          },
+          "duration": {
+            "type": "integer",
+            "minimum": 1,
+            "default": 30,
+            "description": "Capture duration in seconds."
+          },
+          "fps": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 240,
+            "default": 60,
+            "description": "Capture frames per second."
+          },
+          "fullscreen": {
+            "type": "boolean",
+            "description": "Whether to capture fullscreen."
+          },
+          "godot_version_hint": {
+            "type": "string",
+            "description": "Hint for godotenv to resolve the correct Godot binary (e.g. \"4.3\")."
+          },
+          "output_path": {
+            "type": "string",
+            "description": "Per-capture output file override; defaults to output_dir/<label>."
+          },
+          "build_command": {
+            "type": "string",
+            "description": "Per-entry build_command override. Empty string explicitly skips build for this entry."
+          }
+        },
+        "required": ["commit", "scene", "label"]
+      }
+    }
+  },
+  "required": ["project_root", "captures"]
+}
