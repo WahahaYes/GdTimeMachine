@@ -80,6 +80,26 @@ Tier-2 conversion is **on by default** (`gd_time_machine/ffmpeg/auto_convert`). 
 - PNG/JPG: image sequences, lossless/compact masters.
 - MP4/WebM: require ffmpeg.
 
+### ffmpeg Setup (for MP4 / WebM)
+
+Godot has no built-in MP4 writer — MP4/WebM come from ffmpeg tier-2 conversion of the native artifact.
+
+1. **Install ffmpeg:**
+   - Linux: `sudo apt install ffmpeg` (or `dnf`/`pacman`)
+   - macOS: `brew install ffmpeg`
+   - Windows: `winget install ffmpeg` or `choco install ffmpeg` — then reopen your terminal / Godot.
+1. **Verify on PATH:**
+   ```sh
+   ffmpeg -version   # should print version, not “command not found”
+   which ffmpeg     # Linux/macOS — shows the binary path
+   ```
+1. **Tell Godot where it is:**
+   - If `ffmpeg` is on your `PATH`, nothing to configure.
+   - If installed elsewhere, set **Project > Editor Settings → `gd_time_machine/ffmpeg/path`** to the full binary path (e.g. `C:\ffmpeg\bin\ffmpeg.exe`).
+   - Test: pick **MP4** or **WebM** in the dock and record briefly — the status line will say `Converted to mp4` or `ffmpeg not found` with an actionable hint.
+
+Disable tier-2 entirely via `gd_time_machine/ffmpeg/auto_convert = false` if you only want native formats.
+
 ## Configuration
 
 All defaults live in **Project > Editor Settings** and can be overridden per scene.
