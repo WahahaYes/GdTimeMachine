@@ -1,65 +1,104 @@
 # GdTimeMachine
 
-A time machine for your Godot project. Record any scene, rewind any commit.
+**Record any scene, rewind any commit.**
 
-GdTimeMachine is a Godot editor addon that records footage of your project's scenes from inside the editor — currently via Godot's built-in Movie Maker — and is designed to one day rewind your project to any historical git commit and capture the scene as it existed then.
+GdTimeMachine is a Godot editor addon that records footage of your scenes from inside the editor — with optional git-history playback to capture any past commit.
 
-## Current status
+> **Version:** 0.1.0 · Requires Godot 4.7+ · License: Apache-2.0
 
-What works today:
+## Installation
 
-- **Godot Movie Maker backend** — recording is done by Godot's built-in Movie Maker. No external software or dependencies.
-- **Screenshot backend** — zero-dependency in-place capture of the *running* scene via the engine's debugger screenshot channel (PNG or JPG frames). The game is never restarted or killed. Dev-quality: no audio, real-time jitter, ~15 fps typical, game window must stay visible and focused.
-- **ffmpeg tier-2 conversion** — when ffmpeg is available, MP4 (H.264) and WebM (VP9) output are produced from any backend's native artifact (Movie Maker AVI → MP4; screenshot frames → MP4/WebM). Frames-per-second is taken from the capture's measured average, not the target. If ffmpeg is missing, the native artifact is kept and a notice is shown — never a failed recording.
-- **Output** — recordings are written as `.avi`, `.ogv`, PNG/JPG sequences, `.mp4`, or `.webm`. File names are auto-generated from scene name + timestamp.
-- **Bottom panel dock** — a "GdTimeMachine" tab in the editor's bottom panel holds the controls. Its status line shows live recording state while recording (backend, output file, and elapsed time), then the save/convert/error outcome.
-- **Toolbar buttons** — Record/Stop buttons in the run bar and in the game view toolbar.
-- **Editor-wide shortcut** — press `Ctrl+Alt+R` (`Cmd+Alt+R` on macOS) anywhere in the editor to start/stop recording; rebindable under Project > Editor Settings > Shortcuts ("gd_time_machine/toggle_recording") or via the command palette ("GdTimeMachine: Toggle Recording").
-- **Graceful stop** — Stop asks the running game to quit cleanly so Movie Maker finalizes the file, instead of killing the process mid-write.
-- **No project.godot pollution** — Movie Maker settings are set in-memory for the recording and restored afterwards; nothing is written to `project.godot` on disk.
-- **Local config store** — default profile in `EditorSettings` under `gd_time_machine/recorder/*`, per-scene overrides in `addons/GdTimeMachine/config/state/profiles.cfg` (gitignored by default, localized under the addon, opt-in to commit).
-- **Scene-aware profiles** — the dock tracks the open scene automatically (`EditorPlugin.scene_changed`) and auto-loads/saves per-scene settings on scene switch.
+```sh
+# from your project root
+cp -r /path/to/GdTimeMachine/addons/GdTimeMachine addons/
+```
+
+Then in Godot:
+
+1. Open **Project > Project Settings > Plugins**
+1. Enable **GdTimeMachine**
+
+No extra dependencies for the built-in backends. OBS and ffmpeg are optional (see below).
+
+## Quick Start
+
+1. Open the **GdTimeMachine** dock in the **bottom panel**.
+1. Pick a **backend**, **format**, and **FPS** (duration `0` = record until stopped).
+1. Press **Record** — press **Stop** when done. Files are named `<scene>_<timestamp>.<ext>` in your output dir.
+
+Shortcuts:
+
+- `Ctrl+Alt+R` / `Cmd+Alt+R` (macOS) toggles recording from anywhere in the editor.
+- **Command Palette** → `GdTimeMachine: Toggle Recording`.
+- Rebind via `Project > Editor Settings > Shortcuts` → `gd_time_machine/toggle_recording`.
+
+The dock status line shows live state while recording (backend, output file, elapsed time) and the final save/convert result.
+
+> **Tip:** Check *Remember settings for this scene* in the dock to save per-scene overrides.
 
 ## Backends
 
-| Backend | CaptureMode | Deps | Output | Notes | |---|---|---|---|---| | Godot Movie Maker | `RESTART_SCENE` | none (built-in) | AVI / OGV / PNG sequence | Restarts the scene to record; duration watchdog stops recording if the scene never starts; AVI files are capped at 4 GB (auto-stops before the cap) | | Screenshot | `IN_PLACE` | none | PNG/JPG frames (+ ffmpeg: MP4/WebM) | Zero-dependency, dev-quality capture of the running scene; no audio; game window must stay visible and focused | | OBS | `IN_PLACE` | OBS Studio | — | Planned — requires OBS installed; records the running scene without restarting it |
+| Backend | Mode | Native Output | Notes | |---|---|---|---| | **Movie Maker** | `RESTART_SCENE` | AVI / OGV / PNG | Restarts the scene to record. AVI capped at **4 GB** (auto-stops before cap). No external deps. | | **Screenshot** | `IN_PLACE` | PNG / JPG (+ ffmpeg → MP4 / WebM) | Records the running scene in real time (~15 fps, no audio). Window must stay visible. No restart, no kill on Stop. | | **OBS Studio** | `IN_PLACE` | MP4 (native) | Full FPS + audio. Auto-launches OBS via WebSocket if not running. No scene restart. |
 
-`RESTART_SCENE` backends (Movie Maker) must launch a fresh scene to record, so the in-game record button is greyed out while a scene is running — starting a recording would restart the scene you are looking at. In-place backends (Screenshot) record the running scene and stop without killing it; when no scene is playing, Record launches the scene first (same UX as Movie Maker).
+`RESTART_SCENE` backends must relaunch the scene, so the in-game record button is disabled while a scene runs. `IN_PLACE` backends capture the running scene directly; if nothing is running, Record launches the scene first.
 
-## Usage
+OBS always appears in the backend list — if not installed the dock shows an install hint instead of failing silently. Launch progress is narrated in both the dock status line and the terminal `[GdTM]` log.
 
-1. Enable the plugin (see [Installation](#installation)).
-1. Open the **GdTimeMachine** tab in the editor's bottom panel.
-1. Set the backend, output directory, format, FPS, and duration. The scene field follows the currently open scene automatically.
-1. Press **Record**. "Remember settings for this scene": when checked, this scene's settings are saved to its own profile in `addons/GdTimeMachine/config/state/profiles.cfg` when you switch scenes, and reloaded when you come back. When unchecked, settings use the default profile.
+## OBS Setup
 
-Recording starts when the scene plays. Press **Stop** to finalize the file — the running game is asked to quit gracefully, then the clip is closed out.
+1. **Install OBS Studio** (obsproject.com).
+1. In OBS: **Tools → WebSocket Server Settings → Enable WebSocket Server** (default port `4455`). Set a password if desired.
+1. In Godot: **Project > Editor Settings → `gd_time_machine/obs/*`** — set matching `host`, `port`, and `password`.
+1. Optional `obs/*` settings: `scene` (auto-switch on record), `auto_launch` (default on), `auto_close` (stop OBS we launched when Godot closes), `binary_path` (custom OBS binary).
 
-### Output format
+If OBS isn't reachable and `auto_launch` is on, GdTimeMachine launches it minimized to tray and waits for the WebSocket (with status narration). If `auto_launch` is off or OBS isn't installed, recording reports an actionable error.
 
-The format dropdown is backend-aware: it shows what the active backend can write natively **plus** what ffmpeg can convert to (tier-2). Native formats need no extra software; converted formats use ffmpeg when available.
+## Output Formats
 
-- AVI — MJPEG, 4 GB cap, largest files. Native on Movie Maker.
-- OGV — Theora+Vorbis, smaller, editor binaries only. Native on Movie Maker.
-- PNG — PNG image sequence + WAV, lossless master for external encode. Native on both backends (frames).
-- JPG — JPG image sequence, compact lossy frames. Native on Screenshot.
-- MP4 — H.264 via ffmpeg tier-2 (no engine writer exists). Converted from any native artifact.
-- WebM — VP9 via ffmpeg tier-2. Converted from any native artifact.
+The format dropdown is backend-aware — it shows native formats plus what ffmpeg can convert to.
 
-Conversion runs automatically after a recording stops (toggle in `Project > Editor Settings` under `gd_time_machine/ffmpeg/`); frame rate comes from the capture's measured average. On success the frames/intermediate are cleaned up (also configurable); if ffmpeg is missing or the conversion fails, the native artifact is kept and the status line explains why.
+- **Native (no ffmpeg):** AVI, OGV, PNG sequence, JPG sequence (availability depends on backend).
+- **Converted via ffmpeg (tier-2):** MP4 (H.264) and WebM (VP9) from any backend's native artifact — e.g. Movie Maker AVI → MP4, or Screenshot PNG/JPG frames → MP4/WebM.
 
-## Settings
+Tier-2 conversion is **on by default** (`gd_time_machine/ffmpeg/auto_convert`). It uses the capture's measured average FPS. If ffmpeg is missing or conversion fails, the native artifact is kept and the status line explains why — never a lost recording. On success, intermediate frames/files are cleaned up per `clean_frames`.
 
-On first use, the default profile is seeded into `addons/GdTimeMachine/config/state/profiles.cfg` (the `[default]` section) from `EditorSettings` (`Project > Editor Settings`, keys under `gd_time_machine/recorder/`):
+- AVI: MJPEG, largest files, 4 GB cap.
+- OGV: Theora+Vorbis, editor binaries only.
+- PNG/JPG: image sequences, lossless/compact masters.
+- MP4/WebM: require ffmpeg.
 
-| Setting | Type | Purpose | |---|---|---| | `gd_time_machine/recorder/output_dir` | String | Directory recordings are written to | | `gd_time_machine/recorder/output_format` | String | Default format (`avi`, `ogv`, `png`, `jpg`, `mp4`, `webm`) | | `gd_time_machine/recorder/default_duration` | float | Default recording duration in seconds (0 = record until stopped) | | `gd_time_machine/recorder/default_fps` | int | Default target FPS cap | | `gd_time_machine/recorder/default_backend` | String | Backend selected by default | | `gd_time_machine/ffmpeg/path` | String | Custom ffmpeg binary path (empty = PATH lookup) | | `gd_time_machine/ffmpeg/auto_convert` | bool | Convert tier-2 formats automatically after recording (default true) | | `gd_time_machine/ffmpeg/clean_frames` | bool | Delete frames/intermediate after a successful conversion (default true) |
+## Configuration
 
-After seeding, the `[default]` section in `profiles.cfg` is the source of truth for the default profile — edit the file directly to change your global defaults, and any default saved from the dock is written back there. Per-scene overrides live in the same file (INI via ConfigFile):
+All defaults live in **Project > Editor Settings** and can be overridden per scene.
+
+**Recorder (`gd_time_machine/recorder/*`):**
+
+- `output_dir` — where recordings are written (default `res://media/captures`)
+- `output_format` — default format (`avi`, `ogv`, `png`, `jpg`, `mp4`, `webm`)
+- `default_backend` — backend selected by default
+- `default_fps` — target FPS cap
+- `default_duration` — seconds (`0` = until stopped)
+
+**ffmpeg (`gd_time_machine/ffmpeg/*`):**
+
+- `path` — custom ffmpeg binary (empty = `PATH` lookup)
+- `auto_convert` — auto-convert tier-2 formats after recording (default `true`)
+- `clean_frames` — delete frames/intermediate after successful conversion (default `true`)
+
+**OBS (`gd_time_machine/obs/*`):**
+
+- `host`, `port`, `password`, `scene`, `auto_launch`, `auto_close`, `binary_path`
+
+**Shortcut:**
+
+- `gd_time_machine/toggle_recording` — `Ctrl+Alt+R` / `Cmd+Alt+R`
+
+**Per-scene overrides** — `addons/GdTimeMachine/config/state/profiles.cfg` (gitignored by default):
 
 ```ini
 [default]
 output_dir = res://media/captures
-output_format = avi
+output_format = mp4
 fps = 60
 duration = 30
 
@@ -68,23 +107,7 @@ fps = 30
 output_format = png
 ```
 
-This file lives under `addons/GdTimeMachine/config/state/` and is gitignored by default. Teams can commit it if they want shared recording profiles.
-
-## Installation
-
-1. Copy the `addons/GdTimeMachine` directory into your project's `addons/` folder.
-1. Enable it in **Project > Project Settings > Plugins** (activate the GdTimeMachine plugin).
-
-## Architecture
-
-- `RecordingProfile` — per-recording config, serializable via `to_dict()`/`from_dict()`.
-- `GdTMOutputFormat` — shared format enum → extension → display name → warning text.
-- `ConfigStore` interface — `EditorSettingsConfigStore` (first-run default seed) + `ProjectLocalConfigStore` (`addons/GdTimeMachine/config/state/profiles.cfg` `[default]` + per-scene overrides, the source of truth) + `CompositeConfigStore` (scene override > local default > editor default).
-- `RecorderBackend` subclasses with `CaptureMode`.
-- `RecorderController` owns backend lifecycles and re-emits backend signals; dock talks only to the controller and the config store, never directly to a backend or ProjectSettings movie_writer keys.
-- `BackendMovieMaker` — snapshot/restore of `editor/movie_writer/*` without `ProjectSettings.save()`, removing the old `project.godot` pollution.
-- `BackendScreenshotCapture` — in-place frames capture over the debugger screenshot channel (PNG/JPG, one-in-flight pacing, measured-fps manifest).
-- `GdTMFFmpegConvert` — the tier-2 conversion hook: probes for ffmpeg, maps formats to codec/container args, runs the encode on a `Thread` (blocking `OS.execute` with stderr capture), and emits `recording_converted`/`conversion_failed`/`ffmpeg_not_found`. Backend-agnostic — any backend can hand it a file or a frames dir.
+`[default]` is the global default; each `["res://..."]` section overrides it for that scene. Edit the file directly or use the dock's *Remember settings for this scene* toggle. Commit the file if you want shared team profiles.
 
 ## License
 
