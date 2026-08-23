@@ -1,8 +1,10 @@
+# GdTimeMachine
+
 <p align="center">
-  <img src="https://raw.githubusercontent.com/WahahaYes/GdTimeMachine/main/icon.svg" width="128" alt="GdTimeMachine icon" />
+  <img src="https://raw.githubusercontent.com/WahahaYes/GdTimeMachine/main/addons/GdTimeMachine/ui/icons/icon_logo.svg" width="60%" alt="GdTimeMachine icon" />
 </p>
 
-# GdTimeMachine
+**Record any scene, rewind any commit.**
 
 **Record any scene, rewind any commit.**
 
