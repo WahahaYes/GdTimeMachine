@@ -6,8 +6,6 @@
 
 **Record any scene, rewind any commit.**
 
-**Record any scene, rewind any commit.**
-
 GdTimeMachine records your scenes right from the editor — no external capture or window setup. Pick a backend, hit Record, and get a clip named for the scene and time. Built for the “time machine” workflow: rewind your project to any git commit and capture it again to diff how a scene looked across history.
 
 > **Version:** 0.1.0 · Requires Godot 4.7+ · License: Apache-2.0
