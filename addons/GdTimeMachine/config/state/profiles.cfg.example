@@ -1,0 +1,14 @@
+[default]
+output_dir="res://media/captures"
+output_format="mp4"
+fps=60
+duration=5.0
+backend_name="OBS Studio"
+
+# Per-scene override example:
+# ["res://scenes/menu.tscn"]
+# output_dir="res://media/captures"
+# output_format="png"
+# fps=30
+# duration=10.0
+# backend_name="Screenshot"
