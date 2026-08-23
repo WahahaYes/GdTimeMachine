@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/WahahaYes/GdTimeMachine/main/icon.svg" width="128" alt="GdTimeMachine icon" />
+</p>
+
 # GdTimeMachine
 
 **Record any scene, rewind any commit.**
 
-GdTimeMachine is a Godot editor addon that records footage of your scenes from inside the editor — with optional git-history playback to capture any past commit.
+GdTimeMachine records your scenes right from the editor — no external capture or window setup. Pick a backend, hit Record, and get a clip named for the scene and time. Built for the “time machine” workflow: rewind your project to any git commit and capture it again to diff how a scene looked across history.
 
 > **Version:** 0.1.0 · Requires Godot 4.7+ · License: Apache-2.0
 
@@ -84,21 +88,11 @@ Tier-2 conversion is **on by default** (`gd_time_machine/ffmpeg/auto_convert`). 
 
 Godot has no built-in MP4 writer — MP4/WebM come from ffmpeg tier-2 conversion of the native artifact.
 
-1. **Install ffmpeg:**
-   - Linux: `sudo apt install ffmpeg` (or `dnf`/`pacman`)
-   - macOS: `brew install ffmpeg`
-   - Windows: `winget install ffmpeg` or `choco install ffmpeg` — then reopen your terminal / Godot.
-1. **Verify on PATH:**
-   ```sh
-   ffmpeg -version   # should print version, not “command not found”
-   which ffmpeg     # Linux/macOS — shows the binary path
-   ```
-1. **Tell Godot where it is:**
-   - If `ffmpeg` is on your `PATH`, nothing to configure.
-   - If installed elsewhere, set **Project > Editor Settings → `gd_time_machine/ffmpeg/path`** to the full binary path (e.g. `C:\ffmpeg\bin\ffmpeg.exe`).
-   - Test: pick **MP4** or **WebM** in the dock and record briefly — the status line will say `Converted to mp4` or `ffmpeg not found` with an actionable hint.
+1. **Install ffmpeg:** Linux `sudo apt install ffmpeg`, macOS `brew install ffmpeg`, Windows `winget install ffmpeg` / `choco install ffmpeg`.
+1. **Verify on PATH:** `ffmpeg -version` should print a version; `which ffmpeg` shows the path.
+1. **Tell Godot where it is:** if on `PATH`, nothing to do; otherwise set **Project > Editor Settings → `gd_time_machine/ffmpeg/path`** to the full path. Test with an MP4/WebM recording — status shows `Converted` or `ffmpeg not found`.
 
-Disable tier-2 entirely via `gd_time_machine/ffmpeg/auto_convert = false` if you only want native formats.
+Disable tier-2 via `gd_time_machine/ffmpeg/auto_convert = false` to keep native formats only.
 
 ## Configuration
 
@@ -140,7 +134,7 @@ fps = 30
 output_format = png
 ```
 
-`[default]` is the global default; each `["res://..."]` section overrides it for that scene. Edit the file directly or use the dock's *Remember settings for this scene* toggle. Commit the file if you want shared team profiles.
+Each `["res://..."]` overrides `[default]`. Edit directly or use *Remember settings for this scene* in the dock. Commit for shared team profiles.
 
 ## License
 
