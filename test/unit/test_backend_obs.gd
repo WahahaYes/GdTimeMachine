@@ -1026,3 +1026,64 @@ func test_start_error_stays_generic_without_connect_failure() -> void:
 	var msg := backend._describe_start_error()
 	assert_false(msg.contains("Authentication failed"), "good: '%s'" % msg)
 	assert_true(msg.contains("port 4455"), "generic hint must remain, got: '%s'" % msg)
+
+
+func test_start_record_refusal_emits_recording_error() -> void:
+	var backend := _make_recording_backend()
+	backend.client_result = false
+	backend.client_code = 400
+	backend.playing = true
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_refused"})
+	assert_true(
+		await wait_for_signal(backend.recording_error, REPLY_BUDGET),
+		"refused StartRecord must emit recording_error",
+	)
+	assert_signal_emitted_with_parameters(
+		backend, "recording_error", ["OBS Studio", "OBS could not start recording (code 400)"]
+	)
+	assert_false(backend.is_recording())
+	assert_signal_not_emitted(backend, "recording_started")
+
+
+func test_wrong_request_id_is_ignored() -> void:
+	var backend := _make_recording_backend()
+	backend._active = true
+	backend._final_output_path = _obs_path("obs_wrong_id")
+	backend._pending_request_id = "req_correct"
+	backend._pending_request_kind = "start"
+	watch_signals(backend)
+	backend._on_request_completed("bogus_id", true, OBSClient.STATUS_SUCCESS, {})
+	await wait_process_frames(1)
+	assert_signal_not_emitted(backend, "recording_started")
+	assert_signal_not_emitted(backend, "recording_error")
+	assert_eq(backend._pending_request_id, "req_correct")
+	assert_eq(backend._pending_request_kind, "start")
+	backend._on_request_completed("req_correct", true, OBSClient.STATUS_SUCCESS, {})
+	await wait_process_frames(1)
+	assert_signal_emitted(backend, "recording_started")
+	assert_eq(backend._pending_request_id, "")
+	assert_eq(backend._pending_request_kind, "")
+
+
+func test_begin_recording_connect_failure_emits_recording_error() -> void:
+	var backend := _make_recording_backend()
+	backend.installed = true
+	backend.playing = true
+	backend.client_fail_message = "injected connect failure"
+	backend._available = true
+	backend.fake_now = 0.0
+	backend._last_probe_time = backend._now()
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_connect_fail"})
+	# connect failure is synchronous (ERR_CONNECTION_ERROR) → recording_error emitted during start()
+	await wait_process_frames(1)
+	assert_signal_emitted_with_parameters(
+		backend,
+		"recording_error",
+		[
+			"OBS Studio",
+			"Could not connect to OBS WebSocket — check host/port/password in Editor Settings."
+		],
+	)
+	assert_false(backend.is_recording())
