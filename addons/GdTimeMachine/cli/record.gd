@@ -261,7 +261,7 @@ func _run_headless_movie(
 			if output.get_extension().to_lower() in ["mp4", "webm"] and output != movie_path:
 				print("record: converting %s -> %s via ffmpeg" % [movie_path, output])
 				var conv := GdTMFFmpegConvert.new()
-				add_child(conv)
+				root.add_child(conv)
 				var converted := false
 				var failed := false
 				conv.conversion_succeeded.connect(
