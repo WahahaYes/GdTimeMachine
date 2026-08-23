@@ -172,23 +172,17 @@ func _validate_manifest(path: String, strict: bool) -> String:
 
 func _cmd_doctor(args: PackedStringArray) -> void:
 	var verbose := "--verbose" in args
-	# Minimal healthcheck stub for Phase 0 — full probes in Phase 4
-	print("gdtime doctor — healthcheck (stub, Phase 0)")
-	print("  ○ git: probe not yet implemented (will check git --version + worktree)")
-	print("  ○ godot: probe not yet implemented (will check godotenv + godot --version)")
-	print("  ○ ffmpeg: probe not yet implemented (will check ffmpeg -version)")
-	print("  ○ OBS: probe not yet implemented (will check binary + WebSocket)")
-	print("  ○ build hook: probe not yet implemented (will check <bin> --version, warn-only)")
+	print("gdtime doctor — healthcheck (stub)")
+	print("  ○ git: probe not yet implemented")
+	print("  ○ godot: probe not yet implemented")
+	print("  ○ ffmpeg: probe not yet implemented")
+	print("  ○ OBS: probe not yet implemented")
+	print("  ○ build hook: probe not yet implemented")
 	print("  ○ output_dir: probe not yet implemented")
 	if verbose:
-		print("  --verbose: per-check version/path/hints in Phase 4")
-	print("  (Phase 0 stub — exits 0)")
+		print("  --verbose: per-check details")
+	print("  (stub — exits 0)")
 	quit(0)
-
-
-# ---------------------------------------------------------------------------
-# Phase 1 — Worktree Lifecycle helpers
-# ---------------------------------------------------------------------------
 
 
 func _has_git() -> bool:
@@ -575,9 +569,9 @@ func _cmd_run(args: PackedStringArray) -> void:
 		quit(1)
 		return
 
-	# --- dry-run: print plan without side effects ---
+	# --- dry-run: preview without side effects ---
 	if dry_run:
-		print("dry-run plan for %s (project_root=%s):" % [manifest_path, project_root])
+		print("dry-run preview for %s (project_root=%s):" % [manifest_path, project_root])
 		for entry in arr:
 			if typeof(entry) != TYPE_DICTIONARY:
 				continue
@@ -591,7 +585,6 @@ func _cmd_run(args: PackedStringArray) -> void:
 		quit(0)
 		return
 
-	# --- real run: sequential worktree creation (Phase 1 — lifecycle only) ---
 	var created: Array = []
 	var failed_labels: Array = []
 	for entry in arr:
@@ -607,8 +600,6 @@ func _cmd_run(args: PackedStringArray) -> void:
 			continue
 		created.append(lbl)
 		print("✔ worktree .worktrees/%s ready" % lbl)
-		# Phase 1: no recording yet — worktree lifecycle only.
-		# Future phases will invoke build + record here.
 
 	# --- cleanup: atexit/SIGINT trap equivalent — ensure no orphans ---
 	if keep_worktrees:
