@@ -8,6 +8,17 @@ GdTimeMachine is a Godot editor addon that records footage of your scenes from i
 
 ## Installation
 
+### Asset Library (coming soon)
+
+GdTimeMachine will be available on the Godot Asset Library. Once published:
+
+1. In Godot: **AssetLib → Search “GdTimeMachine” → Download → Install**
+1. Then **Project > Project Settings > Plugins → Enable GdTimeMachine**
+
+> **Not yet uploaded** — stub for the upcoming Asset Library listing.
+
+### Manual Install
+
 ```sh
 # from your project root
 cp -r /path/to/GdTimeMachine/addons/GdTimeMachine addons/
