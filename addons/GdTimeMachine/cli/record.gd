@@ -3,6 +3,14 @@ extends SceneTree
 ## Headless record entry for CLI batch — self-contained, reuses backend wiring.
 ## Invoked per-worktree: godot --headless --path <worktree> -s res://addons/GdTimeMachine/cli/record.gd -- --scene <scene> --output <path> [--duration N] [--fps N] [--backend NAME]
 
+const RecorderController := preload("res://addons/GdTimeMachine/controller/recorder_controller.gd")
+const BackendOBS := preload("res://addons/GdTimeMachine/backend/backend_obs.gd")
+const BackendScreenshotCapture := preload(
+	"res://addons/GdTimeMachine/backend/backend_screenshot_capture.gd"
+)
+const BackendMovieMaker := preload("res://addons/GdTimeMachine/backend/backend_movie_maker.gd")
+const GdTMFFmpegConvert := preload("res://addons/GdTimeMachine/backend/ffmpeg_convert.gd")
+
 var _args: PackedStringArray
 
 
@@ -64,10 +72,12 @@ func _run_record(
 			]
 		)
 	)
-	# Headless without EditorInterface — use direct Movie Maker via godot --movie
+	# Headless without EditorInterface — use direct Movie Maker via godot --write-movie
 	if not Engine.is_editor_hint():
 		print("record: taking headless path")
-		_run_headless_movie(scene, output, duration, fps, backend_name)
+		_run_headless_movie(
+			ProjectSettings.globalize_path("res://"), scene, output, duration, fps, backend_name
+		)
 		return
 	print("record: taking editor path")
 	# Editor path — reuses same wiring as plugin
@@ -208,11 +218,15 @@ func _run_record(
 
 
 func _run_headless_movie(
-	scene: String, output: String, duration: float, fps: int, backend_name: String
+	worktree_path: String,
+	scene: String,
+	output: String,
+	duration: float,
+	fps: int,
+	backend_name: String
 ) -> void:
-	# Headless Movie Maker: run a separate Godot process with --movie
-	# Works without EditorInterface (which is absent in --headless --path <worktree> -s)
-	print("record: headless movie mode for %s -> %s" % [scene, output])
+	# Headless Movie Maker: run a separate Godot process with --write-movie
+	print("record: headless movie mode for %s -> %s worktree=%s" % [scene, output, worktree_path])
 	var output_dir := output.get_base_dir()
 	if not output_dir.is_empty() and not DirAccess.dir_exists_absolute(output_dir):
 		DirAccess.make_dir_recursive_absolute(output_dir)
@@ -228,83 +242,66 @@ func _run_headless_movie(
 	OS.execute("sh", PackedStringArray(["-c", "godotenv godot env get 2>/dev/null"]), out_env, true)
 	if not out_env.is_empty() and FileAccess.file_exists(str(out_env[0]).strip_edges()):
 		godot_bin = str(out_env[0]).strip_edges()
-	print("record: headless godot_bin=%s" % godot_bin)
-	# Build args: godot --headless --path <worktree> --movie <movie_path> --fps <fps> <scene> with timeout
-	var project_path := ProjectSettings.globalize_path("res://")
+	print("record: headless godot_bin=%s worktree=%s" % [godot_bin, worktree_path])
 	var scene_arg := scene
-	# If scene is res://, it will be resolved relative to worktree's res:// (which is worktree path)
 	var args := PackedStringArray(
-		["--headless", "--path", project_path, "--movie", movie_path, "--fps", str(fps)]
+		["--path", worktree_path, "--write-movie", movie_path, "--fixed-fps", str(fps)]
 	)
 	if duration > 0:
-		# Use timeout to stop after duration + 2s buffer
-		args.append(scene_arg)
-		var pid := OS.create_process(godot_bin, args)
-		if pid <= 0:
-			printerr("record: failed to launch headless movie process")
-			quit(1)
-			return
-		print("record: headless movie pid %d, waiting %s sec" % [pid, str(duration + 2)])
-		var start := Time.get_ticks_msec()
-		while Time.get_ticks_msec() - start < (duration + 5) * 1000:
-			await process_frame
-			if not OS.is_process_running(pid):
-				break
-		if OS.is_process_running(pid):
-			print("record: headless movie still running, killing pid %d" % pid)
-			OS.kill(pid)
-			await process_frame
-		# Check output
-		if FileAccess.file_exists(movie_path):
-			print("record: headless movie output exists: %s" % movie_path)
-			# If original output was mp4/webm, do ffmpeg convert if available
-			if output.get_extension().to_lower() in ["mp4", "webm"] and output != movie_path:
-				print("record: converting %s -> %s via ffmpeg" % [movie_path, output])
-				var conv := GdTMFFmpegConvert.new()
-				root.add_child(conv)
-				var converted := false
-				var failed := false
-				conv.conversion_succeeded.connect(
-					func(_bn: String, clip: String):
-						converted = true
-						print("record: converted %s" % clip)
-				)
-				conv.conversion_failed.connect(
-					func(msg: String, _tail: String):
-						failed = true
-						printerr("record: convert failed %s" % msg)
-				)
-				conv.ffmpeg_not_found.connect(
-					func(msg: String):
-						failed = true
-						printerr("record: ffmpeg not found %s" % msg)
-				)
-				conv.convert_file_async(movie_path, output, false, fps)
-				var conv_start := Time.get_ticks_msec()
-				while not converted and not failed and Time.get_ticks_msec() - conv_start < 15000:
-					await process_frame
-				if converted:
-					print("record: headless success with ffmpeg")
-					quit(0)
-					return
-				else:
-					printerr("record: ffmpeg conversion failed, keeping avi")
-					quit(0)
-					return
-			print("record: headless success")
-			quit(0)
-			return
-		else:
-			printerr("record: headless movie output not found: %s" % movie_path)
-			quit(1)
-			return
-	else:
-		args.append(scene_arg)
-		var pid2 := OS.create_process(godot_bin, args)
-		if pid2 <= 0:
-			printerr("record: failed to launch headless movie (no duration)")
-			quit(1)
-			return
+		args.append("--quit-after")
+		args.append(str(int(duration * fps)))
+	args.append(scene_arg)
+	var pid := OS.create_process(godot_bin, args)
+	if pid <= 0:
+		printerr("record: failed to launch headless movie process")
+		quit(1)
+		return
+	print("record: headless movie pid %d, waiting %s sec" % [pid, str(duration + 2)])
+	var start := Time.get_ticks_msec()
+	while Time.get_ticks_msec() - start < (duration + 5) * 1000:
 		await process_frame
+		if not OS.is_process_running(pid):
+			break
+	if OS.is_process_running(pid):
+		print("record: headless movie still running, killing pid %d" % pid)
+		OS.kill(pid)
+		await process_frame
+	# Check output
+	if FileAccess.file_exists(movie_path):
+		# If original output was mp4/webm, do ffmpeg convert if available
+		if output.get_extension().to_lower() in ["mp4", "webm"] and output != movie_path:
+			print("record: converting %s -> %s via ffmpeg" % [movie_path, output])
+			var conv := GdTMFFmpegConvert.new()
+			root.add_child(conv)
+			var converted := false
+			var failed := false
+			conv.conversion_succeeded.connect(
+				func(_bn: String, clip: String):
+					converted = true
+					print("record: converted %s" % clip)
+			)
+			conv.conversion_failed.connect(
+				func(msg: String, _tail: String):
+					failed = true
+					printerr("record: convert failed %s" % msg)
+			)
+			conv.ffmpeg_not_found.connect(
+				func(msg: String):
+					failed = true
+					printerr("record: ffmpeg not found %s" % msg)
+			)
+			conv.convert_file_async(movie_path, output, false, fps)
+			var conv_start := Time.get_ticks_msec()
+			while not converted and not failed and Time.get_ticks_msec() - conv_start < 15000:
+				await process_frame
+			if converted:
+				print("record: headless success with ffmpeg")
+				quit(0)
+				return
+			else:
+				printerr("record: ffmpeg conversion failed, keeping avi")
+				quit(0)
+				return
+		print("record: headless success")
 		quit(0)
 		return

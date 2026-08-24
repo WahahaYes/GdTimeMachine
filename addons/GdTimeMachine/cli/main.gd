@@ -784,6 +784,11 @@ func _cmd_run(args: PackedStringArray) -> void:
 		var out_r := str(entry.get("output_path", ""))
 		if out_r.is_empty():
 			out_r = top_output_dir_r.path_join(lbl)
+		# Globalize output so headless movie writes to main repo, not worktree's res://
+		if out_r.begins_with("res://"):
+			out_r = ProjectSettings.globalize_path(out_r)
+		elif not out_r.begins_with("/"):
+			out_r = project_root.path_join(out_r)
 		var backend_r := str(entry.get("backend", "OBS Studio"))
 		if not _record_in_worktree(wt_path, godot_bin, scene_r, out_r, dur_r, fps_r, backend_r):
 			printerr("✘ record failed for %s" % lbl)
