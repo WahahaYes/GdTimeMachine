@@ -3,7 +3,7 @@ extends RefCounted
 
 
 static func run_build(
-	worktree_path: String, build_command: String, label: String, commit: String
+	worktree_path: String, build_command: String, label: String, commit: String, timeout: int = 600
 ) -> bool:
 	if build_command.strip_edges().is_empty():
 		return true
@@ -27,7 +27,31 @@ static func run_build(
 	if OS.get_name() == "Windows":
 		code = OS.execute("cmd", PackedStringArray(["/c", 'call "%s"' % script_path]), [], false)
 	else:
-		code = OS.execute("sh", PackedStringArray([script_path]), [], false)
+		# Use timeout if available, otherwise plain sh
+		var has_timeout := (
+			OS.execute(
+				"sh",
+				PackedStringArray(["-c", "command -v timeout >/dev/null 2>&1 && echo yes"]),
+				[],
+				true
+			)
+			== 0
+		)
+		# Actually check via which
+		var out_which: Array = []
+		OS.execute("which", PackedStringArray(["timeout"]), out_which, true)
+		var use_timeout := (
+			not out_which.is_empty() and FileAccess.file_exists(str(out_which[0]).strip_edges())
+		)
+		if use_timeout:
+			code = OS.execute(
+				"sh",
+				PackedStringArray(["-c", "timeout %d sh '%s'" % [timeout, script_path]]),
+				[],
+				false
+			)
+		else:
+			code = OS.execute("sh", PackedStringArray([script_path]), [], false)
 	if FileAccess.file_exists(log_path):
 		var content := FileAccess.get_file_as_string(log_path)
 		for line in content.split("\n"):

@@ -35,12 +35,18 @@ LOG="$(mktemp /tmp/gdtime-XXXXXX.log)"
 "$GODOT_BIN" --headless --path "$PROJECT_ROOT" -s "res://addons/GdTimeMachine/cli/main.gd" -- "$@" 2>&1 | tee "$LOG"
 GODOT_STATUS=${PIPESTATUS[0]}
 EXIT_CODE=0
-if grep -q "manifest invalid" "$LOG"; then
+if grep -F -q "manifest invalid" "$LOG"; then
   EXIT_CODE=1
-elif grep -q "Unknown command" "$LOG"; then
+elif grep -F -q "Unknown command" "$LOG"; then
   EXIT_CODE=1
-elif grep -q "✘" "$LOG"; then
+elif grep -F -q "doctor: [FAIL]" "$LOG"; then
   EXIT_CODE=1
+elif grep -F -q "doctor: [WARN]" "$LOG"; then
+  EXIT_CODE=2
+elif grep -F -q "[FAIL]" "$LOG"; then
+  EXIT_CODE=1
+elif grep -F -q "[WARN]" "$LOG" && grep -F -q "degraded" "$LOG"; then
+  EXIT_CODE=2
 elif [[ $GODOT_STATUS -ne 0 ]]; then
   EXIT_CODE=$GODOT_STATUS
 fi

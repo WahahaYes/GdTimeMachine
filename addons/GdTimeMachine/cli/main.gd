@@ -63,15 +63,27 @@ func _initialize() -> void:
 
 func _print_help() -> void:
 	print(
-		"""gdtime — GdTimeMachine CLI (self-contained at addons/GdTimeMachine/cli/main.gd)
+		"""gdtime — batch capture for GdTimeMachine (Movie Maker headless)
+
 Usage:
-  gdtime validate <manifest.json> [--strict]
-  gdtime doctor [--verbose] [--fix]
-  gdtime run [--dry-run] [--resume LABEL] [--keep-failed] [--fail-fast] [--no-git] [--build-timeout SECS] <manifest.json>
-  gdtime list-commits <manifest.json>
-  gdtime --help | --version
-Wrapper: addons/GdTimeMachine/cli/gdtime → godot --headless -s addons/GdTimeMachine/cli/main.gd -- <args>
-Fallback: godot --headless -s addons/GdTimeMachine/cli/main.gd -- <args>"""
+  gdtime validate <manifest.json> [--strict]          Validate manifest
+  gdtime run [options] <manifest.json>                Run batch (worktree → godot → build → record)
+  gdtime doctor [--verbose] [--fix]                   Check deps (git/godot/ffmpeg/OBS/build hook)
+  gdtime list-commits <manifest.json>                 List captures (commit label)
+
+Options for run:
+  --dry-run        Preview without creating worktrees
+  --resume LABEL   Skip entries before LABEL
+  --keep-failed    Keep worktrees for failed entries
+  --keep-worktrees Keep all worktrees
+  --no-git         HEAD-only, no worktrees (requires git otherwise)
+  --force          Overwrite existing worktree
+
+Examples:
+  gdtime validate test/cli/manifest_history.json
+  gdtime run --dry-run test/cli/manifest_history.json
+  gdtime run test/cli/manifest_history.json
+  gdtime doctor --verbose"""
 	)
 
 
@@ -85,10 +97,10 @@ func _cmd_validate(args: PackedStringArray) -> void:
 	var strict := "--strict" in args
 	var err := _validate_manifest(path, strict)
 	if err.is_empty():
-		print("✔ manifest valid: %s" % path)
+		print("[OK] manifest valid: %s" % path)
 		quit(0)
 	else:
-		printerr("✘ manifest invalid: %s" % path)
+		printerr("[FAIL] manifest invalid: %s" % path)
 		printerr(err)
 		quit(1)
 
@@ -177,17 +189,209 @@ func _validate_manifest(path: String, strict: bool) -> String:
 
 func _cmd_doctor(args: PackedStringArray) -> void:
 	var verbose := "--verbose" in args
-	print("gdtime doctor — healthcheck (stub)")
-	print("  ○ git: probe not yet implemented")
-	print("  ○ godot: probe not yet implemented")
-	print("  ○ ffmpeg: probe not yet implemented")
-	print("  ○ OBS: probe not yet implemented")
-	print("  ○ build hook: probe not yet implemented")
-	print("  ○ output_dir: probe not yet implemented")
-	if verbose:
-		print("  --verbose: per-check details")
-	print("  (stub — exits 0)")
-	quit(0)
+	var fix := "--fix" in args
+	print("gdtime doctor — healthcheck")
+	var degraded := false
+	var failed := false
+	# git
+	var git_ver := GdTMWorktree.get_git_version()
+	if GdTMWorktree.has_git():
+		var wt_ok := GdTMWorktree.is_worktree_supported()
+		if wt_ok:
+			print("  [OK] git %s — worktrees: yes" % git_ver)
+			if verbose:
+				var out: Array = []
+				OS.execute("git", PackedStringArray(["worktree", "list", "--porcelain"]), out, true)
+				print("    worktrees: %d registered" % out.size())
+		else:
+			print("  [WARN] git %s — worktrees: no (requires ≥2.13)" % git_ver)
+			degraded = true
+	else:
+		print("  [FAIL] git not found — history requires git, use --no-git for HEAD-only")
+		print("    hint: sudo apt install git / brew install git")
+		failed = true
+	# godot + godotenv
+	var godot_bin := GdTMGodotResolve.resolve_godot_binary(
+		ProjectSettings.globalize_path("res://"), "godot", ""
+	)
+	var out_godot: Array = []
+	var godot_code := OS.execute(godot_bin, PackedStringArray(["--version"]), out_godot, true)
+	if godot_code == 0 and not out_godot.is_empty():
+		var ver := str(out_godot[0]).strip_edges()
+		print("  [OK] godot %s — %s" % [ver, godot_bin])
+		if verbose:
+			var out_env: Array = []
+			OS.execute(
+				"sh", PackedStringArray(["-c", "godotenv godot env get 2>&1"]), out_env, true
+			)
+			if not out_env.is_empty():
+				print("    godotenv: %s" % str(out_env[0]).strip_edges())
+	else:
+		print("  [FAIL] godot not found — %s" % godot_bin)
+		print("    hint: install Godot 4.7+ or set GODOT_BIN / godotenv")
+		failed = true
+	var out_godotenv: Array = []
+	var has_godotenv := (
+		OS.execute(
+			"sh",
+			PackedStringArray(["-c", "command -v godotenv >/dev/null 2>&1 && echo yes"]),
+			out_godotenv,
+			true
+		)
+		== 0
+	)
+	if has_godotenv:
+		if verbose:
+			print("  [OK] godotenv available")
+	else:
+		print("  [WARN] godotenv not found — will use godot on PATH")
+		if verbose:
+			print("    hint: https://github.com/chickensoft-games/GodotEnv")
+	# ffmpeg
+	var ffmpeg_path := (
+		str(ProjectSettings.get_setting("gd_time_machine/ffmpeg/path"))
+		if ProjectSettings.has_setting("gd_time_machine/ffmpeg/path")
+		else ""
+	)
+	if ffmpeg_path.is_empty():
+		ffmpeg_path = "ffmpeg"
+	var out_ff: Array = []
+	var ff_code := OS.execute(ffmpeg_path, PackedStringArray(["-version"]), out_ff, true)
+	if ff_code == 0 and not out_ff.is_empty():
+		var ff_ver := (
+			str(out_ff[0]).split("\n")[0].strip_edges()
+			if str(out_ff[0]).contains("\n")
+			else str(out_ff[0]).strip_edges()
+		)
+		print("  [OK] ffmpeg — %s (%s)" % [ff_ver, ffmpeg_path])
+	else:
+		print("  [WARN] ffmpeg not found — tier-2 mp4/webm will be unavailable")
+		print(
+			"    hint: sudo apt install ffmpeg / brew install ffmpeg, or set gd_time_machine/ffmpeg/path"
+		)
+		degraded = true
+	# OBS
+	var obs_binary := ""
+	if ProjectSettings.has_setting("gd_time_machine/obs/binary_path"):
+		obs_binary = str(ProjectSettings.get_setting("gd_time_machine/obs/binary_path"))
+	if obs_binary.is_empty():
+		var out_which: Array = []
+		OS.execute("which", PackedStringArray(["obs"]), out_which, true)
+		if not out_which.is_empty():
+			obs_binary = str(out_which[0]).strip_edges()
+	if not obs_binary.is_empty() and FileAccess.file_exists(obs_binary):
+		print("  [OK] OBS Studio — %s" % obs_binary)
+		if verbose:
+			print("    WebSocket probe: skipped (use dock for live probe)")
+	else:
+		print("  [WARN] OBS Studio not found — Movie Maker will be used for history")
+		if verbose:
+			print("    hint: obsproject.com, then enable Tools → WebSocket Server Settings")
+		degraded = true
+	# build hook
+	var manifest_path_doctor := ""
+	for a in args:
+		if (
+			not String(a).begins_with("-")
+			and String(a) != "doctor"
+			and FileAccess.file_exists(String(a))
+		):
+			manifest_path_doctor = String(a)
+			break
+	if not manifest_path_doctor.is_empty() and FileAccess.file_exists(manifest_path_doctor):
+		var content := FileAccess.get_file_as_string(manifest_path_doctor)
+		var json := JSON.new()
+		if json.parse(content) == OK and typeof(json.data) == TYPE_DICTIONARY:
+			var dict: Dictionary = json.data
+			var bcmd := str(dict.get("build_command", ""))
+			if bcmd.strip_edges().is_empty():
+				print("  [INFO] build hook: none (GDScript-only)")
+			else:
+				var bin_name := bcmd.split(" ")[0].strip_edges()
+				var out_b: Array = []
+				var bcode := OS.execute(bin_name, PackedStringArray(["--version"]), out_b, true)
+				if bcode != 0:
+					bcode = OS.execute(
+						"sh", PackedStringArray(["-c", "%s --version 2>&1" % bin_name]), out_b, true
+					)
+				if bcode == 0 and not out_b.is_empty():
+					print(
+						(
+							"  [OK] build hook: %s — %s"
+							% [bin_name, str(out_b[0]).strip_edges().split("\n")[0]]
+						)
+					)
+				else:
+					print(
+						'  [WARN] build hook: %s not found (build_command="%s")' % [bin_name, bcmd]
+					)
+					degraded = true
+		else:
+			print("  [INFO] build hook: no manifest provided, skipping probe")
+	else:
+		print(
+			"  [INFO] build hook: no manifest provided, skipping probe (pass manifest.json to check)"
+		)
+	# output_dir
+	var out_dir := "res://media/captures/history"
+	if not manifest_path_doctor.is_empty() and FileAccess.file_exists(manifest_path_doctor):
+		var c2 := FileAccess.get_file_as_string(manifest_path_doctor)
+		var j2 := JSON.new()
+		if j2.parse(c2) == OK and typeof(j2.data) == TYPE_DICTIONARY:
+			var d2: Dictionary = j2.data
+			out_dir = str(d2.get("output_dir", out_dir))
+	var abs_out := (
+		ProjectSettings.globalize_path(out_dir) if out_dir.begins_with("res://") else out_dir
+	)
+	if DirAccess.dir_exists_absolute(abs_out):
+		print("  [OK] output_dir %s — writable" % out_dir)
+	else:
+		print("  [WARN] output_dir %s — not found" % out_dir)
+		if fix:
+			var mk := DirAccess.make_dir_recursive_absolute(abs_out)
+			if mk == OK:
+				print("    --fix: created %s" % abs_out)
+			else:
+				print("    --fix: failed to create %s" % abs_out)
+		else:
+			print("    hint: mkdir -p %s  or use --fix" % abs_out)
+		degraded = true
+	# worktree orphans — only .worktrees/*, not the main worktree
+	var wt_dir_check := ProjectSettings.globalize_path("res://").path_join(".worktrees")
+	var wt_orphans: Array = []
+	if DirAccess.dir_exists_absolute(wt_dir_check):
+		var da_wt := DirAccess.open(wt_dir_check)
+		if da_wt != null:
+			da_wt.list_dir_begin()
+			var fn := da_wt.get_next()
+			while fn != "":
+				if fn != "." and fn != "..":
+					wt_orphans.append(wt_dir_check.path_join(fn))
+				fn = da_wt.get_next()
+			da_wt.list_dir_end()
+	if wt_orphans.is_empty():
+		print("  [OK] worktrees: none orphaned")
+	else:
+		print("  [WARN] worktrees: %d in .worktrees/" % wt_orphans.size())
+		degraded = true
+		if verbose:
+			for w in wt_orphans:
+				print("    %s" % str(w))
+		if fix:
+			var outp: Array = []
+			OS.execute("git", PackedStringArray(["worktree", "prune"]), outp, true)
+			print("    --fix: pruned")
+	if failed:
+		print("doctor: [FAIL] failed — core deps missing")
+		quit(1)
+	elif degraded:
+		print(
+			"doctor: [WARN] degraded — optional deps missing, history via Movie Maker still works"
+		)
+		quit(2)
+	else:
+		print("doctor: [OK] healthy")
+		quit(0)
 
 
 func _extract_manifest_path(args: PackedStringArray) -> String:
@@ -209,12 +413,25 @@ func _extract_manifest_path(args: PackedStringArray) -> String:
 	return manifest_path
 
 
+func _get_arg_value(args: PackedStringArray, name: String, default: String) -> String:
+	for i in range(args.size()):
+		if String(args[i]) == name and i + 1 < args.size():
+			return String(args[i + 1])
+		if String(args[i]).begins_with(name + "="):
+			return String(args[i]).substr(name.length() + 1)
+	return default
+
+
 func _cmd_run(args: PackedStringArray) -> void:
 	var keep_worktrees := "--keep-worktrees" in args
 	var keep_failed := "--keep-failed" in args
 	var force := "--force" in args
 	var dry_run := "--dry-run" in args
 	var no_git := "--no-git" in args
+	var resume_label := _get_arg_value(args, "--resume", "")
+	var build_timeout_s := _get_arg_value(args, "--build-timeout", "600")
+	var build_timeout := int(build_timeout_s) if build_timeout_s.is_valid_int() else 600
+	var fail_fast := "--fail-fast" in args
 
 	var manifest_path := _extract_manifest_path(args)
 	if manifest_path.is_empty():
@@ -226,7 +443,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 	var strict := "--strict" in args
 	var validation_err := _validate_manifest(manifest_path, strict)
 	if not validation_err.is_empty():
-		printerr("✘ manifest invalid: %s" % manifest_path)
+		printerr("[FAIL] manifest invalid: %s" % manifest_path)
 		printerr(validation_err)
 		quit(1)
 		return
@@ -234,7 +451,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 	var content := FileAccess.get_file_as_string(manifest_path)
 	var json := JSON.new()
 	if json.parse(content) != OK:
-		printerr("✘ manifest invalid: %s" % manifest_path)
+		printerr("[FAIL] manifest invalid: %s" % manifest_path)
 		printerr("Invalid JSON: %s" % json.get_error_message())
 		quit(1)
 		return
@@ -247,6 +464,19 @@ func _cmd_run(args: PackedStringArray) -> void:
 		project_root = ProjectSettings.globalize_path(project_root)
 	var captures_var = dict.get("captures", [])
 	var arr: Array = captures_var if typeof(captures_var) == TYPE_ARRAY else []
+	if not resume_label.is_empty():
+		var idx := -1
+		for i in range(arr.size()):
+			var e = arr[i]
+			if typeof(e) == TYPE_DICTIONARY and str(e.get("label", "")) == resume_label:
+				idx = i
+				break
+		if idx == -1:
+			printerr("[FAIL] --resume label '%s' not found in manifest" % resume_label)
+			quit(1)
+			return
+		print("resuming from %s (skipping %d entries before it)" % [resume_label, idx])
+		arr = arr.slice(idx)
 
 	# --- --no-git / git-absent fallback handling ---
 	var has_git := GdTMWorktree.has_git()
@@ -289,7 +519,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 							% [lbl, cm]
 						)
 					)
-					print("✔ %s (HEAD) — no worktree (--no-git)" % lbl)
+					print("[OK] %s (HEAD) — no worktree (--no-git)" % lbl)
 			quit(0)
 			return
 		else:
@@ -334,7 +564,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 				print(
 					"capturing %s for %s on current checkout (no worktree, --no-git)" % [lbl2, cm2]
 				)
-				print("✔ %s (HEAD) — no worktree (--no-git)" % lbl2)
+				print("[OK] %s (HEAD) — no worktree (--no-git)" % lbl2)
 		quit(0)
 		return
 
@@ -409,18 +639,24 @@ func _cmd_run(args: PackedStringArray) -> void:
 		print("creating worktree for %s (%s)..." % [lbl, cm])
 		var wt_path := GdTMWorktree.add_worktree(lbl, cm, project_root, force)
 		if wt_path.is_empty():
-			printerr("✘ failed to create worktree .worktrees/%s for %s" % [lbl, cm])
+			printerr("[FAIL] failed to create worktree .worktrees/%s for %s" % [lbl, cm])
 			failed_labels.append(lbl)
+			if fail_fast:
+				break
 			continue
 		var godot_bin := GdTMGodotResolve.resolve_godot_binary(wt_path, top_godot_path_r, hint_r)
 		print("  godot: %s" % godot_bin)
 		if not GdTMGodotResolve.regenerate_cache(wt_path, godot_bin):
-			printerr("✘ cache regeneration failed for %s" % lbl)
+			printerr("[FAIL] cache regeneration failed for %s" % lbl)
 			failed_labels.append(lbl)
+			if fail_fast:
+				break
 			continue
-		if not GdTMBuildRunner.run_build(wt_path, bcmd_r, lbl, cm):
-			printerr("✘ build failed for %s" % lbl)
+		if not GdTMBuildRunner.run_build(wt_path, bcmd_r, lbl, cm, build_timeout):
+			printerr("[FAIL] build failed for %s" % lbl)
 			failed_labels.append(lbl)
+			if fail_fast:
+				break
 			continue
 		var top_output_dir_r := str(dict.get("output_dir", "res://media/captures/history"))
 		var scene_r := str(entry.get("scene", ""))
@@ -436,11 +672,13 @@ func _cmd_run(args: PackedStringArray) -> void:
 			out_r = project_root.path_join(out_r)
 		var backend_r := str(entry.get("backend", "OBS Studio"))
 		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin) != 0:
-			printerr("✘ record failed for %s" % lbl)
+			printerr("[FAIL] record failed for %s" % lbl)
 			failed_labels.append(lbl)
+			if fail_fast:
+				break
 			continue
 		created.append(lbl)
-		print("✔ %s done (worktree + build + record)" % lbl)
+		print("[OK] %s done (worktree + build + record)" % lbl)
 
 	# --- cleanup: atexit/SIGINT trap equivalent — ensure no orphans ---
 	if keep_worktrees:
