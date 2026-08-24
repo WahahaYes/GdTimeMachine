@@ -9,6 +9,11 @@ extends SceneTree
 const VERSION := "0.1.0"
 const SCHEMA_PATH := "res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json"
 
+const GdTMWorktree := preload("res://addons/GdTimeMachine/core/worktree.gd")
+const GdTMGodotResolve := preload("res://addons/GdTimeMachine/core/godot_resolve.gd")
+const GdTMBuildRunner := preload("res://addons/GdTimeMachine/core/build_runner.gd")
+const GdTMMovieWriter := preload("res://addons/GdTimeMachine/core/movie_writer.gd")
+
 var _exit_code := 0
 var _args: PackedStringArray
 
@@ -185,366 +190,6 @@ func _cmd_doctor(args: PackedStringArray) -> void:
 	quit(0)
 
 
-func _has_git() -> bool:
-	var out: Array = []
-	var code := OS.execute("git", PackedStringArray(["--version"]), out, true)
-	return code == 0
-
-
-func _get_git_version() -> String:
-	var out: Array = []
-	var code := OS.execute("git", PackedStringArray(["--version"]), out, true)
-	if code != 0 or out.is_empty():
-		return "unknown"
-	var raw := str(out[0]).strip_edges()
-	if raw.contains("\n"):
-		raw = raw.split("\n")[0].strip_edges()
-	return raw
-
-
-func _git_worktree_supported() -> bool:
-	if not _has_git():
-		return false
-	var out: Array = []
-	var code := OS.execute("git", PackedStringArray(["--version"]), out, true)
-	if code != 0 or out.is_empty():
-		return false
-	var ver_str := str(out[0])
-	if ver_str.contains("\n"):
-		ver_str = ver_str.split("\n")[0]
-	var regex := RegEx.new()
-	regex.compile("(\\d+)\\.(\\d+)")
-	var m := regex.search(ver_str)
-	if m == null:
-		return false
-	var major := int(m.get_string(1))
-	var minor := int(m.get_string(2))
-	if major > 2:
-		return true
-	if major == 2 and minor >= 13:
-		return true
-	return false
-
-
-func _add_worktree(
-	label: String, commit: String, project_root: String, force: bool = false
-) -> String:
-	var wt_rel := ".worktrees/%s" % label
-	var wt_abs := project_root.path_join(".worktrees").path_join(label)
-	# Refuse collision unless --force
-	if DirAccess.dir_exists_absolute(wt_abs) or FileAccess.file_exists(wt_abs):
-		if not force:
-			printerr("worktree collision: %s already exists (use --force to overwrite)" % wt_rel)
-			return ""
-		else:
-			print("worktree collision: %s exists — --force removing existing" % wt_rel)
-			_remove_worktree(label, project_root)
-	# Verify commit resolves (git cat-file -e <commit>)
-	# HEAD is always resolvable if git repo has commits; skip cat-file for HEAD? Still check.
-	if commit != "HEAD":
-		var out_cat: Array = []
-		var cat_code := OS.execute(
-			"git", PackedStringArray(["-C", project_root, "cat-file", "-e", commit]), out_cat, true
-		)
-		if cat_code != 0:
-			printerr("commit does not resolve: %s (git cat-file -e failed)" % commit)
-			if not out_cat.is_empty():
-				printerr(str(out_cat[0]))
-			return ""
-	else:
-		# For HEAD, verify repo has HEAD
-		var out_head: Array = []
-		var head_code := OS.execute(
-			"git",
-			PackedStringArray(["-C", project_root, "rev-parse", "--verify", "HEAD"]),
-			out_head,
-			true
-		)
-		if head_code != 0:
-			printerr("commit HEAD does not resolve (no HEAD in %s)" % project_root)
-			return ""
-	# Ensure .worktrees parent exists (git will create but ensure dir)
-	var wt_parent := project_root.path_join(".worktrees")
-	if not DirAccess.dir_exists_absolute(wt_parent):
-		var mk_err := DirAccess.make_dir_absolute(wt_parent)
-		if mk_err != OK:
-			# Not fatal — git will create, but warn
-			pass
-	var out: Array = []
-	var args := PackedStringArray(
-		["-C", project_root, "worktree", "add", "--detach", wt_rel, commit]
-	)
-	var code := OS.execute("git", args, out, true)
-	if code != 0:
-		var msg := (
-			"\n".join(out) if not out.is_empty() else "git worktree add failed (exit %d)" % code
-		)
-		printerr("failed to create worktree %s for %s: %s" % [wt_rel, commit, msg])
-		return ""
-	print("created worktree %s for %s at %s" % [wt_rel, commit, wt_abs])
-	return wt_abs
-
-
-func _remove_worktree(label: String, project_root: String) -> bool:
-	var wt_rel := ".worktrees/%s" % label
-	var out: Array = []
-	var code := OS.execute(
-		"git",
-		PackedStringArray(["-C", project_root, "worktree", "remove", "--force", wt_rel]),
-		out,
-		true
-	)
-	if code != 0:
-		# May already be gone or not registered; warn but continue to prune
-		var msg := "\n".join(out) if not out.is_empty() else "exit %d" % code
-		# Only warn if directory still exists
-		var wt_abs_check := project_root.path_join(".worktrees").path_join(label)
-		if DirAccess.dir_exists_absolute(wt_abs_check):
-			printerr("warning: git worktree remove failed for %s: %s" % [wt_rel, msg])
-	# Always prune
-	var out2: Array = []
-	OS.execute("git", PackedStringArray(["-C", project_root, "worktree", "prune"]), out2, true)
-	var wt_abs := project_root.path_join(".worktrees").path_join(label)
-	if DirAccess.dir_exists_absolute(wt_abs):
-		# Fallback: try recursive delete (orphan)
-		var da := DirAccess.open(wt_abs)
-		if da == null:
-			# Try OS-level removal via shell
-			var out_rm: Array = []
-			OS.execute("rm", PackedStringArray(["-rf", wt_abs]), out_rm, true)
-		else:
-			# Attempt to remove via DirAccess recursion
-			_delete_dir_recursive(wt_abs)
-		if DirAccess.dir_exists_absolute(wt_abs):
-			printerr("warning: worktree directory still exists: %s" % wt_abs)
-			return false
-	print("removed worktree %s" % wt_rel)
-	return true
-
-
-func _delete_dir_recursive(dir_path: String) -> void:
-	var abs_dir := dir_path
-	# Use DirAccess to delete recursively
-	if not DirAccess.dir_exists_absolute(abs_dir):
-		return
-	var da := DirAccess.open(abs_dir)
-	if da == null:
-		return
-	da.list_dir_begin()
-	var fname := da.get_next()
-	while fname != "":
-		if fname != "." and fname != "..":
-			var child := abs_dir.path_join(fname)
-			if DirAccess.dir_exists_absolute(child):
-				_delete_dir_recursive(child)
-			else:
-				DirAccess.remove_absolute(child)
-		fname = da.get_next()
-	da.list_dir_end()
-	DirAccess.remove_absolute(abs_dir)
-
-
-func _list_worktrees(project_root: String) -> Array:
-	var out: Array = []
-	var code := OS.execute(
-		"git", PackedStringArray(["-C", project_root, "worktree", "list", "--porcelain"]), out, true
-	)
-	if code != 0:
-		return []
-	var result: Array = []
-	for line in out:
-		var s := str(line)
-		if s.contains("\n"):
-			for sub in s.split("\n"):
-				var t := sub.strip_edges()
-				if t.begins_with("worktree "):
-					result.append(t.substr(9).strip_edges())
-		else:
-			var t := s.strip_edges()
-			if t.begins_with("worktree "):
-				result.append(t.substr(9).strip_edges())
-	if result.is_empty() and not out.is_empty():
-		# Fallback: try non-porcelain
-		var out2: Array = []
-		OS.execute("git", PackedStringArray(["-C", project_root, "worktree", "list"]), out2, true)
-		for line in out2:
-			var ss := str(line)
-			if ss.contains("\n"):
-				for sub in ss.split("\n"):
-					var tt := sub.strip_edges()
-					if not tt.is_empty():
-						result.append(tt)
-			else:
-				var tt := ss.strip_edges()
-				if not tt.is_empty():
-					result.append(tt)
-	return result
-
-
-func _cleanup_worktrees(project_root: String, keep_failed: bool, failed_labels: Array) -> void:
-	var wt_dir := project_root.path_join(".worktrees")
-	if not DirAccess.dir_exists_absolute(wt_dir):
-		# Also prune git metadata
-		var out: Array = []
-		OS.execute("git", PackedStringArray(["-C", project_root, "worktree", "prune"]), out, true)
-		return
-	var da := DirAccess.open(wt_dir)
-	if da == null:
-		var out: Array = []
-		OS.execute("git", PackedStringArray(["-C", project_root, "worktree", "prune"]), out, true)
-		return
-	var labels_to_clean: Array = []
-	da.list_dir_begin()
-	var fname := da.get_next()
-	while fname != "":
-		if fname != "." and fname != "..":
-			var is_keep := keep_failed and failed_labels.has(fname)
-			if is_keep:
-				print("keeping failed worktree .worktrees/%s per --keep-failed" % fname)
-			else:
-				labels_to_clean.append(fname)
-		fname = da.get_next()
-	da.list_dir_end()
-	for lbl in labels_to_clean:
-		print("cleaning worktree .worktrees/%s" % str(lbl))
-		_remove_worktree(str(lbl), project_root)
-	# Final prune ensures git metadata has no orphans
-	var out_final: Array = []
-	OS.execute("git", PackedStringArray(["-C", project_root, "worktree", "prune"]), out_final, true)
-
-
-func _resolve_godot_binary(worktree_path: String, godot_path: String, hint: String) -> String:
-	var bin := ""
-	# Try godotenv in worktree
-	var out_env: Array = []
-	var env_code := OS.execute(
-		"godotenv", PackedStringArray(["godot", "env", "get"]), out_env, true
-	)
-	# godotenv expects to run in project dir; try with -C worktree via shell
-	if env_code != 0 or out_env.is_empty():
-		var out_sh: Array = []
-		OS.execute(
-			"sh",
-			PackedStringArray(
-				["-c", "cd '%s' && godotenv godot env get 2>/dev/null" % worktree_path]
-			),
-			out_sh,
-			true
-		)
-		if not out_sh.is_empty():
-			var cand := str(out_sh[0]).strip_edges()
-			if not cand.is_empty() and FileAccess.file_exists(cand):
-				bin = cand
-	if bin.is_empty() and not out_env.is_empty():
-		var cand2 := str(out_env[0]).strip_edges()
-		if not cand2.is_empty():
-			bin = cand2
-	if not bin.is_empty() and FileAccess.file_exists(bin):
-		return bin
-	# Fallback to manifest godot_path
-	if not godot_path.is_empty() and godot_path != "godot":
-		if FileAccess.file_exists(godot_path):
-			return godot_path
-		var out_which: Array = []
-		OS.execute("which", PackedStringArray([godot_path]), out_which, true)
-		if not out_which.is_empty() and FileAccess.file_exists(str(out_which[0]).strip_edges()):
-			return str(out_which[0]).strip_edges()
-		return godot_path
-	# Final fallback: godot on PATH or GODOT_BIN env
-	var godot_bin_env := OS.get_environment("GODOT_BIN")
-	if not godot_bin_env.is_empty():
-		return godot_bin_env
-	var out_which2: Array = []
-	OS.execute("which", PackedStringArray(["godot"]), out_which2, true)
-	if not out_which2.is_empty():
-		return str(out_which2[0]).strip_edges()
-	return "godot"
-
-
-func _regenerate_godot_cache(worktree_path: String, godot_bin: String) -> bool:
-	var cache_dir := worktree_path.path_join(".godot")
-	# Remove existing cache
-	if DirAccess.dir_exists_absolute(cache_dir):
-		_delete_dir_recursive(cache_dir)
-	var out: Array = []
-	var args := PackedStringArray(["--editor", "--headless", "--quit"])
-	# Use -C worktree via shell to ensure correct project path
-	var cmd := "%s --path '%s' --editor --headless --quit 2>&1" % [godot_bin, worktree_path]
-	var code := OS.execute("sh", PackedStringArray(["-c", cmd]), out, true)
-	if code != 0:
-		var msg := "\n".join(out) if not out.is_empty() else "exit %d" % code
-		printerr("warning: Godot cache regeneration failed in %s: %s" % [worktree_path, msg])
-		return false
-	return true
-
-
-func _run_build_command(
-	worktree_path: String, build_command: String, label: String, commit: String
-) -> bool:
-	if build_command.strip_edges().is_empty():
-		return true
-	print("running build for %s: %s" % [label, build_command])
-	OS.set_environment("GDTM_LABEL", label)
-	OS.set_environment("GDTM_COMMIT", commit)
-	OS.set_environment("GDTM_SCENE", "")
-	var log_path := "/tmp/gdtm_build_%s.log" % label
-	var script_path := "/tmp/gdtm_build_%s.sh" % label
-	var script_content := (
-		"#!/usr/bin/env sh\nexec > '%s' 2>&1\ncd '%s'\n%s\n"
-		% [log_path, worktree_path, build_command]
-	)
-	var fa := FileAccess.open(script_path, FileAccess.WRITE)
-	if fa == null:
-		printerr("failed to create build script for %s" % label)
-		return false
-	fa.store_string(script_content)
-	fa.close()
-	var code: int = 0
-	if OS.get_name() == "Windows":
-		code = OS.execute("cmd", PackedStringArray(["/c", 'call "%s"' % script_path]), [], false)
-	else:
-		code = OS.execute("sh", PackedStringArray([script_path]), [], false)
-	if FileAccess.file_exists(log_path):
-		var content := FileAccess.get_file_as_string(log_path)
-		for line in content.split("\n"):
-			if not str(line).strip_edges().is_empty():
-				print(line)
-		DirAccess.remove_absolute(log_path)
-	DirAccess.remove_absolute(script_path)
-	if code != 0:
-		printerr("build failed for %s (exit %d): %s" % [label, code, build_command])
-		return false
-	print("build ok for %s" % label)
-	return true
-
-
-func _record_in_worktree(
-	worktree_path: String,
-	godot_bin: String,
-	scene: String,
-	output: String,
-	duration: float,
-	fps: int,
-	backend: String
-) -> bool:
-	var out_log := "/tmp/gdtm_record_%s.log" % output.get_file().replace(".", "_")
-	var cmd := (
-		"%s --headless --path '%s' -s res://addons/GdTimeMachine/cli/record.gd -- --scene '%s' --output '%s' --duration %s --fps %d --backend '%s' > '%s' 2>&1"
-		% [godot_bin, worktree_path, scene, output, str(duration), fps, backend, out_log]
-	)
-	var code := OS.execute("sh", PackedStringArray(["-c", cmd]), [], false)
-	if FileAccess.file_exists(out_log):
-		var content := FileAccess.get_file_as_string(out_log)
-		for line in content.split("\n"):
-			if not str(line).strip_edges().is_empty():
-				print(line)
-		DirAccess.remove_absolute(out_log)
-	if code != 0:
-		printerr("record failed (exit %d) for %s" % [code, scene])
-		return false
-	return true
-
-
 func _extract_manifest_path(args: PackedStringArray) -> String:
 	var manifest_path := ""
 	for i in range(1, args.size()):
@@ -604,7 +249,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 	var arr: Array = captures_var if typeof(captures_var) == TYPE_ARRAY else []
 
 	# --- --no-git / git-absent fallback handling ---
-	var has_git := _has_git()
+	var has_git := GdTMWorktree.has_git()
 	if not has_git:
 		if no_git:
 			print("git not found — --no-git mode: operating on current checkout (no worktree)")
@@ -694,8 +339,8 @@ func _cmd_run(args: PackedStringArray) -> void:
 		return
 
 	# git present and not --no-git: check worktree support
-	if not _git_worktree_supported():
-		var ver := _get_git_version()
+	if not GdTMWorktree.is_worktree_supported():
+		var ver := GdTMWorktree.get_git_version()
 		printerr("git worktrees not supported — requires git >= 2.13 (found %s)" % ver)
 		printerr("install newer git or use --no-git for HEAD-only")
 		quit(1)
@@ -762,18 +407,18 @@ func _cmd_run(args: PackedStringArray) -> void:
 			else top_build_r
 		)
 		print("creating worktree for %s (%s)..." % [lbl, cm])
-		var wt_path := _add_worktree(lbl, cm, project_root, force)
+		var wt_path := GdTMWorktree.add_worktree(lbl, cm, project_root, force)
 		if wt_path.is_empty():
 			printerr("✘ failed to create worktree .worktrees/%s for %s" % [lbl, cm])
 			failed_labels.append(lbl)
 			continue
-		var godot_bin := _resolve_godot_binary(wt_path, top_godot_path_r, hint_r)
+		var godot_bin := GdTMGodotResolve.resolve_godot_binary(wt_path, top_godot_path_r, hint_r)
 		print("  godot: %s" % godot_bin)
-		if not _regenerate_godot_cache(wt_path, godot_bin):
+		if not GdTMGodotResolve.regenerate_cache(wt_path, godot_bin):
 			printerr("✘ cache regeneration failed for %s" % lbl)
 			failed_labels.append(lbl)
 			continue
-		if not _run_build_command(wt_path, bcmd_r, lbl, cm):
+		if not GdTMBuildRunner.run_build(wt_path, bcmd_r, lbl, cm):
 			printerr("✘ build failed for %s" % lbl)
 			failed_labels.append(lbl)
 			continue
@@ -790,7 +435,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 		elif not out_r.begins_with("/"):
 			out_r = project_root.path_join(out_r)
 		var backend_r := str(entry.get("backend", "OBS Studio"))
-		if not _record_in_worktree(wt_path, godot_bin, scene_r, out_r, dur_r, fps_r, backend_r):
+		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin) != 0:
 			printerr("✘ record failed for %s" % lbl)
 			failed_labels.append(lbl)
 			continue
@@ -806,7 +451,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 			for lbl in failed_labels:
 				print("  kept failed .worktrees/%s per --keep-failed" % str(lbl))
 	else:
-		_cleanup_worktrees(project_root, keep_failed, failed_labels)
+		GdTMWorktree.cleanup_worktrees(project_root, keep_failed, failed_labels)
 
 	# --- exit codes: 0 all ok, 1 fatal, 2 partial ---
 	if failed_labels.is_empty():
