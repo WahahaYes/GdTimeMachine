@@ -2,6 +2,7 @@ class_name GdTMGodotResolve
 extends RefCounted
 
 
+## Resolves Godot binary for worktree_path. Priority: godotenv > godot_path arg > GODOT_BIN env > `godot` on PATH. Returns absolute path or "godot".
 static func resolve_godot_binary(worktree_path: String, godot_path: String, hint: String) -> String:
 	var bin := ""
 	var out_env: Array = []
@@ -36,6 +37,7 @@ static func resolve_godot_binary(worktree_path: String, godot_path: String, hint
 		if not out_which.is_empty() and FileAccess.file_exists(str(out_which[0]).strip_edges()):
 			return str(out_which[0]).strip_edges()
 		return godot_path
+	## GODOT_BIN — override for Godot binary path (used by wrapper and CI).
 	var godot_bin_env := OS.get_environment("GODOT_BIN")
 	if not godot_bin_env.is_empty():
 		return godot_bin_env
@@ -46,17 +48,12 @@ static func resolve_godot_binary(worktree_path: String, godot_path: String, hint
 	return "godot"
 
 
+## Regenerates .godot import cache in worktree_path using godot_bin. Returns true on success.
 static func regenerate_cache(worktree_path: String, godot_bin: String) -> bool:
 	var cache_dir := worktree_path.path_join(".godot")
 	if DirAccess.dir_exists_absolute(cache_dir):
-		var da := DirAccess.open(cache_dir)
-		if da != null:
-			# Use worktree helper via direct delete
-			var out_rm: Array = []
-			OS.execute("rm", PackedStringArray(["-rf", cache_dir]), out_rm, true)
-		else:
-			var out_rm2: Array = []
-			OS.execute("rm", PackedStringArray(["-rf", cache_dir]), out_rm2, true)
+		var out_rm: Array = []
+		OS.execute("rm", PackedStringArray(["-rf", cache_dir]), out_rm, true)
 	var out: Array = []
 	var cmd := "%s --path '%s' --editor --headless --quit 2>&1" % [godot_bin, worktree_path]
 	var code := OS.execute("sh", PackedStringArray(["-c", cmd]), out, true)

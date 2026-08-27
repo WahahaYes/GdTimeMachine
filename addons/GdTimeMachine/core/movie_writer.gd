@@ -2,6 +2,7 @@ class_name GdTMMovieWriter
 extends RefCounted
 
 
+## Records scene in worktree_path via `godot --write-movie` (Vulkan, no --headless). Converts AVI→mp4/webm via ffmpeg if requested. Returns 0 on success.
 static func record(
 	worktree_path: String,
 	scene: String,

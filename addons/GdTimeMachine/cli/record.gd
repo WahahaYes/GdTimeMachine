@@ -3,12 +3,17 @@ extends SceneTree
 ## Editor record entry — reuses backend wiring (requires EditorInterface).
 ## For headless CLI batch, use core/movie_writer.gd via cli/main.gd (no EditorInterface).
 
+## Controller that wires backends for editor recording.
 const RecorderController := preload("res://addons/GdTimeMachine/controller/recorder_controller.gd")
+## OBS backend — IN_PLACE, requires OBS WebSocket.
 const BackendOBS := preload("res://addons/GdTimeMachine/backend/backend_obs.gd")
+## Screenshot backend — IN_PLACE, PNG/JPG frames.
 const BackendScreenshotCapture := preload(
 	"res://addons/GdTimeMachine/backend/backend_screenshot_capture.gd"
 )
+## Movie Maker backend — RESTART_SCENE, AVI/OGV.
 const BackendMovieMaker := preload("res://addons/GdTimeMachine/backend/backend_movie_maker.gd")
+## FFmpeg converter for tier-2 mp4/webm.
 const GdTMFFmpegConvert := preload("res://addons/GdTimeMachine/backend/ffmpeg_convert.gd")
 
 var _args: PackedStringArray

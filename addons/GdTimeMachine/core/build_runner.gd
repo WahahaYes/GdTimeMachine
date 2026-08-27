@@ -2,14 +2,18 @@ class_name GdTMBuildRunner
 extends RefCounted
 
 
+## Executes build_command in worktree_path with GDTM_* env and timeout (default 600s). Returns true on success.
 static func run_build(
 	worktree_path: String, build_command: String, label: String, commit: String, timeout: int = 600
 ) -> bool:
 	if build_command.strip_edges().is_empty():
 		return true
 	print("running build for %s: %s" % [label, build_command])
+	## GDTM_LABEL — label of current capture (filesystem-safe slug).
 	OS.set_environment("GDTM_LABEL", label)
+	## GDTM_COMMIT — commit SHA for current capture.
 	OS.set_environment("GDTM_COMMIT", commit)
+	## GDTM_SCENE — scene path (empty for batch build; per-capture scene passed to movie_writer).
 	OS.set_environment("GDTM_SCENE", "")
 	var log_path := "/tmp/gdtm_build_%s.log" % label
 	var script_path := "/tmp/gdtm_build_%s.sh" % label
@@ -27,17 +31,6 @@ static func run_build(
 	if OS.get_name() == "Windows":
 		code = OS.execute("cmd", PackedStringArray(["/c", 'call "%s"' % script_path]), [], false)
 	else:
-		# Use timeout if available, otherwise plain sh
-		var has_timeout := (
-			OS.execute(
-				"sh",
-				PackedStringArray(["-c", "command -v timeout >/dev/null 2>&1 && echo yes"]),
-				[],
-				true
-			)
-			== 0
-		)
-		# Actually check via which
 		var out_which: Array = []
 		OS.execute("which", PackedStringArray(["timeout"]), out_which, true)
 		var use_timeout := (

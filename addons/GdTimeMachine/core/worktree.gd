@@ -2,12 +2,14 @@ class_name GdTMWorktree
 extends RefCounted
 
 
+## Returns true if git is available on PATH.
 static func has_git() -> bool:
 	var out: Array = []
 	var code := OS.execute("git", PackedStringArray(["--version"]), out, true)
 	return code == 0
 
 
+## Returns `git --version` string or "unknown" if git missing.
 static func get_git_version() -> String:
 	var out: Array = []
 	var code := OS.execute("git", PackedStringArray(["--version"]), out, true)
@@ -19,6 +21,7 @@ static func get_git_version() -> String:
 	return raw
 
 
+## Returns true if git worktrees are supported (git >= 2.13).
 static func is_worktree_supported() -> bool:
 	if not has_git():
 		return false
@@ -43,6 +46,7 @@ static func is_worktree_supported() -> bool:
 	return false
 
 
+## Creates detached worktree .worktrees/<label> at commit. If force, removes existing collision. Returns absolute path or "" on failure.
 static func add_worktree(
 	label: String, commit: String, project_root: String, force: bool = false
 ) -> String:
@@ -94,6 +98,7 @@ static func add_worktree(
 	return wt_abs
 
 
+## Removes worktree .worktrees/<label> and prunes. Returns true if directory gone.
 static func remove_worktree(label: String, project_root: String) -> bool:
 	var wt_rel := ".worktrees/%s" % label
 	var out: Array = []
@@ -145,6 +150,7 @@ static func _delete_dir_recursive(dir_path: String) -> void:
 	DirAccess.remove_absolute(dir_path)
 
 
+## Lists worktree paths via `git worktree list --porcelain`. Returns array of paths.
 static func list_worktrees(project_root: String) -> Array:
 	var out: Array = []
 	var code := OS.execute(
@@ -167,6 +173,7 @@ static func list_worktrees(project_root: String) -> Array:
 	return result
 
 
+## Cleans all .worktrees/* except those in failed_labels when keep_failed. Prunes at end.
 static func cleanup_worktrees(
 	project_root: String, keep_failed: bool, failed_labels: Array
 ) -> void:

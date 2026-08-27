@@ -6,12 +6,24 @@ extends SceneTree
 ## Entry: consumers run `gdtime <command>` (wrapper at cli/gdtime) → godot --headless -s addons/GdTimeMachine/cli/main.gd -- <args>
 ## Fallback: godot --headless -s addons/GdTimeMachine/cli/main.gd -- <args> directly
 
-const VERSION := "0.1.0"
+const PLUGIN_CFG_PATH := "res://addons/GdTimeMachine/plugin.cfg"
 const SCHEMA_PATH := "res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json"
 
+
+func _get_version() -> String:
+	var cfg := ConfigFile.new()
+	if cfg.load(PLUGIN_CFG_PATH) == OK:
+		return str(cfg.get_value("plugin", "version", "")).strip_edges()
+	return ""
+
+
+## GdTMWorktree — worktree helper for git worktree lifecycle.
 const GdTMWorktree := preload("res://addons/GdTimeMachine/core/worktree.gd")
+## GdTMGodotResolve — resolver for Godot binary via godotenv and PATH.
 const GdTMGodotResolve := preload("res://addons/GdTimeMachine/core/godot_resolve.gd")
+## GdTMBuildRunner — runner for per-capture build_command.
 const GdTMBuildRunner := preload("res://addons/GdTimeMachine/core/build_runner.gd")
+## GdTMMovieWriter — writer that records captures via godot --write-movie.
 const GdTMMovieWriter := preload("res://addons/GdTimeMachine/core/movie_writer.gd")
 
 var _exit_code := 0
@@ -53,7 +65,7 @@ func _initialize() -> void:
 			_print_help()
 			quit(0)
 		"--version", "-v", "version":
-			print("gdtime %s" % VERSION)
+			print("gdtime %s" % _get_version())
 			quit(0)
 		_:
 			printerr("Unknown command: %s" % cmd)
@@ -403,7 +415,7 @@ func _extract_manifest_path(args: PackedStringArray) -> String:
 		if a == "run":
 			continue
 		manifest_path = a
-	# If multiple non-flags, last one wins (consistent with original stub)
+	# Last non-flag argument wins (manifest path).
 	if manifest_path.is_empty():
 		# Try last non-flag scan (original behavior)
 		for a in args:
