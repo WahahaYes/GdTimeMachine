@@ -1,0 +1,20 @@
+{
+  "project_root": "/home/ethan/repos/GdTimeMachine",
+  "output_dir": "/home/ethan/repos/GdTimeMachine/media/captures/history_smoke",
+  "captures": [
+    {
+      "commit": "HEAD",
+      "scene": "res://test/manual/recording_smoke.tscn",
+      "label": "history-head",
+      "duration": 2,
+      "fps": 30
+    },
+    {
+      "commit": "ab07fa8",
+      "scene": "res://test/manual/recording_smoke.tscn",
+      "label": "history-ab07fa8",
+      "duration": 2,
+      "fps": 30
+    }
+  ]
+}

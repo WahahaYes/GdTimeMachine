@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# gdtime wrapper — GdTimeMachine CLI (self-contained at addons/GdTimeMachine/cli/main.gd)
+# Consumers run: gdtime <command>  (e.g. gdtime validate manifest.json)
+# This shim resolves the Godot binary and execs: godot --headless -s addons/GdTimeMachine/cli/main.gd -- <args>
+# Fallback: godot --headless -s addons/GdTimeMachine/cli/main.gd -- <args> directly
+
+# Resolve repo root (where this script lives: addons/GdTimeMachine/cli/gdtime)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$SCRIPT_DIR"
+while [[ "$PROJECT_ROOT" != "/" && ! -f "$PROJECT_ROOT/project.godot" ]]; do
+  PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
+done
+if [[ ! -f "$PROJECT_ROOT/project.godot" ]]; then
+  PROJECT_ROOT="$(pwd)"
+fi
+
+# Resolve Godot binary: GODOT_BIN env > godotenv > godot on PATH
+GODOT_BIN="${GODOT_BIN:-}"
+if [[ -z "$GODOT_BIN" ]]; then
+  if command -v godotenv >/dev/null 2>&1; then
+    GODOT_BIN="$(godotenv godot env get 2>/dev/null || true)"
+  fi
+fi
+if [[ -z "$GODOT_BIN" ]]; then
+  if command -v godot >/dev/null 2>&1; then
+    GODOT_BIN="godot"
+  else
+    echo "gdtime: Godot not found. Install Godot 4.7+ or set GODOT_BIN, or ensure godotenv is available." >&2
+    exit 1
+  fi
+fi
+
+# Run Godot CLI; capture output to handle exit codes (Godot 4.7 headless -s quit code not reliably propagated)
+LOG="$(mktemp /tmp/gdtime-XXXXXX.log)"
+"$GODOT_BIN" --headless --path "$PROJECT_ROOT" -s "res://addons/GdTimeMachine/cli/main.gd" -- "$@" 2>&1 | tee "$LOG"
+GODOT_STATUS=${PIPESTATUS[0]}
+EXIT_CODE=0
+if grep -F -q "manifest invalid" "$LOG"; then
+  EXIT_CODE=1
+elif grep -F -q "Unknown command" "$LOG"; then
+  EXIT_CODE=1
+elif grep -F -q "doctor: [FAIL]" "$LOG"; then
+  EXIT_CODE=1
+elif grep -F -q "doctor: [WARN]" "$LOG"; then
+  EXIT_CODE=2
+elif grep -F -q "[FAIL]" "$LOG"; then
+  EXIT_CODE=1
+elif grep -F -q "[WARN]" "$LOG" && grep -F -q "degraded" "$LOG"; then
+  EXIT_CODE=2
+elif [[ $GODOT_STATUS -ne 0 ]]; then
+  EXIT_CODE=$GODOT_STATUS
+fi
+rm -f "$LOG"
+exit $EXIT_CODE
