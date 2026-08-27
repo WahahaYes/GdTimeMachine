@@ -8,8 +8,6 @@
 
 GdTimeMachine records your scenes right from the editor — no external capture or window setup. Pick a backend, hit Record, and get a clip named for the scene and time. Built for the “time machine” workflow: rewind your project to any git commit and capture it again to diff how a scene looked across history.
 
-> **Version:** 0.1.0 · Requires Godot 4.7+ · License: Apache-2.0
-
 ## Installation
 
 ### Asset Library (coming soon)
@@ -135,6 +133,36 @@ output_format = png
 ```
 
 Each `["res://..."]` overrides `[default]`. Edit directly or use *Remember settings for this scene* in the dock. Commit for shared team profiles.
+
+## CLI — batch capture (history)
+
+`gdtime` is the headless companion for the time-machine workflow — same `plugin.cfg` version as the editor plugin, no extra dependencies.
+
+```sh
+gdtime validate <manifest.json> [--strict]          # check manifest (strict rejects unknown keys)
+gdtime run [options] <manifest.json>                # worktree → godot → build → record
+gdtime doctor [--verbose] [--fix]                   # git / godot / ffmpeg / OBS / build hook / worktrees
+gdtime list-commits <manifest.json>                 # commit label for each capture
+gdtime --help
+gdtime --version
+```
+
+**Manifest** (`res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json`): `project_root`, `captures[]` with `commit` (hex 4–40 or `HEAD`), `scene` (`res://…`), `label` (`[A-Za-z0-9_-]+`, unique), optional `duration`/`fps`/`godot_version_hint`/`output_path`/`build_command` and top-level `godot_path`/`build_command`/`output_dir`.
+
+**`run` options:** `--dry-run` (preview), `--resume LABEL` (skip before label), `--keep-worktrees` / `--keep-failed`, `--no-git` (HEAD-only), `--force` (overwrite), `--build-timeout SECS` (default 600), `--fail-fast`, `--strict`.
+
+**Examples:**
+
+```sh
+gdtime validate test/cli/manifest_history.json
+gdtime run --dry-run test/cli/manifest_history.json
+gdtime run test/cli/manifest_history.json
+gdtime doctor --verbose
+```
+
+History uses `godot --path <worktree> --write-movie` (Vulkan, no `--headless`) with `godotenv`/`GODOT_BIN` resolution and `rm -rf .godot && godot --editor --headless --quit` cache regeneration. Wrapper is `addons/GdTimeMachine/cli/gdtime` (`godot --headless -s addons/GdTimeMachine/cli/main.gd -- …` also works).
+
+Exit codes: `0` ok, `1` failure, `2` degraded/partial (doctor warnings or `run` with `--keep-failed`).
 
 ## License
 
