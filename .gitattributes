@@ -1,2 +1,10 @@
 # Normalize EOL for all files that Git considers text files.
 * text=auto eol=lf
+
+# Ignore most files when exporting.
+/**                        export-ignore
+
+# Include this addon's folder when downloading from the Asset Library.
+/addons                   !export-ignore
+/addons/GdTimeMachine      !export-ignore
+/addons/GdTimeMachine/**   !export-ignore
