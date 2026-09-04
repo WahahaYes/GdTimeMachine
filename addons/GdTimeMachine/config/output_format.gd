@@ -15,7 +15,7 @@ enum Format {
 	WEBM,  ## .webm — VP9 via ffmpeg tier-2.
 }
 
-## Default format. Kept as AVI so existing users see no behavior change.
+## Default format: AVI (.avi MJPEG, 4 GB cap).
 const DEFAULT := Format.AVI
 
 

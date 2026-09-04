@@ -12,7 +12,7 @@ GdTimeMachine records your scenes right from the editor — no external capture 
 
 ### Asset Library
 
-GdTimeMachine v0.1.1 for Godot 4.7 is listed on the Godot Asset Library: https://godotengine.org/asset-library/asset/5430
+GdTimeMachine is listed on the Godot Asset Library: https://godotengine.org/asset-library/asset/5430
 
 1. In Godot: **AssetLib → Search "GdTimeMachine" → Download → Install**
 1. Then **Project > Project Settings > Plugins → Enable GdTimeMachine**

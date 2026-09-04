@@ -102,22 +102,19 @@ func _enter_tree() -> void:
 	_movie_maker_backend = BackendMovieMaker.new()
 	_movie_maker_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_movie_maker_backend)
-	# Registered after Movie Maker so Movie Maker stays the default backend
-	# (AVI remains the default format; no behavior change for existing users).
+	# Registered second so Movie Maker is the default backend (AVI default).
 	_screenshot_backend = BackendScreenshotCapture.new()
 	_screenshot_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_screenshot_backend)
-	# OBS Studio is registered after Movie Maker and Screenshot so the existing
-	# defaults are unchanged (Movie Maker stays the default backend; OBS is a
-	# per-project opt-in via the backend dropdown / saved profile).
+	# OBS Studio is registered third; Movie Maker is the default backend and
+	# OBS is a per-project opt-in via the backend dropdown / saved profile.
 	_obs_backend = BackendOBS.new()
 	_recorder_controller.register_backend(_obs_backend)
 	_connect_controller_feedback()
 	_dock = preload("res://addons/GdTimeMachine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
-	# Bottom-panel placement via the EditorDock API (4.6+). The legacy
-	# add_control_to_bottom_panel() is deprecated; an EditorDock owns the tab
-	# title/slot, and the dock content is added as its child.
+	# Bottom-panel placement via the EditorDock API (4.6+). The EditorDock owns
+	# the tab title/slot, and the dock content is added as its child.
 	_editor_dock = EditorDock.new()
 	_editor_dock.name = "GdTimeMachineDock"
 	_editor_dock.title = "GdTimeMachine"

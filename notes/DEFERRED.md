@@ -4,7 +4,7 @@ Captures items intentionally not shipped as of `v0.1.1` (CLI batch `gdtime` + ed
 
 ## Editor / Capture
 
-- **Recent-captures list** — dock ItemList of previous recordings (deferred from Phase 5).
+- **Recent-captures list** — dock ItemList of previous recordings.
 - **Replay buffer ("Record That")** — OBS replay-buffer workflow; needs pre-configured buffer, separate from normal record.
 - **`BackendMovieMakerCLI`** — headless Movie Maker variant; delegated to `core/movie_writer.gd` (`godot --path <wt> --write-movie`).
 - **Wayland portal dialog** — `needs_setup()` + token persistence (`obs_token_persistence.gd` / `platform_capture` portal flow) never created. Only mattered as a Linux/Wayland-first idea; not needed for current backends.
@@ -18,4 +18,4 @@ Captures items intentionally not shipped as of `v0.1.1` (CLI batch `gdtime` + ed
 
 ## Process
 
-- `CONTRIBUTING.md` / tag `v0.1.1` + `CHANGELOG` / `media/` gif — intentionally held until polish seed landed (covered in archived `SEED_cli_v0_1_1_polish.md` acceptance).
+- `CONTRIBUTING.md` / tag `v0.1.1` + `CHANGELOG` / `media/` gif — intentionally held until polish landed.

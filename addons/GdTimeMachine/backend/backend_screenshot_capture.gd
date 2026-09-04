@@ -296,8 +296,8 @@ func _on_no_reply_timeout() -> void:
 
 ## Handles a frame reply from the plugin: validates the request id, scrubs
 ## undersized placeholder frames, copies (or JPG re-encodes) the frame into the
-## frames dir, updates stats, and restarts the no-reply timer. Accepts legacy
-## 0×0 replies as long as something is in flight.
+## frames dir, updates stats, and restarts the no-reply timer. Accepts 0×0
+## replies while a request is in flight.
 func _on_screenshot_received(rq_id: int, width: int, height: int, path: String) -> void:
 	if not _active or _stopping or _pending_start:
 		return

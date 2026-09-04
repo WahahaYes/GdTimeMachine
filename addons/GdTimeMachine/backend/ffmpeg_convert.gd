@@ -273,8 +273,8 @@ func build_frames_convert_command(
 ## Builds ffmpeg args for converting a single file (Movie Maker AVI → MP4).
 ## input_path: existing clip (avi, ogv, ...).
 ## output_path: desired output (mp4, webm, ...).
-## target_fps: optional, used to force correct output rate (WebM reports duration N/A otherwise)
-## but we avoid double -r + -vf which was observed to shorten clips when timestamps jitter.
+## target_fps: optional, used to force correct output rate (WebM reports duration N/A otherwise).
+## Avoid combining -r and -vf; combined flags can shorten clips when timestamps jitter.
 ## Returns Dictionary: {binary, args, output_path}.
 func build_file_convert_command(
 	input_path: String, output_path: String, target_fps: int = 0

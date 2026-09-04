@@ -41,7 +41,7 @@ const RPC_VERSION := 1
 ## WebSocket subprotocol required by obs-websocket.
 const SUBPROTOCOL := "obswebsocket.json"
 
-## Default connection target (OBS v5 default port is 4455; v4 was 4444).
+## Default connection target (obs-websocket default port 4455).
 const DEFAULT_HOST := "127.0.0.1"
 const DEFAULT_PORT := 4455
 

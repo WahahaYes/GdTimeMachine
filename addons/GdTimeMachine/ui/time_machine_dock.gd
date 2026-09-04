@@ -700,8 +700,7 @@ func _on_obs_install_dialog_closed() -> void:
 
 
 ## Returns the settings store to read, or null outside the editor when no fake
-## was injected. Mirrors BackendOBS._get_es() (the proven 4.x access path —
-## Engine.has_singleton("EditorSettings") is dead code on 4.7).
+## was injected. Mirrors BackendOBS._get_es() for consistent EditorSettings access.
 func _get_es() -> Object:
 	if _editor_settings != null:
 		return _editor_settings
