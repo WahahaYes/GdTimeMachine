@@ -115,9 +115,6 @@ var _duration_timer: Timer
 ## One-shot timer that finalizes when no reply arrives within the timeout.
 var _no_reply_timer: Timer
 
-## ffmpeg converter (tier-2) — created lazily, owned as child for lifecycle.
-var _ffmpeg_converter: GdTMFFmpegConvert = null
-
 ## Target format string (extension) from the start() config for ffmpeg conversion.
 var _target_output_format: String = ""
 
@@ -161,22 +158,14 @@ func get_capture_mode() -> CaptureMode:
 	return CaptureMode.IN_PLACE
 
 
-## Engine-native artifacts (no ffmpeg): PNG/JPG frame sequences. Everything
-## else is stitched from frames via the ffmpeg tier-2 frames convert below.
+## Engine-native artifacts (no transcoder): PNG/JPG frame sequences.
 func get_native_formats() -> Array:
 	return [GdTMOutputFormat.Format.PNG, GdTMOutputFormat.Format.JPG]
 
 
-## Everything the backend can deliver: native frames plus ffmpeg containers.
-func get_supported_formats() -> Array:
-	return [
-		GdTMOutputFormat.Format.PNG,
-		GdTMOutputFormat.Format.JPG,
-		GdTMOutputFormat.Format.MP4,
-		GdTMOutputFormat.Format.WEBM,
-		GdTMOutputFormat.Format.AVI,
-		GdTMOutputFormat.Format.OGV,
-	]
+## Native artifact for transcoder matching: a frames directory.
+func get_native_artifact() -> Dictionary:
+	return {"kind": "frames"}
 
 
 ## Begins a recording: if a scene is already playing, starts capturing
@@ -742,70 +731,38 @@ func _get_clean_on_success_setting() -> bool:
 	return true
 
 
-## Whether the current target format requires ffmpeg (from frames).
+## Whether the current target wants a transcoded container (anything beyond
+## native PNG/JPG frames).
 func _needs_ffmpeg_convert() -> bool:
 	if _target_output_format.is_empty():
 		return false
 	var fmt := GdTMOutputFormat.from_string(_target_output_format)
-	return GdTMOutputFormat.frames_need_ffmpeg(fmt)
+	return is_format_supported(fmt) and format_needs_ffmpeg(fmt)
 
 
 ## Factory seam — overridden in tests to inject a fake converter.
-func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
-	return GdTMFFmpegConvert.new()
 
 
-## Ensures the converter child exists and wires its signals.
-func _ensure_ffmpeg_converter() -> void:
-	if _ffmpeg_converter != null:
-		return
-	_ffmpeg_converter = _create_ffmpeg_converter()
-	if is_inside_tree():
-		add_child(_ffmpeg_converter)
-	_ffmpeg_converter.conversion_succeeded.connect(_on_ffmpeg_convert_succeeded)
-	_ffmpeg_converter.conversion_failed.connect(_on_ffmpeg_convert_failed)
-	_ffmpeg_converter.ffmpeg_not_found.connect(_on_ffmpeg_not_found)
-
-
-## Triggers async ffmpeg conversion for the just-finalized frames dir. Seam for
-## tests: FakeScreenshotBackend overrides this to capture intent and emit its
-## own outcomes synchronously.
+## Triggers async conversion for the just-finalized frames dir through the
+## registry-matched transcoder (shared request_transcode() adapter).
 func _trigger_ffmpeg_convert() -> void:
-	_ensure_ffmpeg_converter()
 	var stats := _compute_stats()
 	var measured := float(stats.get("measured_fps", 0.0))
-	# "Converting…" feedback for the dock status line.
-	recording_notice.emit(
-		get_backend_name(), "Converting to %s…" % _target_output_format.to_lower()
-	)
-	_ffmpeg_converter.convert_frames_async(
-		_frames_dir,
+	var target := GdTMOutputFormat.from_string(_target_output_format)
+	request_transcode(
+		{
+			"kind": "frames",
+			"dir": _frames_dir,
+			"frame_ext": _image_format,
+			"measured_fps": measured,
+		},
 		_base_output_path,
-		_target_output_format,
-		measured,
-		_image_format,
-		_get_clean_on_success_setting()
+		{
+			"target": target,
+			"label": _target_output_format,
+			"clean": _get_clean_on_success_setting(),
+		}
 	)
-
-
-func _on_ffmpeg_convert_succeeded(clip_path: String) -> void:
-	recording_converted.emit(get_backend_name(), clip_path)
-	# Keep the final path visible in status line; notice composes own message.
-	recording_notice.emit(
-		get_backend_name(),
-		"Converted to %s" % clip_path.get_file() if not clip_path.is_empty() else "Converted"
-	)
-
-
-func _on_ffmpeg_not_found(message: String) -> void:
-	recording_notice.emit(get_backend_name(), message)
-
-
-func _on_ffmpeg_convert_failed(error_message: String, stderr_tail: String) -> void:
-	var detail := error_message
-	if not stderr_tail.is_empty():
-		detail = "%s\n%s" % [error_message, stderr_tail]
-	recording_error.emit(get_backend_name(), detail)
 
 
 func _exit_tree() -> void:

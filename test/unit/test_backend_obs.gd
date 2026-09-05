@@ -154,6 +154,25 @@ class SettingsBackend:
 ## _create_obs_client() returns the configurable FakeOBSClient, and the scene is
 ## faked via the playing flag so start() drives pending-start/begin-recording
 ## deterministically (no real launch or WebSocket).
+class StubRegistryTranscoder:
+	extends RecorderTranscoder
+	var available := true
+
+	func get_transcoder_name() -> String:
+		return "stub-ffmpeg"
+
+	func is_available() -> bool:
+		return available
+
+	func can_convert(input: Dictionary, target: GdTMOutputFormat.Format) -> bool:
+		return (
+			target == GdTMOutputFormat.Format.MP4
+			or target == GdTMOutputFormat.Format.WEBM
+			or target == GdTMOutputFormat.Format.AVI
+			or target == GdTMOutputFormat.Format.OGV
+		)
+
+
 class RecordingBackend:
 	extends BackendOBS
 	var installed := true
@@ -168,6 +187,13 @@ class RecordingBackend:
 	var persisted_pid := 0
 	var ledger_cleared := false
 	var killed_pids: Array = []
+	var _stub_transcoder := StubRegistryTranscoder.new()
+
+	func _init() -> void:
+		add_child(_stub_transcoder)
+		var registry := TranscoderRegistry.new()
+		registry.register_transcoder(_stub_transcoder)
+		_transcoder_registry = registry
 
 	func _ready() -> void:
 		pass
@@ -801,10 +827,11 @@ func test_supported_formats_cover_transcode_targets() -> void:
 		backend.get_supported_formats(),
 		[
 			GdTMOutputFormat.Format.MP4,
-			GdTMOutputFormat.Format.WEBM,
 			GdTMOutputFormat.Format.AVI,
 			GdTMOutputFormat.Format.OGV,
-		]
+			GdTMOutputFormat.Format.WEBM,
+		],
+		"natives first, then registry edges in canonical order"
 	)
 	assert_true(backend.is_format_supported(GdTMOutputFormat.Format.WEBM))
 	assert_true(
@@ -991,7 +1018,7 @@ class FakeOBSFFmpegConvert:
 		convert_called = true
 		convert_args = {"in": input_path, "out": output_path, "fps": target_fps}
 		if emit_not_found:
-			ffmpeg_not_found.emit(not_found_message)
+			transcoder_not_found.emit(not_found_message)
 		elif should_succeed:
 			conversion_succeeded.emit(success_path)
 		else:
@@ -1005,7 +1032,7 @@ class ConvertBackend:
 	extends RecordingBackend
 	var fake_ffmpeg: FakeOBSFFmpegConvert = null
 
-	func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+	func _create_ffmpeg_converter() -> RecorderTranscoder:
 		if fake_ffmpeg != null:
 			return fake_ffmpeg
 		return super._create_ffmpeg_converter()

@@ -162,6 +162,27 @@ class FakeFFmpegConvert:
 		pass
 
 
+## Stub transcoder with ffmpeg-style file edges so deliverables derive from
+## the registry exactly like production (mirrors the dock StubTranscoder).
+class StubRegistryTranscoder:
+	extends RecorderTranscoder
+	var available := true
+
+	func get_transcoder_name() -> String:
+		return "stub-ffmpeg"
+
+	func is_available() -> bool:
+		return available
+
+	func can_convert(input: Dictionary, target: GdTMOutputFormat.Format) -> bool:
+		return (
+			target == GdTMOutputFormat.Format.MP4
+			or target == GdTMOutputFormat.Format.WEBM
+			or target == GdTMOutputFormat.Format.AVI
+			or target == GdTMOutputFormat.Format.OGV
+		)
+
+
 ## Testable Movie Maker backend with injected dependencies.
 class TestableMovieMaker:
 	extends BackendMovieMaker
@@ -172,11 +193,16 @@ class TestableMovieMaker:
 	var _fake_ffmpeg_factory: Callable
 	var _grace_period_override: float = 0.1
 	var _output_file_size: int = 0
+	var _stub_transcoder := StubRegistryTranscoder.new()
 
 	func _init() -> void:
 		_fake_editor = FakeEditorInterface.get_singleton()
 		_fake_project_settings = FakeProjectSettings.get_singleton()
 		_fake_file_access = FakeFileAccess.get_singleton()
+		add_child(_stub_transcoder)
+		var registry := TranscoderRegistry.new()
+		registry.register_transcoder(_stub_transcoder)
+		_transcoder_registry = registry
 
 	func _get_editor_interface() -> Object:
 		return _fake_editor
@@ -184,7 +210,7 @@ class TestableMovieMaker:
 	func _get_project_settings() -> Object:
 		return _fake_project_settings
 
-	func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+	func _create_ffmpeg_converter() -> RecorderTranscoder:
 		if _fake_ffmpeg_factory.is_valid():
 			return _fake_ffmpeg_factory.call()
 		return super._create_ffmpeg_converter()

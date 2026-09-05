@@ -57,11 +57,8 @@ var _target_output_format := ""
 var _scene_path := ""
 var _output_dir := ""
 
-## ffmpeg converter for tier-2 WEBM/AVI/OGV targets — created lazily, same
-## pattern as BackendMovieMaker (file → file, MP4 intermediate kept).
-var _ffmpeg_converter: GdTMFFmpegConvert = null
-
-## Whether to auto-convert MP4 → tier-2 targets via ffmpeg when requested.
+## Whether to auto-convert MP4 → tier-2 targets via the matched transcoder
+## when requested.
 var _auto_convert_enabled := true
 
 var _obs_client: OBSClient = null
@@ -120,15 +117,9 @@ func get_native_formats() -> Array:
 	return [GdTMOutputFormat.Format.MP4]
 
 
-## Everything the backend can deliver: native MP4 plus every container our
-## ffmpeg file converter can write from it.
-func get_supported_formats() -> Array:
-	return [
-		GdTMOutputFormat.Format.MP4,
-		GdTMOutputFormat.Format.WEBM,
-		GdTMOutputFormat.Format.AVI,
-		GdTMOutputFormat.Format.OGV,
-	]
+## Native artifact for transcoder matching: an MP4 file.
+func get_native_artifact() -> Dictionary:
+	return {"kind": "file", "format": GdTMOutputFormat.Format.MP4}
 
 
 ## Selectability gate (common RecorderBackend interface): installed means
@@ -678,15 +669,14 @@ func _finalize_stopped() -> void:
 		_trigger_ffmpeg_convert()
 
 
-## Whether the recorded MP4 intermediate still needs an ffmpeg file convert
-## for the requested target. Native MP4 never does.
+## Whether the recorded MP4 intermediate still needs a transcode for the
+## requested target: supported, non-native, convert-enabled is checked by the
+## caller — here only the format relationship.
 func _needs_ffmpeg_convert() -> bool:
 	if _target_output_format.is_empty():
 		return false
 	var fmt := GdTMOutputFormat.from_string(_target_output_format)
-	if fmt == GdTMOutputFormat.Format.MP4:
-		return false
-	return is_format_supported(fmt)
+	return is_format_supported(fmt) and format_needs_ffmpeg(fmt)
 
 
 func _on_poll_timeout() -> void:
@@ -721,64 +711,37 @@ func _get_auto_close_setting() -> bool:
 	return bool(v) if v != null else true
 
 
-# --- ffmpeg tier-2 conversion (file → file, MP4 intermediate) -----------------
-# Same pattern as BackendMovieMaker: stopped → notice Converting… → async
-# convert → converted/notice or not-found notice / error. Keeps the MP4.
+# --- tier-2 transcode (file → file, MP4 intermediate, registry-matched) ------
 
 
 func _get_auto_convert_setting(config: Dictionary) -> bool:
 	if config.has("auto_convert"):
 		return bool(config["auto_convert"])
-	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
-		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
 	var es := _get_es()
 	if es != null and es.has_method("get_setting"):
 		var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
 		if v != null:
 			return bool(v)
+	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
+		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
 	return true
 
 
-func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
-	return GdTMFFmpegConvert.new()
-
-
-func _ensure_ffmpeg_converter() -> void:
-	if _ffmpeg_converter != null:
-		return
-	_ffmpeg_converter = _create_ffmpeg_converter()
-	if is_inside_tree():
-		add_child(_ffmpeg_converter)
-	_ffmpeg_converter.conversion_succeeded.connect(_on_ffmpeg_convert_succeeded)
-	_ffmpeg_converter.conversion_failed.connect(_on_ffmpeg_convert_failed)
-	_ffmpeg_converter.ffmpeg_not_found.connect(_on_ffmpeg_not_found)
-
-
 func _trigger_ffmpeg_convert() -> void:
-	_ensure_ffmpeg_converter()
-	recording_notice.emit(
-		get_backend_name(), "Converting to %s…" % _target_output_format.to_lower()
+	request_transcode(
+		{
+			"kind": "file",
+			"path": _intermediate_path,
+			"format": GdTMOutputFormat.Format.MP4,
+		},
+		_final_output_path,
+		{
+			"target": GdTMOutputFormat.from_string(_target_output_format),
+			"label": _target_output_format,
+			"fps": _target_fps,
+			"clean": false,
+		}
 	)
-	_ffmpeg_converter.convert_file_async(_intermediate_path, _final_output_path, false, _target_fps)
-
-
-func _on_ffmpeg_convert_succeeded(clip_path: String) -> void:
-	recording_converted.emit(get_backend_name(), clip_path)
-	recording_notice.emit(
-		get_backend_name(),
-		"Converted to %s" % clip_path.get_file() if not clip_path.is_empty() else "Converted"
-	)
-
-
-func _on_ffmpeg_not_found(message: String) -> void:
-	recording_notice.emit(get_backend_name(), message)
-
-
-func _on_ffmpeg_convert_failed(error_message: String, stderr_tail: String) -> void:
-	var detail := error_message
-	if not stderr_tail.is_empty():
-		detail = "%s\n%s" % [error_message, stderr_tail]
-	recording_error.emit(get_backend_name(), detail)
 
 
 # --- settings plumbing ---

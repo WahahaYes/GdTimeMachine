@@ -45,22 +45,21 @@ static func record(
 		print("movie_writer: output exists %s" % movie_path)
 		if output.get_extension().to_lower() in ["mp4", "webm"] and output != movie_path:
 			print("movie_writer: converting %s -> %s" % [movie_path, output])
+			# Sync (blocking) convert: this context already blocks on
+			# OS.delay_msec above, which starves call_deferred, so the async
+			# API's completion signals could never be observed here. The sync
+			# call probes + executes inline and needs no tree parent.
 			var conv244 := preload("res://addons/GdTimeMachine/backend/ffmpeg_convert.gd").new()
-			Engine.get_main_loop().root.add_child(conv244)
-			var converted := false
-			var failed := false
-			conv244.conversion_succeeded.connect(func(_bn: String, clip: String): converted = true)
-			conv244.conversion_failed.connect(func(_msg: String, _tail: String): failed = true)
-			conv244.ffmpeg_not_found.connect(func(_msg: String): failed = true)
-			conv244.convert_file_async(movie_path, output, false, fps)
-			var cstart := Time.get_ticks_msec()
-			while not converted and not failed and Time.get_ticks_msec() - cstart < 15000:
-				OS.delay_msec(100)
-			if converted:
+			var res: Dictionary = conv244.convert_file_sync(movie_path, output, fps)
+			conv244.free()
+			if int(res.get("exit_code", -1)) == 0:
+				print("movie_writer: converted -> %s" % res.get("output_path", output))
 				return 0
+			if str(res.get("reason", "")) == "not-found":
+				printerr("movie_writer: ffmpeg not found — %s kept" % movie_path)
 			else:
 				printerr("movie_writer: ffmpeg conversion failed")
-				return 1
+			return 1
 		return 0
 	else:
 		printerr("movie_writer: output not found %s" % movie_path)

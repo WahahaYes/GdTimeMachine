@@ -67,10 +67,13 @@ func test_runtime_hint_default_empty() -> void:
 func test_format_interface_defaults_follow_capture_mode() -> void:
 	var backend: RecorderBackend = autofree(RecorderBackend.new())
 	assert_true(backend.get_native_formats().is_empty())
-	# RESTART default: tier-2 MP4 needs ffmpeg, AVI does not.
-	assert_true(backend.is_format_supported(GdTMOutputFormat.Format.MP4))
+	assert_true(backend.get_native_artifact().is_empty())
+	# No artifact and no registry: deliverable = natives only (empty here),
+	# and every format conservatively needs a transcoder.
+	assert_true(backend.get_supported_formats().is_empty())
+	assert_false(backend.is_format_supported(GdTMOutputFormat.Format.MP4))
 	assert_true(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.MP4))
-	assert_false(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.AVI))
+	assert_true(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.AVI))
 
 
 func test_is_recording_default_false() -> void:

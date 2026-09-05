@@ -57,6 +57,92 @@ func _make_converter() -> FakeFFmpegConvert:
 	return autofree(FakeFFmpegConvert.new())
 
 
+## Transcoder interface: capability edges + unified dispatch
+
+
+## Dispatch recorder: proves convert_async routes by input.kind without
+## touching threads (real-Thread entry points stay unexercised per above).
+class DispatchRecorder:
+	extends FakeFFmpegConvert
+	var file_calls: Array = []
+	var frames_calls: Array = []
+
+	func convert_file_async(
+		input_path: String, output_path: String, clean_on_success: bool = false, target_fps: int = 0
+	) -> void:
+		file_calls.append([input_path, output_path, clean_on_success, target_fps])
+
+	func convert_frames_async(
+		frames_dir: String,
+		base_output_path: String,
+		target_format: String,
+		measured_fps: float,
+		frame_ext: String,
+		clean_on_success: bool = true
+	) -> void:
+		frames_calls.append(
+			[frames_dir, base_output_path, target_format, measured_fps, frame_ext, clean_on_success]
+		)
+
+
+func test_can_convert_covers_implemented_builders() -> void:
+	var conv := _make_converter()
+	var mp4_file := {"kind": "file", "path": "res://clip.mp4"}
+	var frames := {"kind": "frames", "dir": "res://clip.frames"}
+	for target in [
+		GdTMOutputFormat.Format.MP4,
+		GdTMOutputFormat.Format.WEBM,
+		GdTMOutputFormat.Format.AVI,
+		GdTMOutputFormat.Format.OGV,
+	]:
+		assert_true(conv.can_convert(mp4_file, target), "file edge %s" % target)
+		assert_true(conv.can_convert(frames, target), "frames edge %s" % target)
+	assert_false(
+		conv.can_convert(mp4_file, GdTMOutputFormat.Format.PNG), "file → stills has no builder"
+	)
+	assert_false(
+		conv.can_convert(frames, GdTMOutputFormat.Format.PNG),
+		"frames → stills is a native copy, not a transcode edge"
+	)
+	assert_false(conv.can_convert({"kind": "mystery"}, GdTMOutputFormat.Format.MP4))
+
+
+func test_convert_async_dispatches_frames_jobs_to_frames_runner() -> void:
+	var conv: DispatchRecorder = autofree(DispatchRecorder.new())
+	conv.convert_async(
+		{"kind": "frames", "dir": "res://clip.frames", "frame_ext": "png", "measured_fps": 12.0},
+		"res://clip",
+		{"target": GdTMOutputFormat.Format.WEBM}
+	)
+	assert_eq(conv.frames_calls.size(), 1)
+	assert_eq(conv.file_calls.size(), 0)
+	assert_eq(conv.frames_calls[0], ["res://clip.frames", "res://clip", "webm", 12.0, "png", true])
+
+
+func test_convert_async_dispatches_file_jobs_to_file_runner() -> void:
+	var conv: DispatchRecorder = autofree(DispatchRecorder.new())
+	conv.convert_async(
+		{"kind": "file", "path": "res://clip.mp4"},
+		"res://clip.webm",
+		{"target": GdTMOutputFormat.Format.WEBM, "fps": 60}
+	)
+	assert_eq(conv.file_calls.size(), 1)
+	assert_eq(conv.frames_calls.size(), 0)
+	assert_eq(conv.file_calls[0], ["res://clip.mp4", "res://clip.webm", false, 60])
+
+
+func test_convert_async_reports_missing_tool() -> void:
+	var conv := _make_converter()
+	conv.probe_code = 127
+	watch_signals(conv)
+	conv.convert_async(
+		{"kind": "file", "path": "res://clip.mp4"},
+		"res://clip.webm",
+		{"target": GdTMOutputFormat.Format.WEBM}
+	)
+	assert_true(await wait_for_signal(conv.transcoder_not_found, 2.0))
+
+
 ## Probe
 
 

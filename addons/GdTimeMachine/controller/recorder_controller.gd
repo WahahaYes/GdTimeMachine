@@ -13,6 +13,10 @@ var backends: Dictionary = {}
 ## Currently selected backend; null when none is registered yet.
 var active_backend: RecorderBackend = null
 
+## Transcoder capability registry (no ownership — tracked transcoders stay
+## owned by whoever add_child'd them, the controller in production).
+var transcoder_registry: TranscoderRegistry = TranscoderRegistry.new()
+
 ## Injected by plugin.gd; hosts the debugger message channel used to ask the
 ## running game to bring its own window to focus when a recording starts.
 var _debugger_plugin: Object = null
@@ -38,6 +42,14 @@ signal recording_converted(backend_name: String, clip_path: String)
 ## guarded with has_signal). Lets the dock re-mark the backend dropdown
 ## without ever holding backend references.
 signal backend_availability_changed(backend_name: String, available: bool)
+## Emitted when a registered transcoder's availability flips (forwarded from
+## the registry). Lets the dock re-derive disabled format items live, so a
+## mid-session ffmpeg install lights up tier-2 entries without a restart.
+signal transcoder_availability_changed(transcoder_name: String, available: bool)
+
+
+func _init() -> void:
+	transcoder_registry.transcoder_availability_changed.connect(_on_transcoder_availability_changed)
 
 
 ## Registers a backend under its own name, connects its signals, reparents it
@@ -56,6 +68,7 @@ func register_backend(backend: RecorderBackend) -> void:
 		unregister_backend(backend_name)
 	_connect_backend_signals(backend)
 	backends[backend_name] = backend
+	backend._transcoder_registry = transcoder_registry
 	if not backend.is_inside_tree():
 		add_child(backend)
 	if active_backend == null:
@@ -102,6 +115,66 @@ func is_recording() -> bool:
 	return active_backend != null and active_backend.is_recording()
 
 
+## Registers a transcoder for capability matching. The controller takes
+## ownership (reparents when parentless and possible); the registry itself
+## only tracks. Plugin registers the built-in ffmpeg transcoder at startup.
+func register_transcoder(transcoder: RecorderTranscoder) -> void:
+	if transcoder == null:
+		push_warning("Cannot register a null transcoder")
+		return
+	transcoder_registry.register_transcoder(transcoder)
+	if transcoder.get_parent() == null and is_inside_tree():
+		add_child(transcoder)
+
+
+## Stops tracking a transcoder by name and frees it when the controller owns
+## it (mirrors unregister_backend).
+func unregister_transcoder(transcoder_name: String) -> void:
+	for t in transcoder_registry.list_transcoders():
+		var transcoder := t as RecorderTranscoder
+		if transcoder != null and transcoder.get_transcoder_name() == transcoder_name:
+			if transcoder.get_parent() == self:
+				remove_child(transcoder)
+			transcoder.queue_free()
+	transcoder_registry.unregister_transcoder(transcoder_name)
+
+
+## Whether any transcoder is registered. Without coverage the dock answers
+## transcodability with a direct single-tool probe (bare unit-test
+## controllers); production always registers ffmpeg at startup.
+func has_transcoders() -> bool:
+	return transcoder_registry.transcoder_count() > 0
+
+
+## Whether the named backend's format can be delivered right now: natives
+## always, transcoded formats only when an available registry transcoder
+## covers the backend's artifact → format edge.
+func is_format_transcodable(backend_name: String, format: GdTMOutputFormat.Format) -> bool:
+	if not backends.has(backend_name):
+		return false
+	var backend: RecorderBackend = backends[backend_name]
+	if not backend.format_needs_ffmpeg(format):
+		return true
+	if not has_transcoders():
+		return _direct_ffmpeg_probe()
+	return transcoder_registry.find_transcoder(backend.get_native_artifact(), format) != null
+
+
+## Re-probes every registered transcoder; flips fan out as
+## transcoder_availability_changed. Called before the format dropdown
+## populates (same cost as the old single ffmpeg probe).
+func refresh_transcoder_availability() -> bool:
+	return transcoder_registry.refresh_availability()
+
+
+## Direct single-tool probe used only when no transcoder is registered.
+func _direct_ffmpeg_probe() -> bool:
+	var checker := GdTMFFmpegConvert.new()
+	var ok: bool = checker.probe_ffmpeg()
+	checker.free()
+	return ok
+
+
 ## Whether the backend registered under backend_name reports itself available
 ## right now (selectable gate). Thin read-only wrapper so the UI never holds
 ## backend references. For OBS this means installed/launchable, not merely
@@ -113,28 +186,21 @@ func is_backend_available(backend_name: String) -> bool:
 	return backend.is_available()
 
 
-## Unavailable reason for the given backend ("" when available). Delegates to
-## the backend's common get_unavailable_reason() when present.
+## Unavailable reason for the given backend ("" when available).
 func get_backend_unavailable_reason(backend_name: String) -> String:
 	if not backends.has(backend_name):
 		return "Unknown backend '%s'" % backend_name
 	var backend: RecorderBackend = backends[backend_name]
-	if backend.has_method("get_unavailable_reason"):
-		return str(backend.get_unavailable_reason())
-	if not backend.is_available():
-		return "%s is currently unavailable." % backend_name
-	return ""
+	return str(backend.get_unavailable_reason())
 
 
 ## Transient ready-state hint for an available backend ("" when nothing to
-## say). Delegates to the backend's common get_runtime_hint() when present.
+## say).
 func get_backend_runtime_hint(backend_name: String) -> String:
 	if not backends.has(backend_name):
 		return ""
 	var backend: RecorderBackend = backends[backend_name]
-	if backend.has_method("get_runtime_hint"):
-		return str(backend.get_runtime_hint())
-	return ""
+	return str(backend.get_runtime_hint())
 
 
 ## Single tooltip source for backend dropdown items: the unavailable reason
@@ -260,3 +326,9 @@ func _on_backend_recording_converted(backend_name: String, clip_path: String) ->
 ## Forwards a backend's availability_changed as the controller's own signal.
 func _on_backend_availability_changed(available: bool, backend_name: String) -> void:
 	backend_availability_changed.emit(backend_name, available)
+
+
+## Forwards the registry's transcoder_availability_changed as the
+## controller's own signal.
+func _on_transcoder_availability_changed(transcoder_name: String, available: bool) -> void:
+	transcoder_availability_changed.emit(transcoder_name, available)

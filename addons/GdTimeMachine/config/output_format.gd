@@ -37,25 +37,6 @@ static func to_extension(format: Format) -> String:
 	return "avi"
 
 
-## Whether a format requires ffmpeg conversion (tier-2).
-static func is_tier2_format(format: Format) -> bool:
-	return format == Format.MP4 or format == Format.WEBM
-
-
-## Whether a format is a native screenshot frames source (PNG/JPG stored
-## in .frames/). Encoding to tier-1 container targets (AVI/OGV) also requires
-## ffmpeg when coming from screenshots.
-static func is_frames_source_format(format: Format) -> bool:
-	return format == Format.PNG or format == Format.JPG
-
-
-## Whether capturing into the given format as final output needs ffmpeg when
-## the backend's native artifact is a frames directory (screenshot backend).
-## PNG/JPG are native frames (no-op), everything else requires ffmpeg.
-static func frames_need_ffmpeg(format: Format) -> bool:
-	return format != Format.PNG and format != Format.JPG
-
-
 ## Plain base label with no dependency suffix (the " - ffmpeg" marker is
 ## applied per-backend by display_name_for_backend()).
 static func base_display_name(format: Format) -> String:

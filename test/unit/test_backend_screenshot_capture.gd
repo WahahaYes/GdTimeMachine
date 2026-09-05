@@ -36,7 +36,7 @@ class FakeFFmpegConverterForScreenshot:
 			[frames_dir, base_output_path, target_format, measured_fps, frame_ext, clean_on_success]
 		)
 		if not probe_result:
-			ffmpeg_not_found.emit("ffmpeg not found — frames kept at %s" % frames_dir)
+			transcoder_not_found.emit("ffmpeg not found — frames kept at %s" % frames_dir)
 			return
 		if execute_code != 0:
 			conversion_failed.emit(
@@ -50,6 +50,25 @@ class FakeFFmpegConverterForScreenshot:
 
 ## Backend under test: every environment/timer seam is a recorded no-op or a
 ## test-driven stub.
+class StubRegistryTranscoder:
+	extends RecorderTranscoder
+	var available := true
+
+	func get_transcoder_name() -> String:
+		return "stub-ffmpeg"
+
+	func is_available() -> bool:
+		return available
+
+	func can_convert(input: Dictionary, target: GdTMOutputFormat.Format) -> bool:
+		return (
+			target == GdTMOutputFormat.Format.MP4
+			or target == GdTMOutputFormat.Format.WEBM
+			or target == GdTMOutputFormat.Format.AVI
+			or target == GdTMOutputFormat.Format.OGV
+		)
+
+
 class FakeScreenshotBackend:
 	extends BackendScreenshotCapture
 	var playing := false
@@ -71,6 +90,13 @@ class FakeScreenshotBackend:
 	var injected_converter: FakeFFmpegConverterForScreenshot = null
 	# When false, _send_screenshot_request reports failure (request denied).
 	var send_ok := true
+	var _stub_transcoder := StubRegistryTranscoder.new()
+
+	func _init() -> void:
+		add_child(_stub_transcoder)
+		var registry := TranscoderRegistry.new()
+		registry.register_transcoder(_stub_transcoder)
+		_transcoder_registry = registry
 
 	func _is_playing_scene() -> bool:
 		return playing
@@ -133,7 +159,7 @@ class FakeScreenshotBackend:
 	func _stop_no_reply_timer() -> void:
 		pass
 
-	func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+	func _create_ffmpeg_converter() -> RecorderTranscoder:
 		if injected_converter != null:
 			return injected_converter
 		injected_converter = FakeFFmpegConverterForScreenshot.new()
@@ -582,7 +608,7 @@ func test_ffmpeg_convert_not_triggered_for_native_or_disabled() -> void:
 	conv_off.free()
 
 
-func test_ffmpeg_not_found_keeps_frames_and_emits_notice() -> void:
+func test_transcoder_not_found_keeps_frames_and_emits_notice() -> void:
 	var backend := _make_backend()
 	var conv := FakeFFmpegConverterForScreenshot.new()
 	conv.probe_result = false

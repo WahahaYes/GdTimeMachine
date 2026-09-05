@@ -223,6 +223,99 @@ func test_backend_tooltip_returns_reason_then_hint() -> void:
 	assert_eq(controller.get_backend_tooltip("Test"), "")
 
 
+## Transcoder registry
+
+
+## Backend double declaring natives + artifact so deliverables derive from
+## the registry (mirrors the dock MockOBSBackend).
+class TranscodeBackend:
+	extends RecorderBackend
+	var available := true
+
+	func get_backend_name() -> String:
+		return "Transcode Backend"
+
+	func is_available() -> bool:
+		return available
+
+	func get_native_formats() -> Array:
+		return [GdTMOutputFormat.Format.MP4]
+
+	func get_native_artifact() -> Dictionary:
+		return {"kind": "file", "format": GdTMOutputFormat.Format.MP4}
+
+
+## Stub transcoder with scripted availability and ffmpeg-style file edges.
+class StubTranscoder:
+	extends RecorderTranscoder
+	var available := true
+
+	func get_transcoder_name() -> String:
+		return "stub"
+
+	func is_available() -> bool:
+		return available
+
+	func can_convert(input: Dictionary, target: GdTMOutputFormat.Format) -> bool:
+		return (
+			target == GdTMOutputFormat.Format.MP4
+			or target == GdTMOutputFormat.Format.WEBM
+			or target == GdTMOutputFormat.Format.AVI
+			or target == GdTMOutputFormat.Format.OGV
+		)
+
+
+func _make_stub() -> StubTranscoder:
+	# Owned by the controller after register_transcoder (mirrors how backend
+	# doubles are owned); never pre-parented, so teardown frees exactly once.
+	var stub := StubTranscoder.new()
+	return stub
+
+
+func test_register_transcoder_tracks_and_forwards_flips() -> void:
+	var controller := make_controller()
+	assert_false(controller.has_transcoders())
+	var stub := _make_stub()
+	controller.register_transcoder(stub)
+	assert_true(controller.has_transcoders())
+	controller.transcoder_availability_changed.connect(
+		func(n: String, a: bool) -> void:
+			_captured_name = n
+			_captured_bool = a
+	)
+	stub.available = false
+	assert_true(controller.refresh_transcoder_availability())
+	assert_eq(_captured_name, "stub")
+	assert_false(_captured_bool)
+	assert_false(controller.refresh_transcoder_availability(), "steady state is silent")
+
+
+func test_is_format_transcodable_uses_registry_edges() -> void:
+	var controller := make_controller()
+	var backend := TranscodeBackend.new()
+	controller.register_backend(backend)
+	var stub := _make_stub()
+	controller.register_transcoder(stub)
+	assert_true(
+		controller.is_format_transcodable("Transcode Backend", GdTMOutputFormat.Format.MP4),
+		"natives never need a transcoder"
+	)
+	assert_true(
+		controller.is_format_transcodable("Transcode Backend", GdTMOutputFormat.Format.WEBM),
+		"available stub covers the edge"
+	)
+	stub.available = false
+	assert_false(
+		controller.is_format_transcodable("Transcode Backend", GdTMOutputFormat.Format.WEBM),
+		"missing tool disables the transcode target"
+	)
+	assert_false(
+		controller.is_format_transcodable("Transcode Backend", GdTMOutputFormat.Format.PNG),
+		"no edge at all means unsupported"
+	)
+	assert_false(controller.is_format_transcodable("Unknown", GdTMOutputFormat.Format.WEBM))
+
+
 ## Capture mode propagation
 
 

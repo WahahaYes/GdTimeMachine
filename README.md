@@ -50,7 +50,7 @@ The dock status line shows live state while recording (backend, output file, ela
 ## Backends
 
 - **Movie Maker** (`RESTART_SCENE`) — AVI / OGV / PNG. Restarts the scene to record. AVI capped at **4 GB** (auto-stops before cap). No external deps.
-- **Screenshot** (`IN_PLACE`) — PNG / JPG (+ ffmpeg → MP4 / WebM). Records the running scene in real time (~15 fps, no audio). Window must stay visible. No restart, no kill on Stop.
+- **Screenshot** (`IN_PLACE`) — PNG / JPG native (+ ffmpeg → MP4 / WebM / AVI / OGV). Records the running scene in real time (~15 fps, no audio). Window must stay visible. No restart, no kill on Stop.
 - **OBS Studio** (`IN_PLACE`) — MP4 native (Full FPS + audio, auto-launches via WebSocket if not running, no scene restart) + ffmpeg → WebM / AVI / OGV post-convert after stop.
 
 `RESTART_SCENE` backends must relaunch the scene, so the in-game record button is disabled while a scene runs. `IN_PLACE` backends capture the running scene directly; if nothing is running, Record launches the scene first.

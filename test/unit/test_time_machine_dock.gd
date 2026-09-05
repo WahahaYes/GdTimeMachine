@@ -9,7 +9,9 @@ const DOCK_SCENE := "res://addons/GdTimeMachine/ui/time_machine_dock.tscn"
 
 
 ## Mock backend exercising the RecorderBackend contract (mirrors the one in
-## test_recorder_controller.gd). Inner class so GUT doesn't collect it.
+## test_recorder_controller.gd). Declares Movie Maker-like natives + artifact
+## so deliverables derive from the registry exactly like production.
+## Inner class so GUT doesn't collect it.
 class MockBackend:
 	extends RecorderBackend
 	var display_name := "Godot Movie Maker"
@@ -30,6 +32,16 @@ class MockBackend:
 
 	func get_capture_mode() -> CaptureMode:
 		return capture_mode
+
+	func get_native_formats() -> Array:
+		return [
+			GdTMOutputFormat.Format.AVI,
+			GdTMOutputFormat.Format.OGV,
+			GdTMOutputFormat.Format.PNG,
+		]
+
+	func get_native_artifact() -> Dictionary:
+		return {"kind": "file", "format": GdTMOutputFormat.Format.AVI}
 
 	func start(_config: Dictionary) -> void:
 		recording = true
@@ -76,19 +88,46 @@ class MockOBSBackend:
 	func get_native_formats() -> Array:
 		return [GdTMOutputFormat.Format.MP4]
 
-	func get_supported_formats() -> Array:
-		return [
-			GdTMOutputFormat.Format.MP4,
-			GdTMOutputFormat.Format.WEBM,
-			GdTMOutputFormat.Format.AVI,
-			GdTMOutputFormat.Format.OGV,
-		]
+	func get_native_artifact() -> Dictionary:
+		return {"kind": "file", "format": GdTMOutputFormat.Format.MP4}
 
 	func start(_config: Dictionary) -> void:
 		recording = true
 
 	func stop() -> void:
 		recording = false
+
+
+## Stub transcoder with scripted availability and ffmpeg-style file+frames
+## edges, attached to the test controller's registry so derivation (not hand
+## lists) feeds the dropdown.
+class StubTranscoder:
+	extends RecorderTranscoder
+	var available := true
+	var converted: Array = []
+
+	func get_transcoder_name() -> String:
+		return "stub-ffmpeg"
+
+	func is_available() -> bool:
+		return available
+
+	func get_unavailable_reason() -> String:
+		return "Requires stub-ffmpeg."
+
+	func can_convert(input: Dictionary, target: GdTMOutputFormat.Format) -> bool:
+		if str(input.get("kind", "file")) == "frames":
+			return target != GdTMOutputFormat.Format.PNG and target != GdTMOutputFormat.Format.JPG
+		return (
+			target == GdTMOutputFormat.Format.MP4
+			or target == GdTMOutputFormat.Format.WEBM
+			or target == GdTMOutputFormat.Format.AVI
+			or target == GdTMOutputFormat.Format.OGV
+		)
+
+	func convert_async(input: Dictionary, output_path: String, _options: Dictionary) -> void:
+		converted.append([input, output_path])
+		conversion_succeeded.emit(output_path)
 
 
 ## In-memory ConfigStore stand-in that records every scene-profile save/clear.
@@ -135,6 +174,15 @@ class FakeSettings:
 		values[key] = value
 
 
+## Attaches an available stub transcoder to a mock controller so MockBackend
+## deliverables derive from the registry exactly like production.
+func _attach_stub_transcoder(controller: RecorderController) -> StubTranscoder:
+	var transcoder := StubTranscoder.new()
+	transcoder.available = true
+	controller.register_transcoder(transcoder)
+	return transcoder
+
+
 ## Instantiates the dock scene with a real controller (owning a MockBackend)
 ## and the given store, seeds the scene field (so _prefill_scene skips
 ## EditorInterface), and adds the dock to the tree. Returns the dock,
@@ -143,6 +191,7 @@ func _build_dock(store: FakeStore, scene_path: String) -> Dictionary:
 	var controller: RecorderController = add_child_autofree(RecorderController.new())
 	var backend := MockBackend.new()
 	controller.register_backend(backend)
+	_attach_stub_transcoder(controller)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
 	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
 	dock._ffmpeg_probe_override = 1
@@ -160,6 +209,7 @@ func _build_dock_with_mode(
 	var backend := MockBackend.new()
 	backend.capture_mode = capture_mode
 	controller.register_backend(backend)
+	_attach_stub_transcoder(controller)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
 	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
 	dock._ffmpeg_probe_override = 1
@@ -172,8 +222,10 @@ func _build_dock_with_mode(
 ## MockOBSBackend SECOND, so the dropdown order is [Godot Movie Maker, OBS
 ## Studio]. `obs_available` seeds the OBS backend's availability; settings
 ## may carry editor-settings values (e.g. hints/dont_show_obs_hint). Injects
-## the dock's _editor_settings seam BEFORE the dock enters the tree. Forces
-## ffmpeg present unless a test overrides dock._ffmpeg_probe_override after.
+## the dock's _editor_settings seam BEFORE the dock enters the tree. Attaches
+## an available StubTranscoder so OBS formats derive from the registry (the
+## mock declares natives + artifact, no hand list); tests flip
+## ctx["transcoder"].available + refresh to simulate ffmpeg going missing.
 func _build_dock_with_obs(
 	store: FakeStore, scene_path: String, obs_available: bool, settings: FakeSettings = null
 ) -> Dictionary:
@@ -183,6 +235,9 @@ func _build_dock_with_obs(
 	var obs := MockOBSBackend.new()
 	obs.available = obs_available
 	controller.register_backend(obs)
+	var transcoder := StubTranscoder.new()
+	transcoder.available = true
+	controller.register_transcoder(transcoder)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
 	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
 	if settings != null:
@@ -195,10 +250,15 @@ func _build_dock_with_obs(
 			var host := str(h) if h != null else "127.0.0.1"
 			var port := int(p) if p != null else 4455
 			obs.ws_target = "ws://%s:%d" % [host, port]
-	dock._ffmpeg_probe_override = 1
 	dock.setup(controller, store)
 	add_child_autofree(dock)
-	return {"dock": dock, "controller": controller, "obs": obs, "movie_maker": movie_maker}
+	return {
+		"dock": dock,
+		"controller": controller,
+		"obs": obs,
+		"movie_maker": movie_maker,
+		"transcoder": transcoder,
+	}
 
 
 ## Index of the OBS Studio item in the backend dropdown (searched by metadata;
@@ -498,6 +558,29 @@ func test_availability_flip_updates_disabled_live() -> void:
 	obs.availability_changed.emit(false)
 	assert_true(option.is_item_disabled(obs_i))
 	assert_eq(option.get_item_text(obs_i), "OBS Studio")
+
+
+func test_transcoder_flip_rederives_disabled_formats_live() -> void:
+	# A mid-session ffmpeg loss (stub flagged unavailable + refresh) greys
+	# transcode targets without touching natives — the availability event.
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	var transcoder := ctx["transcoder"] as StubTranscoder
+	controller.select_backend("OBS Studio")
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	var webm_i := _format_item_index(dock, GdTMOutputFormat.Format.WEBM)
+	var mp4_i := _format_item_index(dock, GdTMOutputFormat.Format.MP4)
+	assert_false(option.is_item_disabled(webm_i))
+	transcoder.available = false
+	controller.refresh_transcoder_availability()
+	assert_true(option.is_item_disabled(webm_i))
+	assert_false(option.is_item_disabled(mp4_i), "natives never gate on tools")
+	transcoder.available = true
+	controller.refresh_transcoder_availability()
+	assert_false(option.is_item_disabled(webm_i))
 
 
 ## Format dropdown

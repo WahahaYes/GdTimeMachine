@@ -54,32 +54,10 @@ func test_display_name_all_formats() -> void:
 	assert_true(GdTMOutputFormat.display_name(GdTMOutputFormat.Format.WEBM).contains("ffmpeg"))
 
 
-## Tier-2 and frames source classification
-
-
-func test_is_tier2_format() -> void:
-	assert_true(GdTMOutputFormat.is_tier2_format(GdTMOutputFormat.Format.MP4))
-	assert_true(GdTMOutputFormat.is_tier2_format(GdTMOutputFormat.Format.WEBM))
-	assert_false(GdTMOutputFormat.is_tier2_format(GdTMOutputFormat.Format.AVI))
-	assert_false(GdTMOutputFormat.is_tier2_format(GdTMOutputFormat.Format.OGV))
-	assert_false(GdTMOutputFormat.is_tier2_format(GdTMOutputFormat.Format.PNG))
-	assert_false(GdTMOutputFormat.is_tier2_format(GdTMOutputFormat.Format.JPG))
-
-
-func test_is_frames_source_format() -> void:
-	assert_true(GdTMOutputFormat.is_frames_source_format(GdTMOutputFormat.Format.PNG))
-	assert_true(GdTMOutputFormat.is_frames_source_format(GdTMOutputFormat.Format.JPG))
-	assert_false(GdTMOutputFormat.is_frames_source_format(GdTMOutputFormat.Format.AVI))
-	assert_false(GdTMOutputFormat.is_frames_source_format(GdTMOutputFormat.Format.MP4))
-
-
-func test_frames_need_ffmpeg() -> void:
-	assert_false(GdTMOutputFormat.frames_need_ffmpeg(GdTMOutputFormat.Format.PNG))
-	assert_false(GdTMOutputFormat.frames_need_ffmpeg(GdTMOutputFormat.Format.JPG))
-	assert_true(GdTMOutputFormat.frames_need_ffmpeg(GdTMOutputFormat.Format.AVI))
-	assert_true(GdTMOutputFormat.frames_need_ffmpeg(GdTMOutputFormat.Format.MP4))
-	assert_true(GdTMOutputFormat.frames_need_ffmpeg(GdTMOutputFormat.Format.WEBM))
-
+## Transcoder edge classification now lives on the transcoder
+## (RecorderTranscoder.can_convert, covered in test_ffmpeg_convert.gd) —
+## per-format statics were deleted so offered and implementable sets cannot
+## drift apart.
 
 ## Size warning
 

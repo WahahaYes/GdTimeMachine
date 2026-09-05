@@ -298,6 +298,7 @@ func _apply_setup() -> void:
 	if _controller.has_signal("recording_converted"):
 		_controller.recording_converted.connect(_on_recording_converted)
 	_controller.backend_availability_changed.connect(_on_backend_availability_changed)
+	_controller.transcoder_availability_changed.connect(_on_transcoder_availability_changed)
 	_populate_backends()
 	_populate_formats()
 	_load_settings()
@@ -340,21 +341,19 @@ func _populate_backends() -> void:
 ## reason when not selectable, else the runtime hint (e.g. OBS installed but
 ## idle → "will auto-launch"). Empty when steady-state.
 func _backend_tooltip(backend_name: String) -> String:
-	if _controller != null and _controller.has_method("get_backend_tooltip"):
+	if _controller != null:
 		return str(_controller.get_backend_tooltip(backend_name))
-	if _controller != null and not _controller.is_backend_available(backend_name):
-		if backend_name == OBS_BACKEND_NAME:
-			return (
-				(
-					"OBS Studio not found at %s. Install OBS Studio, enable the WebSocket "
-					% _obs_target_text()
-				)
-				+ "server (Tools → WebSocket Server Settings → Enable WebSocket Server), "
-				+ "and check gd_time_machine/obs/* (host/port/password) under Project > "
-				+ "Editor Settings."
+	if backend_name == OBS_BACKEND_NAME:
+		return (
+			(
+				"OBS Studio not found at %s. Install OBS Studio, enable the WebSocket "
+				% _obs_target_text()
 			)
-		return "%s is currently unavailable." % backend_name
-	return ""
+			+ "server (Tools → WebSocket Server Settings → Enable WebSocket Server), "
+			+ "and check gd_time_machine/obs/* (host/port/password) under Project > "
+			+ "Editor Settings."
+		)
+	return "%s is currently unavailable." % backend_name
 
 
 ## If the current dropdown selection is disabled (e.g. profile names an
@@ -377,34 +376,13 @@ func _ensure_valid_backend_selection() -> void:
 			return
 
 
-## Formats the active backend can deliver (native plus ffmpeg-transcoded).
-## Delegates to the backend's common get_supported_formats() — no per-backend
-## branching here; the backend owns its format knowledge.
+## Formats the active backend can deliver. Delegates to the backend, which
+## derives natives plus registry-matched transcode targets.
 func _get_allowed_formats() -> Array:
 	var backend := _controller.active_backend if _controller != null else null
-	if backend != null and backend.has_method("get_supported_formats"):
-		return backend.get_supported_formats()
-	if backend != null and backend.has_method("get_native_formats"):
-		return backend.get_native_formats()
-	if (
-		_controller != null
-		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
-	):
-		return [
-			GdTMOutputFormat.Format.PNG,
-			GdTMOutputFormat.Format.JPG,
-			GdTMOutputFormat.Format.MP4,
-			GdTMOutputFormat.Format.WEBM,
-			GdTMOutputFormat.Format.AVI,
-			GdTMOutputFormat.Format.OGV,
-		]
-	return [
-		GdTMOutputFormat.Format.AVI,
-		GdTMOutputFormat.Format.OGV,
-		GdTMOutputFormat.Format.PNG,
-		GdTMOutputFormat.Format.MP4,
-		GdTMOutputFormat.Format.WEBM,
-	]
+	if backend == null:
+		return []
+	return backend.get_supported_formats()
 
 
 ## Fills the format dropdown from the formats the active backend supports.
@@ -413,13 +391,14 @@ func _get_allowed_formats() -> Array:
 ## so selection never parses display text.
 func _populate_formats() -> void:
 	_format_option.clear()
-	var ffmpeg_ok := _is_ffmpeg_available()
+	if _controller != null:
+		_controller.refresh_transcoder_availability()
 	for fmt in _get_allowed_formats():
 		var i := _format_option.item_count
 		_format_option.add_item(_format_display_name(fmt))
 		_format_option.set_item_metadata(i, int(fmt))
 		var needs_ffmpeg := _format_needs_ffmpeg(fmt)
-		var disabled := needs_ffmpeg and not ffmpeg_ok
+		var disabled := needs_ffmpeg and not _is_format_transcodable(fmt)
 		_format_option.set_item_disabled(i, disabled)
 		if disabled:
 			_format_option.set_item_tooltip(
@@ -436,34 +415,26 @@ func _populate_formats() -> void:
 	_ensure_valid_format_selection()
 
 
-## Whether the given format needs ffmpeg conversion for the active backend.
-## Delegates to the backend's common format_needs_ffmpeg() — the single
-## needs-ffmpeg authority shared with _expects_conversion().
+## Whether the given format needs a transcoder for the active backend.
+## Delegates to the backend — the single needs authority shared with
+## _expects_conversion().
 func _format_needs_ffmpeg(fmt: GdTMOutputFormat.Format) -> bool:
 	var backend := _controller.active_backend if _controller != null else null
-	if backend != null and backend.has_method("format_needs_ffmpeg"):
-		return bool(backend.format_needs_ffmpeg(fmt))
-	if backend != null and backend.has_method("get_native_formats"):
-		var natives: Array = backend.get_native_formats()
-		return not natives.has(fmt)
-	if (
-		_controller != null
-		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
-	):
-		return GdTMOutputFormat.frames_need_ffmpeg(fmt)
-	return GdTMOutputFormat.is_tier2_format(fmt)
+	if backend == null:
+		return false
+	return bool(backend.format_needs_ffmpeg(fmt))
 
 
-## Whether the active backend records the given format natively.
-## Delegates to the backend's common get_native_formats(). Doubles without
-## declared natives fall back to the needs gate (native ⟺ no ffmpeg needed),
-## which reproduces the historical labels exactly.
+## Whether the active backend records the given format natively. Doubles
+## without declared natives fall back to the needs gate (native ⟺ no
+## transcoder needed).
 func _is_format_native(fmt: GdTMOutputFormat.Format) -> bool:
 	var backend := _controller.active_backend if _controller != null else null
-	if backend != null and backend.has_method("get_native_formats"):
-		var natives: Array = backend.get_native_formats()
-		if not natives.is_empty():
-			return natives.has(fmt)
+	if backend == null:
+		return true
+	var natives: Array = backend.get_native_formats()
+	if not natives.is_empty():
+		return natives.has(fmt)
 	return not _format_needs_ffmpeg(fmt)
 
 
@@ -477,23 +448,18 @@ func _format_warning_text(fmt: GdTMOutputFormat.Format) -> String:
 	return GdTMOutputFormat.warning_text_for_backend(fmt, _is_format_native(fmt))
 
 
-## Whether ffmpeg conversion is available (common interface parallel to
-## RecorderBackend.is_available). Test seam _ffmpeg_probe_override forces the
-## result; otherwise probes via a short-lived GdTMFFmpegConvert.
-func _is_ffmpeg_available() -> bool:
+## Whether the given format can be delivered right now: natives always, else
+## iff an available registry transcoder covers the active backend's artifact.
+## Test seam _ffmpeg_probe_override forces the answer; otherwise the
+## controller (registry, else a direct probe) decides.
+func _is_format_transcodable(fmt: GdTMOutputFormat.Format) -> bool:
 	if _ffmpeg_probe_override == 0:
 		return false
 	if _ffmpeg_probe_override == 1:
 		return true
-	var checker := _create_ffmpeg_checker()
-	var ok: bool = checker.probe_ffmpeg()
-	checker.free()
-	return ok
-
-
-## Factory seam so GUT can inject a fake ffmpeg checker.
-func _create_ffmpeg_checker() -> GdTMFFmpegConvert:
-	return GdTMFFmpegConvert.new()
+	if _controller == null or _controller.active_backend == null:
+		return true
+	return _controller.is_format_transcodable(_controller.active_backend.get_backend_name(), fmt)
 
 
 ## If the current format selection is disabled (needs missing ffmpeg), fall
@@ -757,6 +723,14 @@ func _on_backend_availability_changed(backend_name: String, _reachable: bool) ->
 			_backend_option.set_item_tooltip(i, _backend_tooltip(backend_name))
 		_ensure_valid_backend_selection()
 		return
+
+
+## Re-derives disabled format items when a transcoder's availability flips
+## (e.g. ffmpeg installed mid-session), preserving the current selection when
+## it is still enabled. Selection changes never emit item_selected, so an
+## in-flight recording (config snapshotted at press time) is unaffected.
+func _on_transcoder_availability_changed(_transcoder_name: String, _available: bool) -> void:
+	_repopulate_formats_for_backend()
 
 
 ## Rebuilds the format dropdown for the active backend, keeping the current

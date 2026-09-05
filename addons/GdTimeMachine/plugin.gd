@@ -110,6 +110,9 @@ func _enter_tree() -> void:
 	# OBS is a per-project opt-in via the backend dropdown / saved profile.
 	_obs_backend = BackendOBS.new()
 	_recorder_controller.register_backend(_obs_backend)
+	# The built-in ffmpeg transcoder backs every backend's post-record
+	# transcode targets; the registry matches artifacts to it.
+	_recorder_controller.register_transcoder(GdTMFFmpegConvert.new())
 	_connect_controller_feedback()
 	_dock = preload("res://addons/GdTimeMachine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)

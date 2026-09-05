@@ -73,9 +73,6 @@ var _grace_timer: Timer
 ## Injected by plugin.gd; used to send the graceful-stop request to the game.
 var _debugger_plugin: Object = null
 
-## ffmpeg converter for tier-2 MP4/WebM targets — created lazily.
-var _ffmpeg_converter: GdTMFFmpegConvert = null
-
 ## Target output extension/format from build_config(): e.g. "avi" vs "mp4".
 ## Stored so _finalize_stopped can decide whether to transcode.
 var _target_output_format: String = ""
@@ -129,8 +126,8 @@ func get_capture_mode() -> CaptureMode:
 	return CaptureMode.RESTART_SCENE
 
 
-## Engine-native artifacts (no ffmpeg): AVI/OGV/PNG. MP4/WebM arrive via the
-## ffmpeg tier-2 file convert below.
+## Engine-native artifacts (no transcoder): AVI/OGV/PNG. MP4/WebM arrive via
+## the registry-matched file converter below.
 func get_native_formats() -> Array:
 	return [
 		GdTMOutputFormat.Format.AVI,
@@ -139,15 +136,9 @@ func get_native_formats() -> Array:
 	]
 
 
-## Everything the backend can deliver: natives plus ffmpeg-transcoded MP4/WebM.
-func get_supported_formats() -> Array:
-	return [
-		GdTMOutputFormat.Format.AVI,
-		GdTMOutputFormat.Format.OGV,
-		GdTMOutputFormat.Format.PNG,
-		GdTMOutputFormat.Format.MP4,
-		GdTMOutputFormat.Format.WEBM,
-	]
+## Native artifact for transcoder matching: an AVI file.
+func get_native_artifact() -> Dictionary:
+	return {"kind": "file", "format": GdTMOutputFormat.Format.AVI}
 
 
 ## Begins a recording: captures previous ProjectSettings, configures Movie Maker
@@ -174,7 +165,7 @@ func start(config: Dictionary) -> void:
 	_final_output_path = raw_path
 	_intermediate_path = raw_path
 	var fmt := GdTMOutputFormat.from_string(_target_output_format)
-	if GdTMOutputFormat.is_tier2_format(fmt):
+	if is_format_supported(fmt) and format_needs_ffmpeg(fmt):
 		var base := raw_path
 		var ext := base.get_extension().to_lower()
 		if ext in ["mp4", "webm"]:
@@ -309,9 +300,10 @@ func _finalize_stopped() -> void:
 		)
 	_set_movie_maker_enabled(false)
 	_restore_settings()
-	# Tier-2: AVI just finalized, now transcode to MP4/WebM if requested.
+	# Tier-2: AVI just finalized, now transcode when the target is a
+	# supported transcoded format.
 	var fmt := GdTMOutputFormat.from_string(_target_output_format)
-	if _auto_convert_enabled and GdTMOutputFormat.is_tier2_format(fmt):
+	if _auto_convert_enabled and is_format_supported(fmt) and format_needs_ffmpeg(fmt):
 		_trigger_ffmpeg_convert()
 
 
@@ -415,63 +407,38 @@ func _get_grace_period() -> float:
 	return GRACE_PERIOD
 
 
-# --- ffmpeg tier-2 conversion -------------------------------------------------
+# --- ffmpeg tier-2 conversion (registry-matched file converter) ----------------
 
 
 func _get_auto_convert_setting(config: Dictionary) -> bool:
 	if config.has("auto_convert"):
 		return bool(config["auto_convert"])
-	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
-		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
 	if Engine.has_singleton("EditorSettings"):
 		var es: Object = Engine.get_singleton("EditorSettings")
 		if es != null and es.has_method("get_setting"):
 			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
 			if v != null:
 				return bool(v)
+	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
+		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
 	return true
 
 
-func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
-	return GdTMFFmpegConvert.new()
-
-
-func _ensure_ffmpeg_converter() -> void:
-	if _ffmpeg_converter != null:
-		return
-	_ffmpeg_converter = _create_ffmpeg_converter()
-	if is_inside_tree():
-		add_child(_ffmpeg_converter)
-	_ffmpeg_converter.conversion_succeeded.connect(_on_ffmpeg_convert_succeeded)
-	_ffmpeg_converter.conversion_failed.connect(_on_ffmpeg_convert_failed)
-	_ffmpeg_converter.ffmpeg_not_found.connect(_on_ffmpeg_not_found)
-
-
 func _trigger_ffmpeg_convert() -> void:
-	_ensure_ffmpeg_converter()
-	recording_notice.emit(
-		get_backend_name(), "Converting to %s…" % _target_output_format.to_lower()
+	request_transcode(
+		{
+			"kind": "file",
+			"path": _intermediate_path,
+			"format": GdTMOutputFormat.Format.AVI,
+		},
+		_final_output_path,
+		{
+			"target": GdTMOutputFormat.from_string(_target_output_format),
+			"label": _target_output_format,
+			"fps": _target_fps,
+			"clean": false,
+		}
 	)
-	_ffmpeg_converter.convert_file_async(_intermediate_path, _final_output_path, false, _target_fps)
-
-
-func _on_ffmpeg_convert_succeeded(clip_path: String) -> void:
-	recording_converted.emit(get_backend_name(), clip_path)
-	recording_notice.emit(
-		get_backend_name(),
-		"Converted to %s" % clip_path.get_file() if not clip_path.is_empty() else "Converted"
-	)
-
-
-func _on_ffmpeg_not_found(message: String) -> void:
-	recording_notice.emit(get_backend_name(), message)
-
-
-func _on_ffmpeg_convert_failed(error_message: String, stderr_tail: String) -> void:
-	var detail := error_message
-	if not stderr_tail.is_empty():
-		detail = "%s\n%s" % [error_message, stderr_tail]
-	recording_error.emit(get_backend_name(), detail)
 
 
 func _exit_tree() -> void:

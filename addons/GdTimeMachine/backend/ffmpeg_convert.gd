@@ -1,8 +1,8 @@
 @tool
-extends Node
+extends RecorderTranscoder
 class_name GdTMFFmpegConvert
 
-## Backend-agnostic ffmpeg conversion hook (tier-2).
+## ffmpeg implementation of RecorderTranscoder (tier-2).
 ##
 ## Probe: OS.execute(ffmpeg -version) → present. Setting
 ## gd_time_machine/ffmpeg/path overrides PATH.
@@ -13,15 +13,6 @@ class_name GdTMFFmpegConvert
 ##
 ## Seams: _get_ffmpeg_binary(), _os_execute_blocking(), _read_manifest_file(),
 ## _get_video_quality(), _delete_frames_dir() etc are overridable for GUT.
-
-## Emitted on exit 0 after optional cleanup.
-signal conversion_succeeded(output_path: String)
-
-## Emitted when ffmpeg exits nonzero: keeps frames, error with stderr tail.
-signal conversion_failed(error_message: String, stderr_tail: String)
-
-## Emitted when ffmpeg binary is not found: frames kept, notice path.
-signal ffmpeg_not_found(message: String)
 
 ## Default h264 CRF for MP4 (quality/size tradeoff).
 const DEFAULT_CRF := 18
@@ -87,6 +78,53 @@ func probe_ffmpeg() -> bool:
 	var out: Array = []
 	var exit_code := _os_execute_blocking(bin_path, ["-version"], out, true)
 	return exit_code == 0
+
+
+## RecorderTranscoder interface: this tool's registry name.
+func get_transcoder_name() -> String:
+	return "ffmpeg"
+
+
+## RecorderTranscoder capability edges, derived from what the builders below
+## actually implement (file/frames → mp4/webm/avi/ogv). Native-skip targets
+## (frames → png/jpg) are NOT edges — they need no transcoder.
+func can_convert(input: Dictionary, target: GdTMOutputFormat.Format) -> bool:
+	# Both kinds cover the same four containers: file inputs transcode to any
+	# of them, while frames inputs skip PNG/JPG as native copies (no work to
+	# do) and transcode the rest. Unknown kinds convert nothing.
+	var kind := str(input.get("kind", "file"))
+	if kind != "file" and kind != "frames":
+		return false
+	return (
+		target == GdTMOutputFormat.Format.MP4
+		or target == GdTMOutputFormat.Format.WEBM
+		or target == GdTMOutputFormat.Format.AVI
+		or target == GdTMOutputFormat.Format.OGV
+	)
+
+
+## RecorderTranscoder dispatch: routes a convert job to the file or frames
+## runner by input.kind. Options: "target" (Format), "fps" (int, file),
+## "frame_ext" (String, frames fallback), "measured_fps" (float, frames
+## fallback), "clean" (bool).
+func convert_async(input: Dictionary, output_path: String, options: Dictionary) -> void:
+	var target: GdTMOutputFormat.Format = options.get("target", GdTMOutputFormat.Format.MP4)
+	if str(input.get("kind", "file")) == "frames":
+		convert_frames_async(
+			str(input.get("dir", "")),
+			output_path,
+			GdTMOutputFormat.to_extension(target),
+			float(input.get("measured_fps", options.get("measured_fps", 0.0))),
+			str(input.get("frame_ext", options.get("frame_ext", "png"))),
+			bool(options.get("clean", true))
+		)
+	else:
+		convert_file_async(
+			str(input.get("path", "")),
+			output_path,
+			bool(options.get("clean", false)),
+			int(options.get("fps", 0))
+		)
 
 
 ## Common-interface alias so callers can treat ffmpeg like a backend
@@ -203,8 +241,9 @@ func build_frames_convert_command(
 		# Legacy path helper; no-op for current OBS/Movie Maker flows.
 		pass
 	var out_path := "%s.%s" % [base, ext]
-	# Native frames → no-op.
-	if not GdTMOutputFormat.frames_need_ffmpeg(fmt):
+	# Native frames → no-op. Consults the same edge table as can_convert so
+	# offered formats and implementable ones can never drift apart.
+	if not can_convert({"kind": "frames"}, fmt):
 		return {
 			"binary": _get_ffmpeg_binary(),
 			"args": PackedStringArray(),
@@ -550,7 +589,7 @@ func _deferred_emit_success(path: String) -> void:
 
 
 func _deferred_emit_not_found(message: String) -> void:
-	ffmpeg_not_found.emit(message)
+	transcoder_not_found.emit(message)
 
 
 ## Waits for any running Thread — must be called before free/_exit_tree.

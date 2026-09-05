@@ -23,6 +23,17 @@ enum CaptureMode {
 	IN_PLACE,  ## Records the currently running scene and stops without killing it.
 }
 
+## Registry injected by RecorderController.register_backend(). Null in bare
+## unit tests, where derivation falls back to natives only and requests use
+## the factory seam below.
+var _transcoder_registry: TranscoderRegistry = null
+
+## Backend-owned transcoder child (one per backend, same lifetime as before).
+## Created via the factory seam, which defaults to a registry-spawned
+## instance so a future second registered transcoder plugs in without
+## touching backends.
+var _ffmpeg_converter: RecorderTranscoder = null
+
 
 ## Returns the backend's display name (e.g. "Movie Maker"). Deliberately not
 ## named get_name() — Node already declares get_name() -> StringName, and an
@@ -67,56 +78,119 @@ func get_runtime_hint() -> String:
 	return ""
 
 
-## Formats the backend records without ffmpeg. The dock uses this for the
-## plain (no " - ffmpeg" suffix) label, the warning suppression, and the
-## needs-ffmpeg gate. Backends offering post-record transcoding list a wider
-## get_supported_formats() while keeping natives narrow.
+## Native artifact this backend produces, used for transcoder capability
+## matching. File backends name their container (Movie Maker → AVI, OBS →
+## MP4); the Screenshot backend produces {"kind": "frames"}. Backends without
+## transcodable output leave the default {} (deliverable = natives only).
+func get_native_artifact() -> Dictionary:
+	return {}
+
+
+## Formats the backend records without a transcoder. The dock uses this for
+## the plain (no " - ffmpeg" suffix) label, the warning suppression, and the
+## needs-transcoder gate. Backends offering post-record transcoding keep
+## natives narrow; deliverables come from derivation below.
 func get_native_formats() -> Array:
 	return []
 
 
-## Every output format the backend can ultimately deliver (native plus
-## ffmpeg-transcoded). The dock offers exactly this list. Backends that only
-## record natively return get_native_formats(); transcoding backends widen it.
-## Default mirrors the historical dock fallback so test doubles without an
-## override keep working: natives when declared, else a capture-mode list.
+## Every output format the backend can deliver: natives first (declared
+## order), then every format with a registry edge from the native artifact
+## (canonical GdTMOutputFormat.all_formats() order). No registry attached
+## (bare unit tests) or no artifact declared (pure test doubles) means
+## natives only — never a hardcoded mode list.
 func get_supported_formats() -> Array:
-	var natives := get_native_formats()
-	if not natives.is_empty():
-		return natives.duplicate()
-	if get_capture_mode() == CaptureMode.IN_PLACE:
-		return [
-			GdTMOutputFormat.Format.PNG,
-			GdTMOutputFormat.Format.JPG,
-			GdTMOutputFormat.Format.MP4,
-			GdTMOutputFormat.Format.WEBM,
-			GdTMOutputFormat.Format.AVI,
-			GdTMOutputFormat.Format.OGV,
-		]
-	return [
-		GdTMOutputFormat.Format.AVI,
-		GdTMOutputFormat.Format.OGV,
-		GdTMOutputFormat.Format.PNG,
-		GdTMOutputFormat.Format.MP4,
-		GdTMOutputFormat.Format.WEBM,
-	]
+	var out: Array = []
+	for f in get_native_formats():
+		if not out.has(f):
+			out.append(f)
+	var artifact := get_native_artifact()
+	if artifact.is_empty() or _transcoder_registry == null:
+		return out
+	for f in GdTMOutputFormat.all_formats():
+		if out.has(f):
+			continue
+		if _transcoder_registry.is_target_reachable(artifact, f):
+			out.append(f)
+	return out
 
 
-## Whether the backend can deliver the given format (natively or via ffmpeg).
+## Whether the backend can deliver the given format (natively or via a
+## transcoder edge).
 func is_format_supported(format: GdTMOutputFormat.Format) -> bool:
 	return get_supported_formats().has(format)
 
 
-## Whether delivering the given format requires ffmpeg for this backend.
-## Default: anything outside natives; doubles without natives fall back to the
-## historical dock rule (IN_PLACE → non-frames, RESTART → tier-2).
+## Whether delivering the given format requires a transcoder for this
+## backend: anything outside natives. Unknown-natives doubles answer
+## conservatively (everything needs one).
 func format_needs_ffmpeg(format: GdTMOutputFormat.Format) -> bool:
-	var natives := get_native_formats()
-	if not natives.is_empty():
-		return not natives.has(format)
-	if get_capture_mode() == CaptureMode.IN_PLACE:
-		return GdTMOutputFormat.frames_need_ffmpeg(format)
-	return GdTMOutputFormat.is_tier2_format(format)
+	return not get_native_formats().has(format)
+
+
+## Factory seam for the backend-owned converter — overridden in tests to
+## inject a fake. Explicit overrides always win over registry resolution, so
+## test doubles keep working with or without a registry attached. The default
+## spawns the first registered transcoder type (registration order is the
+## future transcoders/active preference point), else a built-in ffmpeg.
+func _create_ffmpeg_converter() -> RecorderTranscoder:
+	if _transcoder_registry != null:
+		var spawned := _transcoder_registry.spawn_preferred()
+		if spawned != null:
+			return spawned
+	return GdTMFFmpegConvert.new()
+
+
+## Ensures the backend-owned converter child exists and wires the shared
+## terminal handlers (exactly once per instance lifetime).
+func _ensure_ffmpeg_converter() -> void:
+	if _ffmpeg_converter != null:
+		return
+	_ffmpeg_converter = _create_ffmpeg_converter()
+	if is_inside_tree():
+		add_child(_ffmpeg_converter)
+	_ffmpeg_converter.conversion_succeeded.connect(_on_shared_transcode_succeeded)
+	_ffmpeg_converter.conversion_failed.connect(_on_shared_transcode_failed)
+	_ffmpeg_converter.transcoder_not_found.connect(_on_shared_transcoder_not_found)
+
+
+## Single transcode entry point shared by all backends (replaces the old
+## per-backend adapter trios). Uses the backend-owned converter (same
+## one-job-at-a-time concurrency as before), emits the Converting… notice,
+## and dispatches. Input shapes: file {"kind":"file","path":...} or frames
+## {"kind":"frames","dir":...,"frame_ext":...,"measured_fps":...}. Options:
+## "target" (Format), "label" (String), "fps" (int), "clean" (bool).
+func request_transcode(input: Dictionary, output_path: String, options: Dictionary) -> bool:
+	var target: GdTMOutputFormat.Format = options.get("target", GdTMOutputFormat.Format.MP4)
+	var label := str(options.get("label", GdTMOutputFormat.to_extension(target)))
+	_ensure_ffmpeg_converter()
+	if _ffmpeg_converter == null:
+		recording_error.emit(get_backend_name(), "No transcoder available for %s." % label)
+		return false
+	recording_notice.emit(get_backend_name(), "Converting to %s…" % label.to_lower())
+	_ffmpeg_converter.convert_async(input, output_path, options)
+	return true
+
+
+## Shared terminal handlers: the single signal-shape adapter
+## (transcoder-level → backend-level recording_*).
+func _on_shared_transcode_succeeded(clip_path: String) -> void:
+	recording_converted.emit(get_backend_name(), clip_path)
+	recording_notice.emit(
+		get_backend_name(),
+		"Converted to %s" % clip_path.get_file() if not clip_path.is_empty() else "Converted"
+	)
+
+
+func _on_shared_transcode_failed(error_message: String, detail: String) -> void:
+	var full := error_message
+	if not detail.is_empty():
+		full = "%s\n%s" % [error_message, detail]
+	recording_error.emit(get_backend_name(), full)
+
+
+func _on_shared_transcoder_not_found(message: String) -> void:
+	recording_notice.emit(get_backend_name(), message)
 
 
 ## Returns true while a recording is in progress.
