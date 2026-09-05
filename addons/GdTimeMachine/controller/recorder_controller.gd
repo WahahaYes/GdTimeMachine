@@ -103,12 +103,46 @@ func is_recording() -> bool:
 
 
 ## Whether the backend registered under backend_name reports itself available
-## right now. Thin read-only wrapper so the UI never holds backend references.
+## right now (selectable gate). Thin read-only wrapper so the UI never holds
+## backend references. For OBS this means installed/launchable, not merely
+## running — installed-but-idle stays selectable.
 func is_backend_available(backend_name: String) -> bool:
 	if not backends.has(backend_name):
 		return false
 	var backend: RecorderBackend = backends[backend_name]
 	return backend.is_available()
+
+
+## Unavailable reason for the given backend ("" when available). Delegates to
+## the backend's common get_unavailable_reason() when present.
+func get_backend_unavailable_reason(backend_name: String) -> String:
+	if not backends.has(backend_name):
+		return "Unknown backend '%s'" % backend_name
+	var backend: RecorderBackend = backends[backend_name]
+	if backend.has_method("get_unavailable_reason"):
+		return str(backend.get_unavailable_reason())
+	if not backend.is_available():
+		return "%s is currently unavailable." % backend_name
+	return ""
+
+
+## Transient ready-state hint for an available backend ("" when nothing to
+## say). Delegates to the backend's common get_runtime_hint() when present.
+func get_backend_runtime_hint(backend_name: String) -> String:
+	if not backends.has(backend_name):
+		return ""
+	var backend: RecorderBackend = backends[backend_name]
+	if backend.has_method("get_runtime_hint"):
+		return str(backend.get_runtime_hint())
+	return ""
+
+
+## Single tooltip source for backend dropdown items: the unavailable reason
+## when not selectable, else the runtime hint (e.g. OBS "will auto-launch").
+func get_backend_tooltip(backend_name: String) -> String:
+	if not is_backend_available(backend_name):
+		return get_backend_unavailable_reason(backend_name)
+	return get_backend_runtime_hint(backend_name)
 
 
 ## Capture mode of the active backend, so UI never reaches into backends

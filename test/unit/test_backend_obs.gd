@@ -481,19 +481,20 @@ func test_contract_reports_in_place_mp4_only_backend() -> void:
 	assert_eq(backend.get_capture_mode(), RecorderBackend.CaptureMode.IN_PLACE)
 	assert_false(backend.is_recording())
 	assert_eq(backend.get_native_formats(), [GdTMOutputFormat.Format.MP4])
-	# is_available() is the probe cache — never true merely because a binary
-	# would resolve.
-	assert_false(backend.is_available())
+	# is_available() is installed/launchable — must track install status, not
+	# the reachability probe. Deterministic on any runner (OBS may or may not
+	# be installed where tests run).
+	assert_eq(backend.is_available(), backend.is_obs_installed())
 
 
-## Two-axis availability
+## Selectability (installed) vs reachability (probe)
 
 
 func test_is_obs_installed_true_when_binary_exists() -> void:
 	var backend := _make_fake_backend()
 	backend.binary_path = ProjectSettings.globalize_path(EXISTING_BINARY)
 	assert_true(backend.is_obs_installed())
-	assert_false(backend.is_available(), "install must not imply reachability (two-axis lock)")
+	assert_true(backend.is_available(), "installed means selectable (auto-launch), even when idle")
 
 
 func test_is_obs_installed_false_when_binary_missing() -> void:
@@ -510,16 +511,35 @@ func test_binary_resolves_exactly_once_across_calls() -> void:
 	assert_eq(backend.resolve_calls, 1)
 
 
-func test_is_available_is_probe_cache_never_binary() -> void:
-	# Reachable wins even when the binary would not resolve…
+func test_is_available_means_installed_never_reachable() -> void:
+	# Reachability alone never makes a missing binary selectable…
 	var reachable := _make_fake_backend()
 	reachable.force_missing = true
 	reachable._available = true
-	assert_true(reachable.is_available())
-	# …and an installed binary alone never makes the probe cache true.
+	assert_false(reachable.is_available())
+	# …and an installed binary is selectable even while idle.
 	var installed := _make_fake_backend()
 	installed.binary_path = ProjectSettings.globalize_path(EXISTING_BINARY)
-	assert_false(installed.is_available())
+	assert_true(installed.is_available())
+
+
+func test_unavailable_reason_names_ws_target() -> void:
+	var backend := _make_fake_backend()
+	backend.force_missing = true
+	assert_false(backend.is_available())
+	assert_true(backend.get_unavailable_reason().contains("ws://"))
+	assert_true(backend.get_runtime_hint().is_empty())
+
+
+func test_runtime_hint_covers_installed_idle() -> void:
+	var backend := _make_fake_backend()
+	backend.binary_path = ProjectSettings.globalize_path(EXISTING_BINARY)
+	backend._available = false
+	assert_true(backend.is_available())
+	assert_true(backend.get_unavailable_reason().is_empty())
+	assert_true(backend.get_runtime_hint().contains("auto-launch"))
+	backend._available = true
+	assert_true(backend.get_runtime_hint().is_empty())
 
 
 func test_is_obs_running_reprobes_only_when_stale() -> void:

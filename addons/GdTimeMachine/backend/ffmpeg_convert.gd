@@ -80,11 +80,25 @@ func _get_video_quality() -> float:
 
 ## Whether ffmpeg is installed. Real check: "ffmpeg -version" exit 0.
 ## Overridable in tests: return false to simulate missing binary.
+## Common availability interface shared with RecorderBackend.is_available():
+## dropdown items needing ffmpeg disable when this is false.
 func probe_ffmpeg() -> bool:
 	var bin_path := _get_ffmpeg_binary()
 	var out: Array = []
 	var exit_code := _os_execute_blocking(bin_path, ["-version"], out, true)
 	return exit_code == 0
+
+
+## Common-interface alias so callers can treat ffmpeg like a backend
+## dependency (is_available / reason pair).
+func is_available() -> bool:
+	return probe_ffmpeg()
+
+
+## Reason shown on disabled ffmpeg-dependent format items (mirrors
+## RecorderBackend.get_unavailable_reason()).
+func get_unavailable_reason() -> String:
+	return "Requires ffmpeg on PATH (or set gd_time_machine/ffmpeg/path)."
 
 
 ## Blocking OS.execute seam. Tests override to fake responses and capture args.

@@ -39,13 +39,15 @@ class MockBackend:
 
 
 ## Mock OBS backend exercising the BackendOBS surface the dock's OBS wiring
-## depends on: availability + native formats + the async availability signal.
+## depends on: availability (installed) + native formats + the async
+## availability signal + the common reason/hint interface.
 ## Inner class so GUT doesn't collect it.
 class MockOBSBackend:
 	extends RecorderBackend
 	var display_name := "OBS Studio"
 	var available := false
 	var recording := false
+	var ws_target := "ws://127.0.0.1:4455"
 	signal availability_changed(available: bool)
 
 	func get_backend_name() -> String:
@@ -56,6 +58,14 @@ class MockOBSBackend:
 
 	func is_available() -> bool:
 		return available
+
+	func get_unavailable_reason() -> String:
+		if available:
+			return ""
+		return "OBS Studio not found (expected WebSocket target %s)." % ws_target
+
+	func get_runtime_hint() -> String:
+		return ""
 
 	func is_recording() -> bool:
 		return recording
@@ -127,6 +137,7 @@ func _build_dock(store: FakeStore, scene_path: String) -> Dictionary:
 	controller.register_backend(backend)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
 	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
+	dock._ffmpeg_probe_override = 1
 	dock.setup(controller, store)
 	add_child_autofree(dock)
 	return {"dock": dock, "controller": controller, "backend": backend}
@@ -143,6 +154,7 @@ func _build_dock_with_mode(
 	controller.register_backend(backend)
 	var dock: TimeMachineDock = load(DOCK_SCENE).instantiate()
 	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
+	dock._ffmpeg_probe_override = 1
 	dock.setup(controller, store)
 	add_child_autofree(dock)
 	return {"dock": dock, "controller": controller, "backend": backend}
@@ -152,7 +164,8 @@ func _build_dock_with_mode(
 ## MockOBSBackend SECOND, so the dropdown order is [Godot Movie Maker, OBS
 ## Studio]. `obs_available` seeds the OBS backend's availability; settings
 ## may carry editor-settings values (e.g. hints/dont_show_obs_hint). Injects
-## the dock's _editor_settings seam BEFORE the dock enters the tree.
+## the dock's _editor_settings seam BEFORE the dock enters the tree. Forces
+## ffmpeg present unless a test overrides dock._ffmpeg_probe_override after.
 func _build_dock_with_obs(
 	store: FakeStore, scene_path: String, obs_available: bool, settings: FakeSettings = null
 ) -> Dictionary:
@@ -166,13 +179,22 @@ func _build_dock_with_obs(
 	dock.get_node("Split/RightColumn/SettingsGroup/SceneRow/SceneEdit").text = scene_path
 	if settings != null:
 		dock._editor_settings = settings
+		# Mirror custom obs host/port into the mock's reason so the tooltip
+		# test exercises the ws target without a real BackendOBS.
+		var h: Variant = settings.values.get("gd_time_machine/obs/host", null)
+		var p: Variant = settings.values.get("gd_time_machine/obs/port", null)
+		if h != null or p != null:
+			var host := str(h) if h != null else "127.0.0.1"
+			var port := int(p) if p != null else 4455
+			obs.ws_target = "ws://%s:%d" % [host, port]
+	dock._ffmpeg_probe_override = 1
 	dock.setup(controller, store)
 	add_child_autofree(dock)
 	return {"dock": dock, "controller": controller, "obs": obs, "movie_maker": movie_maker}
 
 
-## Index of the OBS Studio item in the backend dropdown (searched by metadata,
-## since the item text may carry the " — not available" suffix).
+## Index of the OBS Studio item in the backend dropdown (searched by metadata;
+## item text is always the plain name).
 func _obs_item_index(dock: TimeMachineDock) -> int:
 	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
 	for i in option.item_count:
@@ -412,17 +434,19 @@ func test_programmatic_uncheck_does_not_clear() -> void:
 	)
 
 
-## Backend dropdown
+## Backend dropdown (option 3: plain names, disabled + tooltip)
 
 
-func test_obs_unavailable_item_marked_with_suffix_and_default_tooltip() -> void:
+func test_obs_unavailable_item_disabled_with_plain_text_and_tooltip() -> void:
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
 	var dock := ctx["dock"] as TimeMachineDock
 	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
 	var obs_i := _obs_item_index(dock)
-	assert_true(option.get_item_text(obs_i).ends_with(TimeMachineDock.UNAVAILABLE_SUFFIX))
+	assert_eq(option.get_item_text(obs_i), "OBS Studio")
+	assert_true(option.is_item_disabled(obs_i))
 	assert_true(option.get_item_tooltip(obs_i).contains("ws://127.0.0.1:4455"))
 	assert_eq(option.get_item_text(_movie_maker_item_index(dock)), "Godot Movie Maker")
+	assert_false(option.is_item_disabled(_movie_maker_item_index(dock)))
 
 
 func test_obs_unavailable_tooltip_names_custom_host_port() -> void:
@@ -437,32 +461,35 @@ func test_obs_unavailable_tooltip_names_custom_host_port() -> void:
 	assert_true(option.get_item_tooltip(_obs_item_index(dock)).contains("ws://10.0.0.7:9999"))
 
 
-func test_obs_available_item_unmarked_with_empty_tooltip() -> void:
+func test_obs_available_item_enabled_with_empty_tooltip() -> void:
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
 	var dock := ctx["dock"] as TimeMachineDock
 	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
 	var obs_i := _obs_item_index(dock)
 	assert_eq(option.get_item_text(obs_i), "OBS Studio")
+	assert_false(option.is_item_disabled(obs_i))
 	assert_eq(option.get_item_tooltip(obs_i), "")
 
 
-func test_availability_flip_remarks_item_live() -> void:
-	# A backend declaring availability_changed flips the dropdown synchronously
-	# via the controller's forwarding: un-greys on become-available, re-marks
-	# when it drops again.
+func test_availability_flip_updates_disabled_live() -> void:
+	# A backend declaring availability_changed flips the disabled gate live
+	# via the controller's forwarding; plain text never changes.
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
 	var dock := ctx["dock"] as TimeMachineDock
 	var obs := ctx["obs"] as MockOBSBackend
 	var option: OptionButton = dock.get_node("Split/RightColumn/BackendRow/BackendOption")
 	var obs_i := _obs_item_index(dock)
-	assert_true(option.get_item_text(obs_i).ends_with(TimeMachineDock.UNAVAILABLE_SUFFIX))
+	assert_true(option.is_item_disabled(obs_i))
+	assert_eq(option.get_item_text(obs_i), "OBS Studio")
 	obs.available = true
 	obs.availability_changed.emit(true)
+	assert_false(option.is_item_disabled(obs_i))
 	assert_eq(option.get_item_text(obs_i), "OBS Studio")
 	assert_eq(option.get_item_tooltip(obs_i), "")
 	obs.available = false
 	obs.availability_changed.emit(false)
-	assert_true(option.get_item_text(obs_i).ends_with(TimeMachineDock.UNAVAILABLE_SUFFIX))
+	assert_true(option.is_item_disabled(obs_i))
+	assert_eq(option.get_item_text(obs_i), "OBS Studio")
 
 
 ## Format dropdown
@@ -521,8 +548,8 @@ func test_dont_show_again_persists_flag_on_confirm() -> void:
 
 
 func test_selecting_available_obs_does_not_request_dialog() -> void:
-	# The hint asserts OBS is NOT reachable, so it must never appear while an
-	# available OBS Studio is selected — even with the suppression flag unset.
+	# The hint asserts OBS is NOT found, so it must never appear while an
+	# installed OBS Studio is selected — even with the suppression flag unset.
 	var settings := FakeSettings.new()
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true, settings)
 	var dock := ctx["dock"] as TimeMachineDock
@@ -530,18 +557,76 @@ func test_selecting_available_obs_does_not_request_dialog() -> void:
 	assert_eq(dock._install_hint_popups, 0)
 
 
-func test_obs_unavailable_selection_still_selects_backend() -> void:
-	# The item stays selectable even when unavailable, so the persisted
-	# default profile records the chosen backend by NAME (metadata), never the
-	# " — not available" display text.
-	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", false)
+func test_obs_unavailable_selection_reverts_and_does_not_persist() -> void:
+	# Disabled entries are unselectable: choosing one reverts to the active
+	# backend and never pollutes the stored profile.
+	var store := FakeStore.new()
+	var ctx := _build_dock_with_obs(store, "res://scenes/a.tscn", false)
 	var dock := ctx["dock"] as TimeMachineDock
 	var controller := ctx["controller"] as RecorderController
+	assert_eq(controller.active_backend.get_backend_name(), "Godot Movie Maker")
 	dock._on_backend_selected(_obs_item_index(dock))
-	assert_eq(controller.active_backend.get_backend_name(), "OBS Studio")
+	assert_eq(controller.active_backend.get_backend_name(), "Godot Movie Maker")
 	var profile := dock._build_profile_from_ui()
-	assert_eq(profile.backend_name, "OBS Studio")
+	assert_eq(profile.backend_name, "Godot Movie Maker")
 	assert_false(profile.backend_name.contains("not available"))
+
+
+## Format dropdown — ffmpeg common treatment (disabled + tooltip)
+
+
+func _format_item_index(dock: TimeMachineDock, fmt: GdTMOutputFormat.Format) -> int:
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	for i in option.item_count:
+		var meta: Variant = option.get_item_metadata(i)
+		if meta != null and int(meta) == int(fmt):
+			return i
+	return -1
+
+
+func test_ffmpeg_missing_disables_tier2_format_with_tooltip() -> void:
+	var ctx := _build_dock(FakeStore.new(), "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._ffmpeg_probe_override = 0
+	dock._populate_formats()
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	var mp4_i := _format_item_index(dock, GdTMOutputFormat.Format.MP4)
+	assert_true(mp4_i >= 0)
+	assert_true(option.is_item_disabled(mp4_i))
+	assert_true(option.get_item_tooltip(mp4_i).contains("ffmpeg"))
+	var avi_i := _format_item_index(dock, GdTMOutputFormat.Format.AVI)
+	assert_false(option.is_item_disabled(avi_i))
+
+
+func test_ffmpeg_present_enables_tier2_format() -> void:
+	var ctx := _build_dock(FakeStore.new(), "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._ffmpeg_probe_override = 1
+	dock._populate_formats()
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	var mp4_i := _format_item_index(dock, GdTMOutputFormat.Format.MP4)
+	assert_false(option.is_item_disabled(mp4_i))
+
+
+func test_obs_native_mp4_stays_enabled_without_ffmpeg() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	controller.select_backend("OBS Studio")
+	dock._ffmpeg_probe_override = 0
+	dock._populate_formats()
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	var mp4_i := _format_item_index(dock, GdTMOutputFormat.Format.MP4)
+	assert_true(mp4_i >= 0)
+	assert_false(option.is_item_disabled(mp4_i))
 
 
 ## Recording status

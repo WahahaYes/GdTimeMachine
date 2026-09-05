@@ -37,10 +37,34 @@ func get_description() -> String:
 	return ""
 
 
-## Returns true if the backend can be used right now (e.g. external tools
-## available, platform supported). UI disables the backend when false.
+## Returns true if the backend can be selected right now (e.g. external tools
+## installed, platform supported). UI disables the dropdown item when false.
+## For launchable backends (e.g. OBS) this means installed/launchable — not
+## merely "currently running". Runtime reachability is surfaced via
+## get_runtime_hint(), never by greying out a launchable backend.
 func is_available() -> bool:
 	return false
+
+
+## Human reason why the backend is unavailable ("" when available). UI shows
+## this as the disabled item's tooltip and in the install-hint dialog.
+## Common interface shared with ffmpeg-dependent formats (see
+## GdTMOutputFormat.warning_text / GdTMFFmpegConvert plumbing).
+func get_unavailable_reason() -> String:
+	if is_available():
+		return ""
+	var n := get_backend_name()
+	if n.is_empty():
+		return "Backend is currently unavailable."
+	return "%s is currently unavailable." % n
+
+
+## Transient ready-state hint when available but not in steady state ("" when
+## nothing to say). E.g. OBS installed-but-idle returns "will auto-launch".
+## UI shows this as the enabled item's tooltip; the status line narration
+## during Record covers the live progress.
+func get_runtime_hint() -> String:
+	return ""
 
 
 ## Returns true while a recording is in progress.

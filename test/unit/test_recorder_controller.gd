@@ -214,6 +214,15 @@ func test_backend_availability_changed_forwarded() -> void:
 	assert_false(_captured_bool)
 
 
+func test_backend_tooltip_returns_reason_then_hint() -> void:
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test", false)
+	controller.register_backend(backend)
+	assert_false(controller.get_backend_tooltip("Test").is_empty())
+	backend.set_availability(true)
+	assert_eq(controller.get_backend_tooltip("Test"), "")
+
+
 ## Capture mode propagation
 
 

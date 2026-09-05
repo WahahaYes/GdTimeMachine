@@ -52,12 +52,10 @@ const ICON_STOP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
 const ICON_LOGO_PATH := "res://addons/GdTimeMachine/ui/icons/icon_logo.svg"
 
 ## Backend name the install-hint dialog applies to (BackendOBS.get_backend_name()).
-## OBS is the only backend that can be unavailable; the suffix + tooltip marking
-## below applies to any unavailable backend, but the dialog is OBS-specific.
+## OBS is the only backend that can be truly unavailable (not installed); the
+## disabled + tooltip marking below applies to any unavailable backend, but the
+## dialog is OBS-specific.
 const OBS_BACKEND_NAME := "OBS Studio"
-
-## Suffix appended to a dropdown item whose backend reports itself unavailable.
-const UNAVAILABLE_SUFFIX := " — not available"
 
 ## EditorSettings key for the install-hint suppression flag (default false,
 ## registered in plugin.gd). True = never show the hint again.
@@ -172,6 +170,11 @@ var _editor_settings: Object = null
 ## A headless DisplayServer can't reflect Window.visible, so tests assert on
 ## this counter instead of dialog.visible.
 var _install_hint_popups := 0
+
+## Test seam for ffmpeg availability: -1 = real probe via GdTMFFmpegConvert,
+## 0 = force missing, 1 = force present. Lets GUT exercise disabled format
+## items without touching PATH.
+var _ffmpeg_probe_override := -1
 
 ## OBS install-hint AcceptDialog (tscn node). Built once; text set per show.
 @onready var _obs_install_dialog: AcceptDialog = $ObsInstallDialog
@@ -314,50 +317,64 @@ func _ensure_config_store() -> void:
 		_config_store = CompositeConfigStore.new()
 
 
-## Fills the backend dropdown from the controller's registered backends. Each
-## item's metadata carries the raw backend name (the item text may carry the
-## " — not available" suffix), so selection/profile reads never see the suffix.
-## Unavailable backends are kept selectable: a hard set_item_disabled would
-## make the OBS install hint unreachable, and selection must be able to fire it.
+## Fills the backend dropdown from the controller's registered backends. Item
+## text is always the plain backend name (no suffix — option 3); truly
+## unavailable backends are greyed via set_item_disabled and explain why in
+## the tooltip. Metadata carries the backend name for selection/profile reads.
 func _populate_backends() -> void:
 	_backend_option.clear()
 	for name in _controller.get_backend_names():
 		var backend_name := str(name)
 		var i := _backend_option.item_count
-		var available := _controller.is_backend_available(backend_name)
-		_backend_option.add_item(_backend_label(backend_name, available))
+		_backend_option.add_item(backend_name)
 		_backend_option.set_item_metadata(i, backend_name)
-		if not available:
-			_backend_option.set_item_tooltip(i, _unavailable_tooltip(backend_name))
+		_backend_option.set_item_disabled(i, not _controller.is_backend_available(backend_name))
+		_backend_option.set_item_tooltip(i, _backend_tooltip(backend_name))
 	_select_backend_item(
 		_controller.active_backend.get_backend_name() if _controller.active_backend else ""
 	)
+	_ensure_valid_backend_selection()
 
 
-## Dropdown label for a backend: the plain name when available, otherwise the
-## name plus the " — not available" suffix.
-func _backend_label(backend_name: String, available: bool) -> String:
-	if available:
-		return backend_name
-	return "%s%s" % [backend_name, UNAVAILABLE_SUFFIX]
-
-
-## Tooltip for an unavailable backend item explaining why it is marked and
-## what to do. OBS gets actionable WebSocket guidance naming the actual
-## host/port from settings (never a hardcoded "OBS must be running"); other
-## backends get a generic note.
-func _unavailable_tooltip(backend_name: String) -> String:
-	if backend_name != OBS_BACKEND_NAME:
+## Single tooltip source for backend items (common interface): unavailable
+## reason when not selectable, else the runtime hint (e.g. OBS installed but
+## idle → "will auto-launch"). Empty when steady-state.
+func _backend_tooltip(backend_name: String) -> String:
+	if _controller != null and _controller.has_method("get_backend_tooltip"):
+		return str(_controller.get_backend_tooltip(backend_name))
+	if _controller != null and not _controller.is_backend_available(backend_name):
+		if backend_name == OBS_BACKEND_NAME:
+			return (
+				(
+					"OBS Studio not found at %s. Install OBS Studio, enable the WebSocket "
+					% _obs_target_text()
+				)
+				+ "server (Tools → WebSocket Server Settings → Enable WebSocket Server), "
+				+ "and check gd_time_machine/obs/* (host/port/password) under Project > "
+				+ "Editor Settings."
+			)
 		return "%s is currently unavailable." % backend_name
-	return (
-		(
-			"%s is not reachable at %s. Install OBS Studio, enable the WebSocket "
-			+ "server (Tools → WebSocket Server Settings → Enable WebSocket Server), "
-			+ "and check gd_time_machine/obs/* (host/port/password) under Project > "
-			+ "Editor Settings."
-		)
-		% [backend_name, _obs_target_text()]
-	)
+	return ""
+
+
+## If the current dropdown selection is disabled (e.g. profile names an
+## uninstalled OBS), fall back to the first enabled item and sync the
+## controller, so Record never starts from a greyed entry.
+func _ensure_valid_backend_selection() -> void:
+	if _backend_option.item_count == 0 or _controller == null:
+		return
+	if (
+		_backend_option.selected >= 0
+		and not _backend_option.is_item_disabled(_backend_option.selected)
+	):
+		return
+	for i in _backend_option.item_count:
+		if not _backend_option.is_item_disabled(i):
+			_backend_option.select(i)
+			var fallback := str(_backend_option.get_item_metadata(i))
+			if not fallback.is_empty():
+				_controller.select_backend(fallback)
+			return
 
 
 ## Formats the active backend actually supports. A backend may declare exact
@@ -392,14 +409,87 @@ func _get_allowed_formats() -> Array:
 
 
 ## Fills the format dropdown from the formats the active backend supports.
+## Same treatment as backends (common interface): formats needing ffmpeg are
+## greyed + tooltiped when ffmpeg is missing. Metadata carries the Format int
+## so selection never parses display text.
 func _populate_formats() -> void:
 	_format_option.clear()
+	var ffmpeg_ok := _is_ffmpeg_available()
 	for fmt in _get_allowed_formats():
+		var i := _format_option.item_count
 		_format_option.add_item(GdTMOutputFormat.display_name(fmt))
+		_format_option.set_item_metadata(i, int(fmt))
+		var needs_ffmpeg := _format_needs_ffmpeg(fmt)
+		var disabled := needs_ffmpeg and not ffmpeg_ok
+		_format_option.set_item_disabled(i, disabled)
+		if disabled:
+			_format_option.set_item_tooltip(
+				i,
+				(
+					"%s (ffmpeg not found — install ffmpeg or set gd_time_machine/ffmpeg/path)"
+					% GdTMOutputFormat.warning_text(fmt)
+				)
+			)
+		elif needs_ffmpeg:
+			_format_option.set_item_tooltip(i, GdTMOutputFormat.warning_text(fmt))
+		else:
+			_format_option.set_item_tooltip(i, "")
+	_ensure_valid_format_selection()
 
 
-## Selects the dropdown item whose metadata matches backend_name. Item text
-## is not the identity (it can carry the " — not available" suffix).
+## Whether the given format needs ffmpeg conversion for the active backend.
+## Per-format version of _expects_conversion(): backends with native lists
+## (OBS → [MP4]) need ffmpeg for anything outside the list; IN_PLACE without
+## a native list needs ffmpeg for non-frames; RESTART needs it for tier-2.
+func _format_needs_ffmpeg(fmt: GdTMOutputFormat.Format) -> bool:
+	var backend := _controller.active_backend if _controller != null else null
+	if backend != null and backend.has_method("get_native_formats"):
+		var natives: Array = backend.get_native_formats()
+		return not natives.has(fmt)
+	if (
+		_controller != null
+		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
+	):
+		return GdTMOutputFormat.frames_need_ffmpeg(fmt)
+	return GdTMOutputFormat.is_tier2_format(fmt)
+
+
+## Whether ffmpeg conversion is available (common interface parallel to
+## RecorderBackend.is_available). Test seam _ffmpeg_probe_override forces the
+## result; otherwise probes via a short-lived GdTMFFmpegConvert.
+func _is_ffmpeg_available() -> bool:
+	if _ffmpeg_probe_override == 0:
+		return false
+	if _ffmpeg_probe_override == 1:
+		return true
+	var checker := _create_ffmpeg_checker()
+	var ok: bool = checker.probe_ffmpeg()
+	checker.free()
+	return ok
+
+
+## Factory seam so GUT can inject a fake ffmpeg checker.
+func _create_ffmpeg_checker() -> GdTMFFmpegConvert:
+	return GdTMFFmpegConvert.new()
+
+
+## If the current format selection is disabled (needs missing ffmpeg), fall
+## back to the first enabled item so Record never starts from a greyed entry.
+func _ensure_valid_format_selection() -> void:
+	if _format_option.item_count == 0:
+		return
+	if (
+		_format_option.selected >= 0
+		and not _format_option.is_item_disabled(_format_option.selected)
+	):
+		return
+	for i in _format_option.item_count:
+		if not _format_option.is_item_disabled(i):
+			_format_option.select(i)
+			return
+
+
+## Selects the dropdown item whose metadata matches backend_name.
 func _select_backend_item(backend_name: String) -> void:
 	for i in _backend_option.item_count:
 		if str(_backend_option.get_item_metadata(i)) == backend_name:
@@ -407,27 +497,43 @@ func _select_backend_item(backend_name: String) -> void:
 			return
 
 
-## Selects the format dropdown item matching the given format enum. Returns
-## true when a matching item was found and selected.
+## Selects the format dropdown item matching the given format enum. Prefers
+## enabled items: an exact disabled match falls back to the first enabled
+## item. Returns true when a matching (or fallback) item was selected.
 func _select_format_item(format: GdTMOutputFormat.Format) -> bool:
-	var target := GdTMOutputFormat.display_name(format)
 	for i in _format_option.item_count:
-		if _format_option.get_item_text(i) == target:
+		var meta: Variant = _format_option.get_item_metadata(i)
+		if meta != null and int(meta) == int(format):
+			if _format_option.is_item_disabled(i):
+				_ensure_valid_format_selection()
+				return true
 			_format_option.select(i)
 			return true
-	# Fallback: match by extension substring.
+	var target := GdTMOutputFormat.display_name(format)
+	for i in _format_option.item_count:
+		if _format_option.get_item_text(i) == target and not _format_option.is_item_disabled(i):
+			_format_option.select(i)
+			return true
+	# Fallback: match by extension substring among enabled items.
 	var ext := GdTMOutputFormat.to_extension(format)
 	for i in _format_option.item_count:
-		if _format_option.get_item_text(i).to_lower().contains(ext):
+		if (
+			_format_option.get_item_text(i).to_lower().contains(ext)
+			and not _format_option.is_item_disabled(i)
+		):
 			_format_option.select(i)
 			return true
 	return false
 
 
-## Returns the currently selected output format from the dropdown.
+## Returns the currently selected output format from the dropdown metadata
+## (falls back to text parsing for items without metadata).
 func _get_selected_format() -> GdTMOutputFormat.Format:
 	if _format_option.selected < 0:
 		return GdTMOutputFormat.DEFAULT
+	var meta: Variant = _format_option.get_item_metadata(_format_option.selected)
+	if meta != null:
+		return int(meta) as GdTMOutputFormat.Format
 	var text := _format_option.get_item_text(_format_option.selected)
 	return GdTMOutputFormat.from_string(text)
 
@@ -440,7 +546,9 @@ func _update_format_warning() -> void:
 	_format_warning_label.visible = not warning.is_empty()
 
 
-## Loads a RecordingProfile's values into the UI controls.
+## Loads a RecordingProfile's values into the UI controls. Disabled backends
+## or formats fall back to the first enabled entry so a stored profile naming
+## an uninstalled OBS / missing ffmpeg never leaves a greyed selection.
 func _load_profile_into_ui(profile: RecordingProfile) -> void:
 	_applying_profile = true
 	_output_edit.text = (
@@ -452,8 +560,13 @@ func _load_profile_into_ui(profile: RecordingProfile) -> void:
 	_update_format_warning()
 	if not profile.backend_name.is_empty():
 		_select_backend_item(profile.backend_name)
+		_ensure_valid_backend_selection()
 		if _controller != null:
-			_controller.select_backend(profile.backend_name)
+			var selected := ""
+			if _backend_option.selected >= 0:
+				selected = str(_backend_option.get_item_metadata(_backend_option.selected))
+			if not selected.is_empty():
+				_controller.select_backend(selected)
 	_applying_profile = false
 
 
@@ -468,8 +581,8 @@ func _build_profile_from_ui() -> RecordingProfile:
 	p.duration = 0.0 if _duration_spin.value <= 0.0 else float(_duration_spin.value)
 	p.scene_path = _scene_edit.text.strip_edges()
 	if _backend_option.selected >= 0:
-		# Metadata carries the raw backend name (the item text may carry the
-		# " — not available" suffix, which must never reach the stored profile).
+		# Metadata carries the backend name; item text is always the plain
+		# name (no suffix to strip).
 		var meta: Variant = _backend_option.get_item_metadata(_backend_option.selected)
 		var stored_name := str(meta) if meta != null else ""
 		if stored_name.is_empty():
@@ -479,23 +592,35 @@ func _build_profile_from_ui() -> RecordingProfile:
 
 
 ## Switches the controller to the backend chosen in the dropdown and persists
-## the preference to the default profile. When an unavailable OBS Studio is
-## chosen, fires the install hint (repeatable until suppressed; recording
-## itself still fails actionably from the backend's error path).
+## the preference. Disabled (truly unavailable) entries are unselectable: the
+## choice reverts, the install hint fires (repeatable until suppressed), and
+## nothing is persisted. Recording itself still fails actionably from the
+## backend's error path if reached programmatically.
 func _on_backend_selected(index: int) -> void:
 	if _controller == null:
+		return
+	if index < 0 or index >= _backend_option.item_count:
 		return
 	var name := str(_backend_option.get_item_metadata(index))
 	if name.is_empty():
 		name = _backend_option.get_item_text(index)
+	if _backend_option.is_item_disabled(index):
+		_maybe_show_obs_install_hint(name)
+		# Revert the visual selection to the active backend.
+		if _controller.active_backend != null:
+			_select_backend_item(_controller.active_backend.get_backend_name())
+		return
 	_controller.select_backend(name)
 	_maybe_show_obs_install_hint(name)
 	if not _applying_profile:
 		_persist_default_profile()
 
 
-## Switches format and updates warning + persistence.
-func _on_format_selected(_index: int) -> void:
+## Switches format and updates warning + persistence. Disabled entries are
+## unselectable via the UI; a programmatic select of one reverts.
+func _on_format_selected(index: int) -> void:
+	if index >= 0 and index < _format_option.item_count and _format_option.is_item_disabled(index):
+		_ensure_valid_format_selection()
 	_update_format_warning()
 	if not _applying_profile:
 		_persist_default_profile()
@@ -594,17 +719,19 @@ func _on_backend_changed(backend_name: String) -> void:
 	_persist_default_profile()
 
 
-## Re-marks a backend's dropdown item when its availability flips async (OBS
-## probe result), so the " — not available" suffix un-greys when OBS starts.
-func _on_backend_availability_changed(backend_name: String, available: bool) -> void:
+## Refreshes a backend's dropdown state when its reachability flips async.
+## The bool payload is reachability (not selectability): disabled state is
+## recomputed from is_backend_available() (installed) and the tooltip from
+## the common get_backend_tooltip(). Plain names never change. If the active
+## selection became disabled, falls back to the first enabled backend.
+func _on_backend_availability_changed(backend_name: String, _reachable: bool) -> void:
 	for i in _backend_option.item_count:
 		if str(_backend_option.get_item_metadata(i)) != backend_name:
 			continue
-		_backend_option.set_item_text(i, _backend_label(backend_name, available))
-		if available:
-			_backend_option.set_item_tooltip(i, "")
-		else:
-			_backend_option.set_item_tooltip(i, _unavailable_tooltip(backend_name))
+		if _controller != null:
+			_backend_option.set_item_disabled(i, not _controller.is_backend_available(backend_name))
+			_backend_option.set_item_tooltip(i, _backend_tooltip(backend_name))
+		_ensure_valid_backend_selection()
 		return
 
 
@@ -637,11 +764,10 @@ func _update_backend_tooltip() -> void:
 		_backend_option.tooltip_text = "%s\n%s" % [note, description]
 
 
-## Shows the OBS install hint when an unavailable OBS Studio item is selected
-## (repeatable as a reminder until the user sets hints/dont_show_obs_hint; the
-## flag is persisted when the box is ticked and the dialog closes). Suppressed
-## while the flag is true. The body is rebuilt dynamically with the real
-## settings host/port.
+## Shows the OBS install hint when a truly unavailable OBS Studio is chosen
+## (not installed — repeatable until hints/dont_show_obs_hint; the flag is
+## persisted when the box is ticked and the dialog closes). Suppressed while
+## the flag is true. Installed-but-idle never hints: it will auto-launch.
 func _maybe_show_obs_install_hint(backend_name: String) -> void:
 	if backend_name != OBS_BACKEND_NAME:
 		return
@@ -649,8 +775,8 @@ func _maybe_show_obs_install_hint(backend_name: String) -> void:
 		return
 	if bool(_read_setting(OBS_HINT_DONT_SHOW_SETTING, false)):
 		return
-	# Never hint at an OBS that is actually reachable — the dialog asserts the
-	# opposite, so it must only appear while availability is false.
+	# Never hint at an installed OBS — the dialog asserts "not found", so it
+	# must only appear while selectability is false.
 	if _controller != null and _controller.is_backend_available(backend_name):
 		return
 	_update_obs_install_dialog_text()
@@ -666,13 +792,12 @@ func _obs_target_text() -> String:
 	return "ws://%s:%d" % [host, port]
 
 
-## Builds the install-hint body from the real settings host/port — never
-## assume OBS is running; the text always names the actual target the backend
-## would connect to.
+## Builds the install-hint body: OBS was not found, so lead with install
+## steps and name the WebSocket target the backend would connect to.
 func _update_obs_install_dialog_text() -> void:
 	_obs_hint_label.text = (
 		(
-			"OBS Studio isn't running or reachable at %s.\n\n"
+			"OBS Studio was not found (expected WebSocket target %s).\n\n"
 			+ "To record with OBS Studio:\n"
 			+ "1. Install OBS Studio (obsproject.com — use the link below).\n"
 			+ "2. Start OBS and enable the WebSocket server: Tools → WebSocket "
@@ -827,7 +952,8 @@ func _auto_save_current_scene_profile() -> void:
 
 
 ## Loads persisted settings into the UI. Uses the config store's default and
-## per-scene resolution, falling back to local constants.
+## per-scene resolution, falling back to local constants. Controller sync
+## happens inside _load_profile_into_ui (validated against disabled items).
 func _load_settings() -> void:
 	_ensure_config_store()
 	var scene_path := _scene_edit.text.strip_edges()
@@ -837,9 +963,6 @@ func _load_settings() -> void:
 	else:
 		profile = _config_store.get_default_profile()
 	_load_profile_into_ui(profile)
-	# Also sync controller backend from profile if set.
-	if not profile.backend_name.is_empty() and _controller != null:
-		_controller.select_backend(profile.backend_name)
 
 
 ## Persists current UI as the default profile via the config store.

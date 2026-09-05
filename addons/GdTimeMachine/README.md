@@ -55,7 +55,7 @@ The dock status line shows live state while recording (backend, output file, ela
 
 `RESTART_SCENE` backends must relaunch the scene, so the in-game record button is disabled while a scene runs. `IN_PLACE` backends capture the running scene directly; if nothing is running, Record launches the scene first.
 
-OBS always appears in the backend list — if not installed the dock shows an install hint instead of failing silently. Launch progress is narrated in both the dock status line and the terminal `[GdTM]` log.
+OBS always appears in the backend list under its plain name — installed-but-idle stays selectable (it auto-launches on Record, with a "will auto-launch" tooltip). If truly unavailable (not installed) the entry is greyed and unselectable with the install reason as tooltip; ffmpeg-dependent formats use the same disabled + tooltip treatment when ffmpeg is missing. Launch progress is narrated in both the dock status line and the terminal `[GdTM]` log.
 
 ## OBS Setup
 

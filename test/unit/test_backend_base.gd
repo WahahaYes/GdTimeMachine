@@ -54,6 +54,16 @@ func test_is_available_default_false() -> void:
 	assert_false(backend.is_available())
 
 
+func test_unavailable_reason_default_generic() -> void:
+	var backend: RecorderBackend = autofree(RecorderBackend.new())
+	assert_false(backend.get_unavailable_reason().is_empty())
+
+
+func test_runtime_hint_default_empty() -> void:
+	var backend: RecorderBackend = autofree(RecorderBackend.new())
+	assert_true(backend.get_runtime_hint().is_empty())
+
+
 func test_is_recording_default_false() -> void:
 	var backend: RecorderBackend = autofree(RecorderBackend.new())
 	assert_false(backend.is_recording())

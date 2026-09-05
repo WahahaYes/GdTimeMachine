@@ -8,17 +8,24 @@ class_name BackendOBS
 ## All stop paths converge on _finalize_stopped() (single recording_stopped
 ## emission). IN_PLACE: the game is never killed or gracefully quit.
 ##
-## Availability: is_available() = last WebSocket probe result (cached, never
-## binary presence); is_obs_installed() = OBS binary resolved exactly once.
-## A fresh probe runs in the editor on a 5 s TTL; a stale cache is re-probed
-## on demand from is_obs_running().
+## Availability (two layers, common interface with ffmpeg formats):
+## is_available() = installed/launchable (binary resolved) — the dropdown's
+## disabled gate. Reachability (WebSocket probe cache _available) is NOT
+## availability: installed-but-idle stays selectable and auto-launches on
+## Record. Use is_obs_running() for reachability and get_runtime_hint() for
+## the "will auto-launch" tooltip. A fresh reachability probe runs in the
+## editor on a 5 s TTL; a stale cache is re-probed on demand from
+## is_obs_running().
 ##
 ## Startup semantics: pending-start polls _is_playing_scene() (not
 ## GetRecordStatus), and StartRecord is confirmed by its own response — OBS
 ## status 500 "already recording" counts as success. start() gates on
 ## is_obs_installed() with install instructions before launching/connecting.
 
-## Emitted when a probe result flips the is_available() cache.
+## Emitted when the reachability probe flips (payload = reachable, not
+## selectable). The dock recomputes disabled state from is_available()
+## (installed) on every emission, so live tooltip updates keep working while
+## the disabled gate stays install-based.
 signal availability_changed(available: bool)
 
 ## Injected EditorSettings; when null, falls back to the EditorInterface
@@ -64,9 +71,8 @@ var _last_connect_error := ""
 var _we_launched := false
 var _launched_pid := 0
 var _obs_binary_cached: String = ""
-# True once _obs_binary_cached holds the result of _resolve_obs_binary().
-# A String cache slot starts as "" (never null), so a `== null` lazy-init guard
-# can't distinguish "unresolved" from "resolved empty" — the flag can.
+# True once _obs_binary_cached holds a non-empty resolve. Empty results are
+# retried on the next check so a mid-session install is detected.
 var _obs_binary_resolved := false
 
 var _poll_timer: Timer
@@ -101,10 +107,48 @@ func get_native_formats() -> Array:
 	return [GdTMOutputFormat.Format.MP4]
 
 
-## WebSocket-reachable cache, never binary presence. Refresh happens on the
-## editor's AVAILABILITY_TTL cycle or on demand from is_obs_running().
+## Selectability gate (common RecorderBackend interface): installed means
+## usable because start() auto-launches. Installed-but-idle is available;
+## only a missing binary is unavailable. Reachability lives in
+## is_obs_running(), never here.
 func is_available() -> bool:
-	return _available
+	return is_obs_installed()
+
+
+## Actionable install reason for the disabled tooltip/dialog ("" when
+## available). Part of the common availability interface. Names the actual
+## WebSocket target from settings, never a hardcoded "must be running".
+func get_unavailable_reason() -> String:
+	if is_available():
+		return ""
+	var settings := _get_obs_settings()
+	var host := str(settings.get("host", OBSClient.DEFAULT_HOST))
+	var port := int(settings.get("port", OBSClient.DEFAULT_PORT))
+	return (
+		(
+			"OBS Studio not found (expected WebSocket target ws://%s:%d). Install OBS Studio, enable the WebSocket "
+			% [host, port]
+		)
+		+ "server (Tools → WebSocket Server Settings → Enable WebSocket Server), "
+		+ "and check gd_time_machine/obs/* (host/port/password) under Project > "
+		+ "Editor Settings."
+	)
+
+
+## Transient hint when selectable but idle: installed but not reachable.
+## "" when unavailable or already reachable — no tooltip noise then.
+func get_runtime_hint() -> String:
+	if not is_available():
+		return ""
+	if _available:
+		return ""
+	var settings := _get_obs_settings()
+	var host := str(settings.get("host", OBSClient.DEFAULT_HOST))
+	var port := int(settings.get("port", OBSClient.DEFAULT_PORT))
+	return (
+		"OBS Studio is installed but not running (ws://%s:%d) — it will auto-launch on Record."
+		% [host, port]
+	)
 
 
 ## True only when a WebSocket probe has succeeded recently. Forces a fresh
@@ -116,18 +160,20 @@ func is_obs_running() -> bool:
 	return _available
 
 
-## Installed means the OBS binary resolved (or binary_path override) — used
-## for install hints and launch eligibility, never as "reachable".
+## Installed means the OBS binary resolved (or binary_path override) — the
+## selectability gate and launch eligibility, never "reachable".
 func is_obs_installed() -> bool:
 	return not _resolve_and_cache_binary().is_empty()
 
 
-## Resolves the OBS binary exactly once and caches it. Both the install gate
-## and launch share this single resolve — see the _obs_binary_resolved flag.
+## Resolves the OBS binary and caches a non-empty result. An empty result is
+## retried on the next call so a mid-session install is picked up without an
+## editor restart; a found binary is resolved exactly once.
 func _resolve_and_cache_binary() -> String:
-	if not _obs_binary_resolved:
-		_obs_binary_cached = _resolve_obs_binary()
-		_obs_binary_resolved = true
+	if not _obs_binary_cached.is_empty():
+		return _obs_binary_cached
+	_obs_binary_cached = _resolve_obs_binary()
+	_obs_binary_resolved = not _obs_binary_cached.is_empty()
 	return _obs_binary_cached
 
 
