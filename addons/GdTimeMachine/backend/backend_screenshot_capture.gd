@@ -161,6 +161,24 @@ func get_capture_mode() -> CaptureMode:
 	return CaptureMode.IN_PLACE
 
 
+## Engine-native artifacts (no ffmpeg): PNG/JPG frame sequences. Everything
+## else is stitched from frames via the ffmpeg tier-2 frames convert below.
+func get_native_formats() -> Array:
+	return [GdTMOutputFormat.Format.PNG, GdTMOutputFormat.Format.JPG]
+
+
+## Everything the backend can deliver: native frames plus ffmpeg containers.
+func get_supported_formats() -> Array:
+	return [
+		GdTMOutputFormat.Format.PNG,
+		GdTMOutputFormat.Format.JPG,
+		GdTMOutputFormat.Format.MP4,
+		GdTMOutputFormat.Format.WEBM,
+		GdTMOutputFormat.Format.AVI,
+		GdTMOutputFormat.Format.OGV,
+	]
+
+
 ## Begins a recording: if a scene is already playing, starts capturing
 ## immediately; otherwise launches the requested scene (from config
 ## scene_path) and waits for playback to begin before starting capture.

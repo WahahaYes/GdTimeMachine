@@ -776,7 +776,7 @@ func test_start_not_installed_emits_actionable_error() -> void:
 	assert_false(backend.is_recording())
 
 
-func test_start_rejects_non_native_format() -> void:
+func test_start_rejects_unsupported_format() -> void:
 	var backend := _make_recording_backend()
 	var errors: Array[String] = []
 	var started: Array = []
@@ -786,12 +786,34 @@ func test_start_rejects_non_native_format() -> void:
 	backend.recording_started.connect(
 		func(_backend_name: String, _path: String) -> void: started.append(true)
 	)
-	await backend.start(
-		{"output_path": "res://media/captures/obs/obs_fmt", "output_format": "webm"}
-	)
-	assert_eq(errors.size(), 1, "non-native format must emit exactly one error")
+	await backend.start({"output_path": "res://media/captures/obs/obs_fmt", "output_format": "png"})
+	assert_eq(errors.size(), 1, "unsupported stills format must emit exactly one error")
 	assert_true(errors[0].contains("MP4"), "got: '%s'" % errors[0])
 	assert_eq(started.size(), 0, "rejected format must never start recording")
+
+
+func test_supported_formats_cover_transcode_targets() -> void:
+	var backend := _make_recording_backend()
+	assert_eq(
+		backend.get_native_formats(), [GdTMOutputFormat.Format.MP4], "OBS records MP4 natively"
+	)
+	assert_eq(
+		backend.get_supported_formats(),
+		[
+			GdTMOutputFormat.Format.MP4,
+			GdTMOutputFormat.Format.WEBM,
+			GdTMOutputFormat.Format.AVI,
+			GdTMOutputFormat.Format.OGV,
+		]
+	)
+	assert_true(backend.is_format_supported(GdTMOutputFormat.Format.WEBM))
+	assert_true(
+		backend.is_format_supported(GdTMOutputFormat.Format.AVI),
+		"ffmpeg covers what OBS doesn't record natively — no taste policing"
+	)
+	assert_false(backend.is_format_supported(GdTMOutputFormat.Format.PNG))
+	assert_false(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.MP4))
+	assert_true(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.WEBM))
 
 
 func test_start_happy_path_emits_recording_started() -> void:
@@ -945,6 +967,136 @@ func test_stop_while_pending_start_finalizes_without_connecting() -> void:
 		backend, "recording_stopped", ["OBS Studio", _obs_path("obs_pendstop")]
 	)
 	assert_eq(backend.kill_calls, 0)
+
+
+## Tier-2 transcoding (MP4 intermediate → WEBM via ffmpeg)
+
+
+class FakeOBSFFmpegConvert:
+	extends GdTMFFmpegConvert
+	var convert_called := false
+	var convert_args := {}
+	var emit_not_found := false
+	var should_succeed := true
+	var success_path := ""
+	var fail_message := "ffmpeg failed"
+	var not_found_message := "ffmpeg not found — fake"
+
+	func convert_file_async(
+		input_path: String,
+		output_path: String,
+		_clean_on_success: bool = false,
+		target_fps: int = 0
+	) -> void:
+		convert_called = true
+		convert_args = {"in": input_path, "out": output_path, "fps": target_fps}
+		if emit_not_found:
+			ffmpeg_not_found.emit(not_found_message)
+		elif should_succeed:
+			conversion_succeeded.emit(success_path)
+		else:
+			conversion_failed.emit(fail_message, "tail")
+
+	func wait_for_completion() -> void:
+		pass
+
+
+class ConvertBackend:
+	extends RecordingBackend
+	var fake_ffmpeg: FakeOBSFFmpegConvert = null
+
+	func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+		if fake_ffmpeg != null:
+			return fake_ffmpeg
+		return super._create_ffmpeg_converter()
+
+
+func _make_convert_backend() -> ConvertBackend:
+	return add_child_autofree(ConvertBackend.new())
+
+
+func test_start_webm_builds_mp4_intermediate_and_webm_final() -> void:
+	var backend := _make_convert_backend()
+	await backend.start(
+		{"output_path": "res://media/captures/obs/obs_webm", "output_format": "webm"}
+	)
+	assert_true(backend._pending_start, "scene not playing → pending start")
+	assert_eq(backend._intermediate_path, "res://media/captures/obs/obs_webm.mp4")
+	assert_eq(backend._final_output_path, "res://media/captures/obs/obs_webm.webm")
+
+
+func test_finalize_triggers_convert_for_webm_and_emits_converted() -> void:
+	var backend := _make_convert_backend()
+	var fake := FakeOBSFFmpegConvert.new()
+	fake.success_path = "res://media/captures/obs/obs_webm.webm"
+	backend.fake_ffmpeg = fake
+	autofree(fake)
+	backend._active = true
+	backend._target_output_format = "webm"
+	backend._auto_convert_enabled = true
+	backend._intermediate_path = "res://media/captures/obs/obs_webm.mp4"
+	backend._final_output_path = "res://media/captures/obs/obs_webm.webm"
+	backend._target_fps = 60
+	watch_signals(backend)
+	backend._finalize_stopped()
+	assert_true(fake.convert_called, "tier-2 target must trigger a file convert")
+	assert_eq(fake.convert_args["in"], "res://media/captures/obs/obs_webm.mp4")
+	assert_eq(fake.convert_args["out"], "res://media/captures/obs/obs_webm.webm")
+	assert_signal_emitted_with_parameters(
+		backend,
+		"recording_converted",
+		["OBS Studio", "res://media/captures/obs/obs_webm.webm"],
+	)
+
+
+func test_finalize_skips_convert_for_native_mp4() -> void:
+	var backend := _make_convert_backend()
+	var fake := FakeOBSFFmpegConvert.new()
+	backend.fake_ffmpeg = fake
+	autofree(fake)
+	backend._active = true
+	backend._target_output_format = "mp4"
+	backend._auto_convert_enabled = true
+	backend._intermediate_path = "res://media/captures/obs/obs_native.mp4"
+	backend._final_output_path = "res://media/captures/obs/obs_native.mp4"
+	watch_signals(backend)
+	backend._finalize_stopped()
+	assert_false(fake.convert_called, "native MP4 must never convert")
+	assert_signal_not_emitted(backend, "recording_converted")
+
+
+func test_finalize_skips_convert_when_auto_convert_off() -> void:
+	var backend := _make_convert_backend()
+	var fake := FakeOBSFFmpegConvert.new()
+	backend.fake_ffmpeg = fake
+	autofree(fake)
+	backend._active = true
+	backend._target_output_format = "webm"
+	backend._auto_convert_enabled = false
+	backend._intermediate_path = "res://media/captures/obs/obs_off.mp4"
+	backend._final_output_path = "res://media/captures/obs/obs_off.webm"
+	watch_signals(backend)
+	backend._finalize_stopped()
+	assert_false(fake.convert_called)
+	assert_signal_emitted(backend, "recording_stopped")
+
+
+func test_ffmpeg_missing_keeps_mp4_with_notice() -> void:
+	var backend := _make_convert_backend()
+	var fake := FakeOBSFFmpegConvert.new()
+	fake.emit_not_found = true
+	backend.fake_ffmpeg = fake
+	autofree(fake)
+	backend._active = true
+	backend._target_output_format = "webm"
+	backend._auto_convert_enabled = true
+	backend._intermediate_path = "res://media/captures/obs/obs_nf.mp4"
+	backend._final_output_path = "res://media/captures/obs/obs_nf.webm"
+	watch_signals(backend)
+	backend._finalize_stopped()
+	assert_true(fake.convert_called)
+	assert_signal_not_emitted(backend, "recording_converted")
+	assert_signal_emitted(backend, "recording_notice")
 
 
 ## File move fallback

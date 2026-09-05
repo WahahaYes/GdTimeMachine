@@ -129,6 +129,27 @@ func get_capture_mode() -> CaptureMode:
 	return CaptureMode.RESTART_SCENE
 
 
+## Engine-native artifacts (no ffmpeg): AVI/OGV/PNG. MP4/WebM arrive via the
+## ffmpeg tier-2 file convert below.
+func get_native_formats() -> Array:
+	return [
+		GdTMOutputFormat.Format.AVI,
+		GdTMOutputFormat.Format.OGV,
+		GdTMOutputFormat.Format.PNG,
+	]
+
+
+## Everything the backend can deliver: natives plus ffmpeg-transcoded MP4/WebM.
+func get_supported_formats() -> Array:
+	return [
+		GdTMOutputFormat.Format.AVI,
+		GdTMOutputFormat.Format.OGV,
+		GdTMOutputFormat.Format.PNG,
+		GdTMOutputFormat.Format.MP4,
+		GdTMOutputFormat.Format.WEBM,
+	]
+
+
 ## Begins a recording: captures previous ProjectSettings, configures Movie Maker
 ## settings without persisting to disk, enables Movie Maker, starts the poll
 ## and duration timer, then launches the scene. When the target format is a

@@ -179,6 +179,12 @@ func test_contract_name_in_place_and_always_available() -> void:
 	assert_true(backend.is_available())
 	assert_eq(backend.get_capture_mode(), RecorderBackend.CaptureMode.IN_PLACE)
 	assert_false(backend.is_recording())
+	assert_eq(
+		backend.get_native_formats(), [GdTMOutputFormat.Format.PNG, GdTMOutputFormat.Format.JPG]
+	)
+	assert_true(backend.is_format_supported(GdTMOutputFormat.Format.WEBM))
+	assert_false(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.PNG))
+	assert_true(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.MP4))
 
 
 func test_description_mentions_real_time_capture() -> void:

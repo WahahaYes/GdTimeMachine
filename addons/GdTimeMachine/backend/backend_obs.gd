@@ -57,6 +57,13 @@ var _target_output_format := ""
 var _scene_path := ""
 var _output_dir := ""
 
+## ffmpeg converter for tier-2 WEBM/AVI/OGV targets — created lazily, same
+## pattern as BackendMovieMaker (file → file, MP4 intermediate kept).
+var _ffmpeg_converter: GdTMFFmpegConvert = null
+
+## Whether to auto-convert MP4 → tier-2 targets via ffmpeg when requested.
+var _auto_convert_enabled := true
+
 var _obs_client: OBSClient = null
 
 var _available := false
@@ -89,7 +96,8 @@ func get_backend_name() -> String:
 func get_description() -> String:
 	return (
 		"Records the running scene via OBS Studio (WebSocket). Full fps with "
-		+ "audio when OBS is configured; no scene restart. IN_PLACE — the game "
+		+ "audio when OBS is configured; no scene restart. MP4 natively, "
+		+ "WEBM/AVI/OGV via ffmpeg post-convert. IN_PLACE — the game "
 		+ "keeps running and is never killed on Stop."
 	)
 
@@ -103,8 +111,24 @@ func is_recording() -> bool:
 
 
 func get_native_formats() -> Array:
-	# Records MP4 natively; other formats are handled via ffmpeg elsewhere.
+	# OBS itself records MP4 (its other native containers — MKV/MOV/TS — are
+	# outside our format enum). Anything else our file converter can write
+	# (WEBM/AVI/OGV) is offered as a post-stop transcode — same pattern as
+	# Movie Maker's AVI → MP4 — with honest "- ffmpeg" labeling, no taste
+	# policing. Stills sequences stay with the Screenshot backend (file →
+	# frames extraction has no converter yet).
 	return [GdTMOutputFormat.Format.MP4]
+
+
+## Everything the backend can deliver: native MP4 plus every container our
+## ffmpeg file converter can write from it.
+func get_supported_formats() -> Array:
+	return [
+		GdTMOutputFormat.Format.MP4,
+		GdTMOutputFormat.Format.WEBM,
+		GdTMOutputFormat.Format.AVI,
+		GdTMOutputFormat.Format.OGV,
+	]
 
 
 ## Selectability gate (common RecorderBackend interface): installed means
@@ -383,23 +407,40 @@ func start(config: Dictionary) -> void:
 	_duration = float(config.get("duration", 0.0))
 	_target_fps = int(config.get("fps", 0))
 	_target_output_format = str(config.get("output_format", "mp4")).to_lower()
+	_auto_convert_enabled = _get_auto_convert_setting(config)
 	_scene_path = str(config.get("scene_path", ""))
 	_output_dir = str(config.get("output_dir", ""))
 	if _output_dir.is_empty():
 		_output_dir = _output_path.get_base_dir()
-	# OBS records MP4 natively; anything else is rejected here.
-	if GdTMOutputFormat.from_string(_target_output_format) != GdTMOutputFormat.Format.MP4:
+	var fmt := GdTMOutputFormat.from_string(_target_output_format)
+	if not is_format_supported(fmt):
 		(
 			recording_error
 			. emit(
 				get_backend_name(),
-				"OBS records MP4 natively; format '%s' is not available" % _target_output_format,
+				(
+					"OBS records MP4 natively (WEBM/AVI/OGV via ffmpeg); format '%s' is not available"
+					% _target_output_format
+				),
 			)
 		)
 		return
-	var ext := GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.MP4)
-	_final_output_path = "%s.%s" % [_output_path, ext]
-	_intermediate_path = _final_output_path
+	# OBS always records an MP4 intermediate; tier-2 targets transcode after
+	# stop (same pattern as Movie Maker's AVI intermediate). The dock passes a
+	# bare base for IN_PLACE, but strip a stale video extension defensively so
+	# CLI callers passing "clip.mp4" don't yield "clip.mp4.mp4".
+	var base := _output_path
+	var base_ext := base.get_extension().to_lower()
+	if base_ext in ["mp4", "webm", "avi", "ogv"]:
+		base = base.substr(0, base.length() - base_ext.length() - 1)
+	_intermediate_path = (
+		"%s.%s" % [base, GdTMOutputFormat.to_extension(GdTMOutputFormat.Format.MP4)]
+	)
+	if fmt == GdTMOutputFormat.Format.MP4:
+		_final_output_path = _intermediate_path
+	else:
+		_final_output_path = "%s.%s" % [base, GdTMOutputFormat.to_extension(fmt)]
+	_output_path = base
 	_actual_obs_output = ""
 	_active = true
 	_stopping = false
@@ -630,6 +671,22 @@ func _finalize_stopped() -> void:
 	_stop_polling()
 	_stop_duration_timer()
 	recording_stopped.emit(get_backend_name(), _final_output_path)
+	# Tier-2: MP4 intermediate just finalized, now transcode to WEBM/AVI/OGV
+	# when requested (same pattern as Movie Maker). The dock's Converting…
+	# status (via format_needs_ffmpeg) bridges the gap until converted.
+	if _auto_convert_enabled and _needs_ffmpeg_convert():
+		_trigger_ffmpeg_convert()
+
+
+## Whether the recorded MP4 intermediate still needs an ffmpeg file convert
+## for the requested target. Native MP4 never does.
+func _needs_ffmpeg_convert() -> bool:
+	if _target_output_format.is_empty():
+		return false
+	var fmt := GdTMOutputFormat.from_string(_target_output_format)
+	if fmt == GdTMOutputFormat.Format.MP4:
+		return false
+	return is_format_supported(fmt)
 
 
 func _on_poll_timeout() -> void:
@@ -662,6 +719,66 @@ func _get_auto_close_setting() -> bool:
 	# Engine.has_singleton("EditorSettings") branch (see _editor_settings).
 	var v := _read_setting("gd_time_machine/obs/auto_close")
 	return bool(v) if v != null else true
+
+
+# --- ffmpeg tier-2 conversion (file → file, MP4 intermediate) -----------------
+# Same pattern as BackendMovieMaker: stopped → notice Converting… → async
+# convert → converted/notice or not-found notice / error. Keeps the MP4.
+
+
+func _get_auto_convert_setting(config: Dictionary) -> bool:
+	if config.has("auto_convert"):
+		return bool(config["auto_convert"])
+	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
+		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
+	var es := _get_es()
+	if es != null and es.has_method("get_setting"):
+		var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
+		if v != null:
+			return bool(v)
+	return true
+
+
+func _create_ffmpeg_converter() -> GdTMFFmpegConvert:
+	return GdTMFFmpegConvert.new()
+
+
+func _ensure_ffmpeg_converter() -> void:
+	if _ffmpeg_converter != null:
+		return
+	_ffmpeg_converter = _create_ffmpeg_converter()
+	if is_inside_tree():
+		add_child(_ffmpeg_converter)
+	_ffmpeg_converter.conversion_succeeded.connect(_on_ffmpeg_convert_succeeded)
+	_ffmpeg_converter.conversion_failed.connect(_on_ffmpeg_convert_failed)
+	_ffmpeg_converter.ffmpeg_not_found.connect(_on_ffmpeg_not_found)
+
+
+func _trigger_ffmpeg_convert() -> void:
+	_ensure_ffmpeg_converter()
+	recording_notice.emit(
+		get_backend_name(), "Converting to %s…" % _target_output_format.to_lower()
+	)
+	_ffmpeg_converter.convert_file_async(_intermediate_path, _final_output_path, false, _target_fps)
+
+
+func _on_ffmpeg_convert_succeeded(clip_path: String) -> void:
+	recording_converted.emit(get_backend_name(), clip_path)
+	recording_notice.emit(
+		get_backend_name(),
+		"Converted to %s" % clip_path.get_file() if not clip_path.is_empty() else "Converted"
+	)
+
+
+func _on_ffmpeg_not_found(message: String) -> void:
+	recording_notice.emit(get_backend_name(), message)
+
+
+func _on_ffmpeg_convert_failed(error_message: String, stderr_tail: String) -> void:
+	var detail := error_message
+	if not stderr_tail.is_empty():
+		detail = "%s\n%s" % [error_message, stderr_tail]
+	recording_error.emit(get_backend_name(), detail)
 
 
 # --- settings plumbing ---
@@ -998,6 +1115,8 @@ func _stop_duration_timer() -> void:
 func _exit_tree() -> void:
 	_stop_polling()
 	_stop_duration_timer()
+	if _ffmpeg_converter != null:
+		_ffmpeg_converter.wait_for_completion()
 	var launched_pid := _launched_pid
 	if _we_launched and _get_auto_close_setting():
 		_kill_process(launched_pid)

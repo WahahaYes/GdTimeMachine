@@ -99,6 +99,73 @@ func test_warning_text_returns_nonempty_for_warned_formats() -> void:
 	assert_true(mp4_warn.contains("ffmpeg"))
 
 
+func test_backend_aware_label_drops_ffmpeg_suffix_for_natives() -> void:
+	assert_eq(
+		GdTMOutputFormat.display_name_for_backend(GdTMOutputFormat.Format.MP4, true), "MP4 (.mp4)"
+	)
+	assert_eq(
+		GdTMOutputFormat.display_name_for_backend(GdTMOutputFormat.Format.WEBM, true),
+		"WebM (.webm)"
+	)
+	assert_true(
+		GdTMOutputFormat.display_name_for_backend(GdTMOutputFormat.Format.MP4, false).contains(
+			"ffmpeg"
+		)
+	)
+	assert_eq(
+		GdTMOutputFormat.display_name_for_backend(GdTMOutputFormat.Format.AVI, true),
+		GdTMOutputFormat.display_name(GdTMOutputFormat.Format.AVI)
+	)
+
+
+func test_backend_aware_label_marks_any_transcoded_format() -> void:
+	# The suffix is needs-driven, not format-driven: transcoded AVI/OGV label
+	# honestly even though the generic display_name() has no suffix for them.
+	assert_true(
+		GdTMOutputFormat.display_name_for_backend(GdTMOutputFormat.Format.AVI, false).contains(
+			"ffmpeg"
+		)
+	)
+	assert_true(
+		GdTMOutputFormat.display_name_for_backend(GdTMOutputFormat.Format.OGV, false).contains(
+			"ffmpeg"
+		)
+	)
+	assert_eq(
+		GdTMOutputFormat.from_string(
+			GdTMOutputFormat.display_name_for_backend(GdTMOutputFormat.Format.AVI, false)
+		),
+		GdTMOutputFormat.Format.AVI
+	)
+
+
+func test_backend_aware_warning_suppressed_for_natives() -> void:
+	assert_true(
+		GdTMOutputFormat.warning_text_for_backend(GdTMOutputFormat.Format.MP4, true).is_empty()
+	)
+	assert_true(
+		GdTMOutputFormat.warning_text_for_backend(GdTMOutputFormat.Format.WEBM, true).is_empty()
+	)
+	assert_false(
+		GdTMOutputFormat.warning_text_for_backend(GdTMOutputFormat.Format.MP4, false).is_empty()
+	)
+
+
+func test_backend_aware_warning_requires_ffmpeg_for_any_transcode() -> void:
+	# Transcoded AVI/OGV must name ffmpeg even though their generic warnings
+	# talk about caps / editor binaries (which describe engine output, not a
+	# transcode).
+	for fmt in [GdTMOutputFormat.Format.AVI, GdTMOutputFormat.Format.OGV]:
+		assert_true(
+			GdTMOutputFormat.warning_text_for_backend(fmt, false).contains("ffmpeg"),
+			"%s transcode must name ffmpeg" % GdTMOutputFormat.to_extension(fmt)
+		)
+
+
+func test_from_string_parses_plain_native_mp4_label() -> void:
+	assert_eq(GdTMOutputFormat.from_string("MP4 (.mp4)"), GdTMOutputFormat.Format.MP4)
+
+
 ## RecordingProfile serialization roundtrip
 
 

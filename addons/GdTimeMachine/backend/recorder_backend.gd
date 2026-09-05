@@ -67,6 +67,58 @@ func get_runtime_hint() -> String:
 	return ""
 
 
+## Formats the backend records without ffmpeg. The dock uses this for the
+## plain (no " - ffmpeg" suffix) label, the warning suppression, and the
+## needs-ffmpeg gate. Backends offering post-record transcoding list a wider
+## get_supported_formats() while keeping natives narrow.
+func get_native_formats() -> Array:
+	return []
+
+
+## Every output format the backend can ultimately deliver (native plus
+## ffmpeg-transcoded). The dock offers exactly this list. Backends that only
+## record natively return get_native_formats(); transcoding backends widen it.
+## Default mirrors the historical dock fallback so test doubles without an
+## override keep working: natives when declared, else a capture-mode list.
+func get_supported_formats() -> Array:
+	var natives := get_native_formats()
+	if not natives.is_empty():
+		return natives.duplicate()
+	if get_capture_mode() == CaptureMode.IN_PLACE:
+		return [
+			GdTMOutputFormat.Format.PNG,
+			GdTMOutputFormat.Format.JPG,
+			GdTMOutputFormat.Format.MP4,
+			GdTMOutputFormat.Format.WEBM,
+			GdTMOutputFormat.Format.AVI,
+			GdTMOutputFormat.Format.OGV,
+		]
+	return [
+		GdTMOutputFormat.Format.AVI,
+		GdTMOutputFormat.Format.OGV,
+		GdTMOutputFormat.Format.PNG,
+		GdTMOutputFormat.Format.MP4,
+		GdTMOutputFormat.Format.WEBM,
+	]
+
+
+## Whether the backend can deliver the given format (natively or via ffmpeg).
+func is_format_supported(format: GdTMOutputFormat.Format) -> bool:
+	return get_supported_formats().has(format)
+
+
+## Whether delivering the given format requires ffmpeg for this backend.
+## Default: anything outside natives; doubles without natives fall back to the
+## historical dock rule (IN_PLACE → non-frames, RESTART → tier-2).
+func format_needs_ffmpeg(format: GdTMOutputFormat.Format) -> bool:
+	var natives := get_native_formats()
+	if not natives.is_empty():
+		return not natives.has(format)
+	if get_capture_mode() == CaptureMode.IN_PLACE:
+		return GdTMOutputFormat.frames_need_ffmpeg(format)
+	return GdTMOutputFormat.is_tier2_format(format)
+
+
 ## Returns true while a recording is in progress.
 func is_recording() -> bool:
 	return false

@@ -377,14 +377,13 @@ func _ensure_valid_backend_selection() -> void:
 			return
 
 
-## Formats the active backend actually supports. A backend may declare exact
-## native formats (BackendOBS → [MP4]) — then the dropdown offers exactly
-## those. Guarded with has_method so Movie Maker / Screenshot keep their
-## existing lists: screenshot (IN_PLACE) natively writes PNG/JPG frames but can
-## convert to any container via ffmpeg; Movie Maker natively writes AVI/OGV/PNG
-## and needs ffmpeg for MP4/WebM.
+## Formats the active backend can deliver (native plus ffmpeg-transcoded).
+## Delegates to the backend's common get_supported_formats() — no per-backend
+## branching here; the backend owns its format knowledge.
 func _get_allowed_formats() -> Array:
 	var backend := _controller.active_backend if _controller != null else null
+	if backend != null and backend.has_method("get_supported_formats"):
+		return backend.get_supported_formats()
 	if backend != null and backend.has_method("get_native_formats"):
 		return backend.get_native_formats()
 	if (
@@ -417,7 +416,7 @@ func _populate_formats() -> void:
 	var ffmpeg_ok := _is_ffmpeg_available()
 	for fmt in _get_allowed_formats():
 		var i := _format_option.item_count
-		_format_option.add_item(GdTMOutputFormat.display_name(fmt))
+		_format_option.add_item(_format_display_name(fmt))
 		_format_option.set_item_metadata(i, int(fmt))
 		var needs_ffmpeg := _format_needs_ffmpeg(fmt)
 		var disabled := needs_ffmpeg and not ffmpeg_ok
@@ -427,22 +426,23 @@ func _populate_formats() -> void:
 				i,
 				(
 					"%s (ffmpeg not found — install ffmpeg or set gd_time_machine/ffmpeg/path)"
-					% GdTMOutputFormat.warning_text(fmt)
+					% _format_warning_text(fmt)
 				)
 			)
 		elif needs_ffmpeg:
-			_format_option.set_item_tooltip(i, GdTMOutputFormat.warning_text(fmt))
+			_format_option.set_item_tooltip(i, _format_warning_text(fmt))
 		else:
 			_format_option.set_item_tooltip(i, "")
 	_ensure_valid_format_selection()
 
 
 ## Whether the given format needs ffmpeg conversion for the active backend.
-## Per-format version of _expects_conversion(): backends with native lists
-## (OBS → [MP4]) need ffmpeg for anything outside the list; IN_PLACE without
-## a native list needs ffmpeg for non-frames; RESTART needs it for tier-2.
+## Delegates to the backend's common format_needs_ffmpeg() — the single
+## needs-ffmpeg authority shared with _expects_conversion().
 func _format_needs_ffmpeg(fmt: GdTMOutputFormat.Format) -> bool:
 	var backend := _controller.active_backend if _controller != null else null
+	if backend != null and backend.has_method("format_needs_ffmpeg"):
+		return bool(backend.format_needs_ffmpeg(fmt))
 	if backend != null and backend.has_method("get_native_formats"):
 		var natives: Array = backend.get_native_formats()
 		return not natives.has(fmt)
@@ -452,6 +452,29 @@ func _format_needs_ffmpeg(fmt: GdTMOutputFormat.Format) -> bool:
 	):
 		return GdTMOutputFormat.frames_need_ffmpeg(fmt)
 	return GdTMOutputFormat.is_tier2_format(fmt)
+
+
+## Whether the active backend records the given format natively.
+## Delegates to the backend's common get_native_formats(). Doubles without
+## declared natives fall back to the needs gate (native ⟺ no ffmpeg needed),
+## which reproduces the historical labels exactly.
+func _is_format_native(fmt: GdTMOutputFormat.Format) -> bool:
+	var backend := _controller.active_backend if _controller != null else null
+	if backend != null and backend.has_method("get_native_formats"):
+		var natives: Array = backend.get_native_formats()
+		if not natives.is_empty():
+			return natives.has(fmt)
+	return not _format_needs_ffmpeg(fmt)
+
+
+## Backend-aware dropdown label (drops the " - ffmpeg" suffix for natives).
+func _format_display_name(fmt: GdTMOutputFormat.Format) -> String:
+	return GdTMOutputFormat.display_name_for_backend(fmt, _is_format_native(fmt))
+
+
+## Backend-aware warning (no ffmpeg warning for natives).
+func _format_warning_text(fmt: GdTMOutputFormat.Format) -> String:
+	return GdTMOutputFormat.warning_text_for_backend(fmt, _is_format_native(fmt))
 
 
 ## Whether ffmpeg conversion is available (common interface parallel to
@@ -509,7 +532,7 @@ func _select_format_item(format: GdTMOutputFormat.Format) -> bool:
 				return true
 			_format_option.select(i)
 			return true
-	var target := GdTMOutputFormat.display_name(format)
+	var target := _format_display_name(format)
 	for i in _format_option.item_count:
 		if _format_option.get_item_text(i) == target and not _format_option.is_item_disabled(i):
 			_format_option.select(i)
@@ -538,10 +561,11 @@ func _get_selected_format() -> GdTMOutputFormat.Format:
 	return GdTMOutputFormat.from_string(text)
 
 
-## Updates the warning label for the selected format.
+## Updates the warning label for the selected format (backend-aware: no
+## ffmpeg warning when the active backend records it natively).
 func _update_format_warning() -> void:
 	var fmt := _get_selected_format()
-	var warning := GdTMOutputFormat.warning_text(fmt)
+	var warning := _format_warning_text(fmt)
 	_format_warning_label.text = warning
 	_format_warning_label.visible = not warning.is_empty()
 
@@ -1106,28 +1130,13 @@ func _on_recording_stopped(_backend_name: String, output_path: String) -> void:
 		_set_status("Saved %s" % output_path.get_file(), COLOR_IDLE)
 
 
-## Whether the current selected format requires ffmpeg conversion given the
-## capture mode. A backend that declares exact native formats (BackendOBS →
-## [MP4]) produces them itself, so its own formats never expect a Converting…
-## status (that path would dangle: OBS emits only recording_stopped, never
-## recording_converted).
+## Whether the current selected format requires ffmpeg conversion for the
+## active backend. Single-line delegate to _format_needs_ffmpeg() (which
+## itself delegates to the backend) so the Converting… heuristic can never
+## drift from the per-item disabled gate. Native formats (e.g. OBS MP4)
+## never dangle: their backends emit only recording_stopped.
 func _expects_conversion() -> bool:
-	var fmt := _get_selected_format()
-	var backend := _controller.active_backend if _controller != null else null
-	if (
-		backend != null
-		and backend.has_method("get_native_formats")
-		and backend.get_native_formats().has(fmt)
-	):
-		return false
-	# IN_PLACE: PNG/JPG are native frames, rest need ffmpeg.
-	if (
-		_controller != null
-		and _controller.get_capture_mode() == RecorderBackend.CaptureMode.IN_PLACE
-	):
-		return GdTMOutputFormat.frames_need_ffmpeg(fmt)
-	# RESTART: only MP4/WEBM need ffmpeg (AVI/OGV/PNG native via engine).
-	return GdTMOutputFormat.is_tier2_format(fmt)
+	return _format_needs_ffmpeg(_get_selected_format())
 
 
 ## Updates the UI when a recording errors (button → Record, error status).

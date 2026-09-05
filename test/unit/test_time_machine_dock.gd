@@ -76,6 +76,14 @@ class MockOBSBackend:
 	func get_native_formats() -> Array:
 		return [GdTMOutputFormat.Format.MP4]
 
+	func get_supported_formats() -> Array:
+		return [
+			GdTMOutputFormat.Format.MP4,
+			GdTMOutputFormat.Format.WEBM,
+			GdTMOutputFormat.Format.AVI,
+			GdTMOutputFormat.Format.OGV,
+		]
+
 	func start(_config: Dictionary) -> void:
 		recording = true
 
@@ -495,10 +503,9 @@ func test_availability_flip_updates_disabled_live() -> void:
 ## Format dropdown
 
 
-func test_obs_active_limits_format_to_mp4_and_restores_on_switch() -> void:
-	# Selecting OBS (which exposes get_native_formats()) narrows the format row
-	# to its MP4 list; switching back to Movie Maker restores the multi-format
-	# list (the has_method fallback).
+func test_obs_active_lists_transcode_targets_and_restores_on_switch() -> void:
+	# OBS offers native MP4 plus ffmpeg-transcoded targets (the interface's
+	# get_supported_formats); switching back to Movie Maker restores its list.
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
 	var dock := ctx["dock"] as TimeMachineDock
 	var controller := ctx["controller"] as RecorderController
@@ -506,12 +513,58 @@ func test_obs_active_limits_format_to_mp4_and_restores_on_switch() -> void:
 		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
 	)
 	controller.select_backend("OBS Studio")
-	assert_true(option.item_count >= 1)
-	for i in option.item_count:
-		assert_true(option.get_item_text(i).contains("mp4"))
+	assert_eq(option.item_count, 4)
+	assert_eq(
+		option.get_item_text(_format_item_index(dock, GdTMOutputFormat.Format.MP4)), "MP4 (.mp4)"
+	)
+	var webm_i := _format_item_index(dock, GdTMOutputFormat.Format.WEBM)
+	assert_true(webm_i >= 0)
+	assert_true(option.get_item_text(webm_i).contains("ffmpeg"))
+	# The reported bug: transcoded AVI/OGV must carry the suffix too, since
+	# OBS never records them natively.
+	for fmt in [GdTMOutputFormat.Format.AVI, GdTMOutputFormat.Format.OGV]:
+		var idx := _format_item_index(dock, fmt)
+		assert_true(idx >= 0)
+		assert_true(
+			option.get_item_text(idx).contains("ffmpeg"),
+			"%s under OBS is a transcode and must say so" % GdTMOutputFormat.to_extension(fmt)
+		)
 	controller.select_backend("Godot Movie Maker")
 	assert_true(option.item_count >= 3)
 	assert_eq(option.get_item_text(0), GdTMOutputFormat.display_name(GdTMOutputFormat.Format.AVI))
+
+
+func test_obs_native_mp4_label_has_no_ffmpeg_suffix_or_warning() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	controller.select_backend("OBS Studio")
+	dock._select_format_item(GdTMOutputFormat.Format.MP4)
+	dock._update_format_warning()
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	var mp4_i := _format_item_index(dock, GdTMOutputFormat.Format.MP4)
+	assert_eq(option.get_item_text(mp4_i), "MP4 (.mp4)")
+	assert_false(option.get_item_text(mp4_i).contains("ffmpeg"))
+	assert_eq(option.get_item_tooltip(mp4_i), "")
+	var warning: Label = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatWarningRow/FormatWarningLabel"
+	)
+	assert_true(not warning.visible or warning.text.is_empty())
+
+
+func test_movie_maker_mp4_keeps_ffmpeg_suffix_and_warning() -> void:
+	var ctx := _build_dock(FakeStore.new(), "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._ffmpeg_probe_override = 1
+	dock._populate_formats()
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	var mp4_i := _format_item_index(dock, GdTMOutputFormat.Format.MP4)
+	assert_true(option.get_item_text(mp4_i).contains("ffmpeg"))
+	assert_true(option.get_item_tooltip(mp4_i).contains("ffmpeg"))
 
 
 ## OBS install dialog
@@ -627,6 +680,11 @@ func test_obs_native_mp4_stays_enabled_without_ffmpeg() -> void:
 	var mp4_i := _format_item_index(dock, GdTMOutputFormat.Format.MP4)
 	assert_true(mp4_i >= 0)
 	assert_false(option.is_item_disabled(mp4_i))
+	# Transcode targets share the ffmpeg gate: WEBM disables without ffmpeg.
+	var webm_i := _format_item_index(dock, GdTMOutputFormat.Format.WEBM)
+	assert_true(webm_i >= 0)
+	assert_true(option.is_item_disabled(webm_i))
+	assert_true(option.get_item_tooltip(webm_i).contains("ffmpeg"))
 
 
 ## Recording status
@@ -710,18 +768,35 @@ func test_recording_notice_sets_status_message() -> void:
 
 
 func test_obs_stop_shows_saved_not_converting() -> void:
-	# BackendOBS records MP4 natively (get_native_formats → [MP4]) and never
-	# emits recording_converted, so a stopped OBS recording must land on
-	# "Saved …", not a dangling "Converting to mp4…" status.
+	# Native OBS MP4 needs no ffmpeg, so a stopped recording lands on
+	# "Saved …", not a dangling "Converting…" status.
 	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
 	var dock := ctx["dock"] as TimeMachineDock
 	var controller := ctx["controller"] as RecorderController
 	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
 	controller.select_backend("OBS Studio")
+	dock._select_format_item(GdTMOutputFormat.Format.MP4)
 	controller.recording_stopped.emit("OBS Studio", "res://media/captures/obs_happy.mp4")
 	assert_true(label.text.begins_with("Saved "))
 	assert_true(label.text.ends_with("obs_happy.mp4"))
 	assert_false(label.text.contains("Converting"))
+
+
+func test_obs_webm_stop_shows_converting_until_converted() -> void:
+	# Tier-2 OBS targets bridge via the Converting… status until converted.
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	var controller := ctx["controller"] as RecorderController
+	var label: Label = dock.get_node("Split/RightColumn/StatusRow/StatusLabel")
+	controller.select_backend("OBS Studio")
+	var option: OptionButton = dock.get_node(
+		"Split/RightColumn/SettingsGroup/FormatRow/FormatOption"
+	)
+	option.select(_format_item_index(dock, GdTMOutputFormat.Format.WEBM))
+	controller.recording_stopped.emit("OBS Studio", "res://media/captures/obs_clip.mp4")
+	assert_true(label.text.contains("Converting"))
+	controller.recording_converted.emit("OBS Studio", "res://media/captures/obs_clip.webm")
+	assert_true(label.text.ends_with("obs_clip.webm"))
 
 
 func test_recording_converted_shows_saved_file() -> void:

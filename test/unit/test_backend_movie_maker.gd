@@ -283,6 +283,21 @@ func test_is_available_always_true() -> void:
 	assert_true(backend.is_available())
 
 
+func test_format_interface_natives_plus_tier2() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	assert_eq(
+		backend.get_native_formats(),
+		[
+			GdTMOutputFormat.Format.AVI,
+			GdTMOutputFormat.Format.OGV,
+			GdTMOutputFormat.Format.PNG,
+		]
+	)
+	assert_true(backend.is_format_supported(GdTMOutputFormat.Format.MP4))
+	assert_false(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.AVI))
+	assert_true(backend.format_needs_ffmpeg(GdTMOutputFormat.Format.MP4))
+
+
 func test_get_capture_mode_restart_scene() -> void:
 	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
 	assert_eq(backend.get_capture_mode(), RecorderBackend.CaptureMode.RESTART_SCENE)
