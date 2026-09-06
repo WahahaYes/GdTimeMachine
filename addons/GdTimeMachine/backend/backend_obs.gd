@@ -166,6 +166,33 @@ func get_runtime_hint() -> String:
 	)
 
 
+## Install-hint card (see base): title, body naming the real WebSocket
+## target, download URL, and the suppression flag key.
+func get_install_hint() -> Dictionary:
+	var settings := _get_obs_settings()
+	var host := str(settings.get("host", OBSClient.DEFAULT_HOST))
+	var port := int(settings.get("port", OBSClient.DEFAULT_PORT))
+	var target := "ws://%s:%d" % [host, port]
+	return {
+		"title": "OBS Studio not detected",
+		"body":
+		(
+			(
+				"OBS Studio was not found (expected WebSocket target %s).\n\n"
+				+ "To record with OBS Studio:\n"
+				+ "1. Install OBS Studio (obsproject.com — use the link below).\n"
+				+ "2. Start OBS and enable the WebSocket server: Tools → WebSocket "
+				+ "Server Settings → Enable WebSocket Server.\n"
+				+ "3. If the server requires a password, set the same password under "
+				+ "Project > Editor Settings → gd_time_machine/obs/password."
+			)
+			% target
+		),
+		"url": "https://obsproject.com",
+		"suppress_key": "hints/dont_show_obs_hint",
+	}
+
+
 ## True only when a WebSocket probe has succeeded recently. Forces a fresh
 ## probe when the cache is stale, then reports the last known result — the
 ## gate ensure_obs_running()/start() use (reachability, not install status).
@@ -712,19 +739,6 @@ func _get_auto_close_setting() -> bool:
 
 
 # --- tier-2 transcode (file → file, MP4 intermediate, registry-matched) ------
-
-
-func _get_auto_convert_setting(config: Dictionary) -> bool:
-	if config.has("auto_convert"):
-		return bool(config["auto_convert"])
-	var es := _get_es()
-	if es != null and es.has_method("get_setting"):
-		var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
-		if v != null:
-			return bool(v)
-	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
-		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
-	return true
 
 
 func _trigger_ffmpeg_convert() -> void:

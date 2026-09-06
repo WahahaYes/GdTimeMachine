@@ -40,6 +40,13 @@ func get_unavailable_reason() -> String:
 	return "Requires %s." % n
 
 
+## Self-check entry for `gdtime doctor`. Returns {"ok": bool,
+## "lines": Array[String]} with fully formatted lines the doctor prints
+## verbatim (each transcoder owns its wording so output stays stable).
+func doctor_check() -> Dictionary:
+	return {"ok": true, "lines": []}
+
+
 ## Whether this transcoder can transform the given input into the target.
 ## Pure capability (ignores availability): builders and edges must agree, so
 ## offered formats can never drift from implementable ones.

@@ -42,23 +42,34 @@ var _finishing := false
 ## Returns the ffmpeg binary path: EditorSettings override if present,
 ## otherwise "ffmpeg" on PATH.
 func _get_ffmpeg_binary() -> String:
-	var custom := ""
-	# EditorSettings key lives under gd_time_machine/ffmpeg/path.
-	# Use Engine.get_singleton("EditorSettings") seam via EditorInterface
-	# when available; fall back to ProjectSettings for testability.
-	if Engine.has_singleton("EditorSettings"):
-		var es: Object = Engine.get_singleton("EditorSettings")
-		if es != null and es.has_method("get_setting"):
-			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/path")
-			if v != null:
-				custom = str(v).strip_edges()
-	if custom.is_empty() and ProjectSettings.has_setting("gd_time_machine/ffmpeg/path"):
-		var pv: Variant = ProjectSettings.get_setting("gd_time_machine/ffmpeg/path")
-		if pv != null:
-			custom = str(pv).strip_edges()
-	if not custom.is_empty():
-		return custom
+	# Transcoder section first, then the pre-namespace location. Store-major:
+	# EditorSettings wins over ProjectSettings (the BackendOBS convention).
+	# EditorSettings is reached via EditorInterface — Engine.has_singleton(
+	# "EditorSettings") is FALSE even in the editor, so the singleton path
+	# would never see stored values. Headless runs (tests, CLI) see PS only.
+	for key in ["transcoders/ffmpeg/path", "gd_time_machine/ffmpeg/path"]:
+		var from_es := _read_editor_setting(key)
+		if not from_es.is_empty():
+			return from_es
+	for key in ["transcoders/ffmpeg/path", "gd_time_machine/ffmpeg/path"]:
+		if ProjectSettings.has_setting(key):
+			var pv: Variant = ProjectSettings.get_setting(key)
+			if pv != null and not str(pv).strip_edges().is_empty():
+				return str(pv).strip_edges()
 	return "ffmpeg"
+
+
+## Reads one EditorSettings key via EditorInterface, or "" outside the
+## editor / when unset. Headless runs (tests, CLI) always take "".
+func _read_editor_setting(key: String) -> String:
+	if not Engine.is_editor_hint():
+		return ""
+	var es: Object = EditorInterface.get_editor_settings()
+	if es != null and es.has_method("get_setting"):
+		var v: Variant = es.get_setting(key)
+		if v != null:
+			return str(v).strip_edges()
+	return ""
 
 
 ## Reads editor/movie_writer/video_quality (float 0..1) for quality-aware crf.
@@ -136,7 +147,29 @@ func is_available() -> bool:
 ## Reason shown on disabled ffmpeg-dependent format items (mirrors
 ## RecorderBackend.get_unavailable_reason()).
 func get_unavailable_reason() -> String:
-	return "Requires ffmpeg on PATH (or set gd_time_machine/ffmpeg/path)."
+	return "Requires ffmpeg on PATH (or set transcoders/ffmpeg/path)."
+
+
+## RecorderTranscoder self-check for `gdtime doctor`. Same wording the
+## doctor always printed; the CLI loop prints lines verbatim.
+func doctor_check() -> Dictionary:
+	var bin_path := _get_ffmpeg_binary()
+	var out: Array = []
+	var code := _os_execute_blocking(bin_path, PackedStringArray(["-version"]), out, true)
+	if code == 0 and not out.is_empty():
+		var first := str(out[0])
+		var version := (
+			first.split("\n")[0].strip_edges() if first.contains("\n") else first.strip_edges()
+		)
+		return {"ok": true, "lines": ["  [OK] ffmpeg — %s (%s)" % [version, bin_path]]}
+	return {
+		"ok": false,
+		"lines":
+		[
+			"  [WARN] ffmpeg not found — tier-2 mp4/webm will be unavailable",
+			"    hint: sudo apt install ffmpeg / brew install ffmpeg, or set transcoders/ffmpeg/path",
+		],
+	}
 
 
 ## Blocking OS.execute seam. Tests override to fake responses and capture args.

@@ -121,6 +121,24 @@ func refresh_availability() -> bool:
 	return changed
 
 
+## Normalizes a transcoders/active preference value (Array or bare String)
+## into a deduplicated Array of names. Pure/static so the plugin
+## (registration order) and backends (settings-section resolution) share one
+## parser. Empty input yields [] — callers apply the ["ffmpeg"] default.
+static func parse_active_names(raw: Variant) -> Array:
+	var out: Array = []
+	var items: Array = []
+	if raw is Array:
+		items = raw as Array
+	elif raw != null:
+		items = [raw]
+	for entry in items:
+		var entry_name := str(entry).strip_edges()
+		if not entry_name.is_empty() and not out.has(entry_name):
+			out.append(entry_name)
+	return out
+
+
 ## Drops collected weak references.
 func _prune_dead() -> void:
 	_entries = _entries.filter(func(wr: WeakRef) -> bool: return wr.get_ref() != null)

@@ -203,6 +203,14 @@ func get_backend_runtime_hint(backend_name: String) -> String:
 	return str(backend.get_runtime_hint())
 
 
+## Install-hint card for the named backend ({} when it declares none).
+func get_backend_install_hint(backend_name: String) -> Dictionary:
+	if not backends.has(backend_name):
+		return {}
+	var backend: RecorderBackend = backends[backend_name]
+	return backend.get_install_hint()
+
+
 ## Single tooltip source for backend dropdown items: the unavailable reason
 ## when not selectable, else the runtime hint (e.g. OBS "will auto-launch").
 func get_backend_tooltip(backend_name: String) -> String:

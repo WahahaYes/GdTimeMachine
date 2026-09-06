@@ -71,9 +71,9 @@ If OBS isn't reachable and `auto_launch` is on, GdTimeMachine launches it minimi
 The format dropdown is backend-aware — it shows native formats plus what ffmpeg can convert to.
 
 - **Native (no ffmpeg):** AVI, OGV, PNG sequence, JPG sequence (availability depends on backend).
-- **Converted via ffmpeg (tier-2):** MP4 (H.264) and WebM (VP9) from any backend's native artifact — e.g. Movie Maker AVI → MP4, or Screenshot PNG/JPG frames → MP4/WebM.
+- **Converted via a transcoder (ffmpeg):** MP4 (H.264), WebM (VP9), AVI, OGV from a backend's native artifact — e.g. Movie Maker AVI → MP4, Screenshot PNG/JPG frames → MP4/WebM, OBS MP4 → WebM.
 
-Tier-2 conversion is **on by default** (`gd_time_machine/ffmpeg/auto_convert`). It uses the capture's measured average FPS. If ffmpeg is missing or conversion fails, the native artifact is kept and the status line explains why — never a lost recording. On success, intermediate frames/files are cleaned up per `clean_frames`.
+Tier-2 conversion is **on by default** (`transcoders/ffmpeg/auto_convert`). It uses the capture's measured average FPS. If no transcoder is available or conversion fails, the native artifact is kept and the status line explains why — never a lost recording. On success, intermediate frames/files are cleaned up per `clean_frames`.
 
 - AVI: MJPEG, largest files, 4 GB cap.
 - OGV: Theora+Vorbis, editor binaries only.
@@ -86,9 +86,9 @@ Godot has no built-in MP4 writer — MP4/WebM come from ffmpeg tier-2 conversion
 
 1. **Install ffmpeg:** Linux `sudo apt install ffmpeg`, macOS `brew install ffmpeg`, Windows `winget install ffmpeg` / `choco install ffmpeg`.
 1. **Verify on PATH:** `ffmpeg -version` should print a version; `which ffmpeg` shows the path.
-1. **Tell Godot where it is:** if on `PATH`, nothing to do; otherwise set **Project > Editor Settings → `gd_time_machine/ffmpeg/path`** to the full path. Test with an MP4/WebM recording — status shows `Converted` or `ffmpeg not found`.
+1. **Tell Godot where it is:** if on `PATH`, nothing to do; otherwise set **Project > Editor Settings → `transcoders/ffmpeg/path`** to the full path. Test with an MP4/WebM recording — status shows `Converted` or a missing-tool notice.
 
-Disable tier-2 via `gd_time_machine/ffmpeg/auto_convert = false` to keep native formats only.
+Disable tier-2 via `transcoders/ffmpeg/auto_convert = false` to keep native formats only.
 
 ## Configuration
 
@@ -102,11 +102,13 @@ All defaults live in **Project > Editor Settings** and can be overridden per sce
 - `default_fps` — target FPS cap
 - `default_duration` — seconds (`0` = until stopped)
 
-**ffmpeg (`gd_time_machine/ffmpeg/*`):**
+**Transcoders (`transcoders/*`):**
 
-- `path` — custom ffmpeg binary (empty = `PATH` lookup)
-- `auto_convert` — auto-convert tier-2 formats after recording (default `true`)
-- `clean_frames` — delete frames/intermediate after successful conversion (default `true`)
+- `active` — ordered transcoder preference (default `["ffmpeg"]`)
+- `transcoders/ffmpeg/*`: `path` — custom ffmpeg binary (empty = `PATH` lookup)
+- `transcoders/ffmpeg/*`: `auto_convert` — auto-convert tier-2 formats after recording (default `true`)
+- `transcoders/ffmpeg/*`: `clean_frames` — delete frames after successful conversion (default `true`)
+- Previous `gd_time_machine/ffmpeg/*` keys still work (read as fallback); new writes use `transcoders/`.
 
 **OBS (`gd_time_machine/obs/*`):**
 

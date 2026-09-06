@@ -407,21 +407,7 @@ func _get_grace_period() -> float:
 	return GRACE_PERIOD
 
 
-# --- ffmpeg tier-2 conversion (registry-matched file converter) ----------------
-
-
-func _get_auto_convert_setting(config: Dictionary) -> bool:
-	if config.has("auto_convert"):
-		return bool(config["auto_convert"])
-	if Engine.has_singleton("EditorSettings"):
-		var es: Object = Engine.get_singleton("EditorSettings")
-		if es != null and es.has_method("get_setting"):
-			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
-			if v != null:
-				return bool(v)
-	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
-		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
-	return true
+# --- tier-2 transcode (registry-matched file converter) ------------------------
 
 
 func _trigger_ffmpeg_convert() -> void:

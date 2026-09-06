@@ -131,7 +131,7 @@ static func warning_text(format: Format) -> String:
 	if format == Format.OGV:
 		return "OGV uses Theora+Vorbis and is only available in editor binaries."
 	if format == Format.MP4 or format == Format.WEBM:
-		return "Requires ffmpeg on PATH (or set gd_time_machine/ffmpeg/path)."
+		return "Requires ffmpeg on PATH (or set transcoders/ffmpeg/path)."
 	return ""
 
 
@@ -146,6 +146,6 @@ static func warning_text_for_backend(format: Format, is_native: bool) -> String:
 			return ""
 		return warning_text(format)
 	return (
-		"Requires ffmpeg on PATH (or set gd_time_machine/ffmpeg/path). "
+		"Requires ffmpeg on PATH (or set transcoders/ffmpeg/path). "
 		+ "Transcoded from the native recording after Stop."
 	)

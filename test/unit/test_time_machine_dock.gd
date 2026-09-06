@@ -79,6 +79,14 @@ class MockOBSBackend:
 	func get_runtime_hint() -> String:
 		return ""
 
+	func get_install_hint() -> Dictionary:
+		return {
+			"title": "OBS Studio not detected",
+			"body": "OBS Studio was not found (expected WebSocket target %s)." % ws_target,
+			"url": "https://obsproject.com",
+			"suppress_key": "hints/dont_show_obs_hint",
+		}
+
 	func is_recording() -> bool:
 		return recording
 
@@ -660,7 +668,7 @@ func test_selecting_unavailable_obs_requests_install_dialog() -> void:
 	var dock := ctx["dock"] as TimeMachineDock
 	dock._on_backend_selected(_obs_item_index(dock))
 	assert_eq(dock._install_hint_popups, 1)
-	assert_true(dock._obs_hint_label.text.contains("ws://127.0.0.1:4455"))
+	assert_true(dock._install_hint_label.text.contains("ws://127.0.0.1:4455"))
 
 
 func test_install_dialog_suppressed_when_flag_set() -> void:
@@ -678,8 +686,8 @@ func test_dont_show_again_persists_flag_on_confirm() -> void:
 	var dock := ctx["dock"] as TimeMachineDock
 	dock._on_backend_selected(_obs_item_index(dock))
 	assert_eq(dock._install_hint_popups, 1)
-	dock._obs_hint_dont_show.button_pressed = true
-	dock._obs_install_dialog.confirmed.emit()
+	dock._install_hint_dont_show.button_pressed = true
+	dock._install_dialog.confirmed.emit()
 	assert_eq(settings.values.get("hints/dont_show_obs_hint"), true)
 
 

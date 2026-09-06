@@ -33,7 +33,15 @@ class TestBackend:
 
 
 func before_each() -> void:
-	pass
+	for key in [
+		"transcoders/active",
+		"transcoders/ffmpeg/auto_convert",
+		"gd_time_machine/ffmpeg/auto_convert",
+		"transcoders/ffmpeg/clean_frames",
+		"gd_time_machine/ffmpeg/clean_frames",
+	]:
+		if ProjectSettings.has_setting(key):
+			ProjectSettings.clear(key)
 
 
 ## Abstract defaults tests
@@ -62,6 +70,38 @@ func test_unavailable_reason_default_generic() -> void:
 func test_runtime_hint_default_empty() -> void:
 	var backend: RecorderBackend = autofree(RecorderBackend.new())
 	assert_true(backend.get_runtime_hint().is_empty())
+
+
+func test_install_hint_default_empty() -> void:
+	var backend: RecorderBackend = autofree(RecorderBackend.new())
+	assert_true(backend.get_install_hint().is_empty())
+
+
+func test_auto_convert_prefers_config_then_section_then_legacy() -> void:
+	var backend: RecorderBackend = autofree(RecorderBackend.new())
+	assert_true(backend._get_auto_convert_setting({}), "default true")
+	ProjectSettings.set_setting("gd_time_machine/ffmpeg/auto_convert", false)
+	assert_false(backend._get_auto_convert_setting({}), "legacy key honored")
+	ProjectSettings.set_setting("transcoders/ffmpeg/auto_convert", true)
+	assert_true(backend._get_auto_convert_setting({}), "section wins over legacy")
+	assert_false(
+		backend._get_auto_convert_setting({"auto_convert": false}),
+		"config override wins over everything"
+	)
+
+
+func test_clean_frames_resolves_from_section() -> void:
+	var backend: RecorderBackend = autofree(RecorderBackend.new())
+	assert_true(backend._get_clean_on_success_setting(), "default true")
+	ProjectSettings.set_setting("transcoders/ffmpeg/clean_frames", false)
+	assert_false(backend._get_clean_on_success_setting())
+
+
+func test_active_transcoder_name_defaults_and_reads_list() -> void:
+	var backend: RecorderBackend = autofree(RecorderBackend.new())
+	assert_eq(backend._active_transcoder_name(), "ffmpeg")
+	ProjectSettings.set_setting("transcoders/active", ["handbrake", "ffmpeg"])
+	assert_eq(backend._active_transcoder_name(), "handbrake")
 
 
 func test_format_interface_defaults_follow_capture_mode() -> void:

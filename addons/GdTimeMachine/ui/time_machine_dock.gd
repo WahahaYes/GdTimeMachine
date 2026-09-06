@@ -51,18 +51,11 @@ const ICON_STOP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
 ## Icon path for the dock's brand logo (title bar).
 const ICON_LOGO_PATH := "res://addons/GdTimeMachine/ui/icons/icon_logo.svg"
 
-## Backend name the install-hint dialog applies to (BackendOBS.get_backend_name()).
-## OBS is the only backend that can be truly unavailable (not installed); the
-## disabled + tooltip marking below applies to any unavailable backend, but the
-## dialog is OBS-specific.
+## Backend name used by the null-controller fallback tooltip below. In
+## practice only OBS Studio can be truly unavailable (not installed); the
+## disabled + tooltip marking applies to any unavailable backend, and the
+## install-hint dialog fires for any backend declaring a hint card.
 const OBS_BACKEND_NAME := "OBS Studio"
-
-## EditorSettings key for the install-hint suppression flag (default false,
-## registered in plugin.gd). True = never show the hint again.
-const OBS_HINT_DONT_SHOW_SETTING := "hints/dont_show_obs_hint"
-
-## OBS download/install page opened by the dialog's link.
-const OBS_DOWNLOAD_URL := "https://obsproject.com"
 
 ## Loaded record icon (scaled to button height — see _ready()).
 var _icon_record: Texture2D
@@ -171,23 +164,30 @@ var _editor_settings: Object = null
 ## this counter instead of dialog.visible.
 var _install_hint_popups := 0
 
-## Test seam for ffmpeg availability: -1 = real probe via GdTMFFmpegConvert,
-## 0 = force missing, 1 = force present. Lets GUT exercise disabled format
-## items without touching PATH.
+## Test seam for transcodability: -1 = ask the controller (registry, else a
+## direct probe), 0 = force missing, 1 = force present. Lets GUT exercise
+## disabled format items without touching PATH.
 var _ffmpeg_probe_override := -1
 
-## OBS install-hint AcceptDialog (tscn node). Built once; text set per show.
-@onready var _obs_install_dialog: AcceptDialog = $ObsInstallDialog
+## Install-hint AcceptDialog (tscn node). Built once; title/body set per show
+## from the selected backend's hint card.
+@onready var _install_dialog: AcceptDialog = $ObsInstallDialog
 
 ## Dynamic body of the install hint (rebuilt per show).
-@onready var _obs_hint_label: Label = $ObsInstallDialog/HintContent/HintLabel
+@onready var _install_hint_label: Label = $ObsInstallDialog/HintContent/HintLabel
 
-## "Open obsproject.com" link button.
+## Download-page link button (URL comes from the hint card).
 @onready
-var _obs_hint_download: LinkButton = $ObsInstallDialog/HintContent/DownloadRow/DownloadButton
+var _install_hint_download: LinkButton = $ObsInstallDialog/HintContent/DownloadRow/DownloadButton
 
 ## "Don't show this hint again" checkbox.
-@onready var _obs_hint_dont_show: CheckBox = $ObsInstallDialog/HintContent/DontShowAgain
+@onready var _install_hint_dont_show: CheckBox = $ObsInstallDialog/HintContent/DontShowAgain
+
+## Download URL of the currently shown hint card (for the link button).
+var _active_hint_url := ""
+
+## Suppression-flag settings key of the currently shown hint card.
+var _active_hint_suppress_key := ""
 
 
 ## Called by plugin.gd before the dock enters the tree; stores the
@@ -242,9 +242,9 @@ func _ready() -> void:
 	_fps_spin.value_changed.connect(func(_v): _on_fps_changed())
 	_scene_edit.text_changed.connect(_on_scene_edit_changed)
 	# OBS install-hint dialog: persist "don't show again" on either exit path.
-	_obs_install_dialog.confirmed.connect(_on_obs_install_dialog_closed)
-	_obs_install_dialog.close_requested.connect(_on_obs_install_dialog_closed)
-	_obs_hint_download.pressed.connect(_open_obs_download)
+	_install_dialog.confirmed.connect(_on_install_dialog_closed)
+	_install_dialog.close_requested.connect(_on_install_dialog_closed)
+	_install_hint_download.pressed.connect(_open_install_download)
 	if _controller != null:
 		_apply_setup()
 
@@ -356,6 +356,14 @@ func _backend_tooltip(backend_name: String) -> String:
 	return "%s is currently unavailable." % backend_name
 
 
+## "ws://host:port" for the controller-less fallback tooltip below, resolved
+## from the same OBS settings the backend reads.
+func _obs_target_text() -> String:
+	var host := str(_read_setting("gd_time_machine/obs/host", "127.0.0.1"))
+	var port := int(_read_setting("gd_time_machine/obs/port", 4455))
+	return "ws://%s:%d" % [host, port]
+
+
 ## If the current dropdown selection is disabled (e.g. profile names an
 ## uninstalled OBS), fall back to the first enabled item and sync the
 ## controller, so Record never starts from a greyed entry.
@@ -404,7 +412,7 @@ func _populate_formats() -> void:
 			_format_option.set_item_tooltip(
 				i,
 				(
-					"%s (ffmpeg not found — install ffmpeg or set gd_time_machine/ffmpeg/path)"
+					"%s (transcoder not found — install ffmpeg or set transcoders/ffmpeg/path)"
 					% _format_warning_text(fmt)
 				)
 			)
@@ -595,13 +603,13 @@ func _on_backend_selected(index: int) -> void:
 	if name.is_empty():
 		name = _backend_option.get_item_text(index)
 	if _backend_option.is_item_disabled(index):
-		_maybe_show_obs_install_hint(name)
+		_maybe_show_install_hint(name)
 		# Revert the visual selection to the active backend.
 		if _controller.active_backend != null:
 			_select_backend_item(_controller.active_backend.get_backend_name())
 		return
 	_controller.select_backend(name)
-	_maybe_show_obs_install_hint(name)
+	_maybe_show_install_hint(name)
 	if not _applying_profile:
 		_persist_default_profile()
 
@@ -762,64 +770,51 @@ func _update_backend_tooltip() -> void:
 		_backend_option.tooltip_text = "%s\n%s" % [note, description]
 
 
-## Shows the OBS install hint when a truly unavailable OBS Studio is chosen
-## (not installed — repeatable until hints/dont_show_obs_hint; the flag is
-## persisted when the box is ticked and the dialog closes). Suppressed while
-## the flag is true. Installed-but-idle never hints: it will auto-launch.
-func _maybe_show_obs_install_hint(backend_name: String) -> void:
-	if backend_name != OBS_BACKEND_NAME:
+## Shows the install-hint dialog for a truly unavailable backend declaring a
+## hint card (repeatable until its suppress flag is set; the flag persists
+## when the box is ticked and the dialog closes). Installed backends never
+## hint — the card asserts "not found", so it only appears while
+## selectability is false. Backends without a card stay silent.
+func _maybe_show_install_hint(backend_name: String) -> void:
+	if _install_dialog == null or _controller == null:
 		return
-	if _obs_install_dialog == null:
+	var hint := _controller.get_backend_install_hint(backend_name)
+	if hint.is_empty():
 		return
-	if bool(_read_setting(OBS_HINT_DONT_SHOW_SETTING, false)):
+	var suppress_key := str(hint.get("suppress_key", ""))
+	if not suppress_key.is_empty() and bool(_read_setting(suppress_key, false)):
 		return
-	# Never hint at an installed OBS — the dialog asserts "not found", so it
-	# must only appear while selectability is false.
-	if _controller != null and _controller.is_backend_available(backend_name):
+	# Never hint at an installed backend — the card asserts "not found", so
+	# it must only appear while selectability is false.
+	if _controller.is_backend_available(backend_name):
 		return
-	_update_obs_install_dialog_text()
-	_obs_hint_dont_show.button_pressed = false
+	_install_dialog.title = str(hint.get("title", "Backend not detected"))
+	_install_hint_label.text = str(hint.get("body", ""))
+	_active_hint_url = str(hint.get("url", ""))
+	_active_hint_suppress_key = suppress_key
+	_install_hint_dont_show.button_pressed = false
 	_install_hint_popups += 1
-	_obs_install_dialog.popup_centered()
+	_install_dialog.popup_centered()
 
 
-## "ws://host:port" resolved from the same OBS settings the backend reads.
-func _obs_target_text() -> String:
-	var host := str(_read_setting("gd_time_machine/obs/host", "127.0.0.1"))
-	var port := int(_read_setting("gd_time_machine/obs/port", 4455))
-	return "ws://%s:%d" % [host, port]
+## Opens the current hint card's download page in the system browser.
+func _open_install_download() -> void:
+	if _active_hint_url.is_empty():
+		return
+	OS.shell_open(_active_hint_url)
 
 
-## Builds the install-hint body: OBS was not found, so lead with install
-## steps and name the WebSocket target the backend would connect to.
-func _update_obs_install_dialog_text() -> void:
-	_obs_hint_label.text = (
-		(
-			"OBS Studio was not found (expected WebSocket target %s).\n\n"
-			+ "To record with OBS Studio:\n"
-			+ "1. Install OBS Studio (obsproject.com — use the link below).\n"
-			+ "2. Start OBS and enable the WebSocket server: Tools → WebSocket "
-			+ "Server Settings → Enable WebSocket Server.\n"
-			+ "3. If the server requires a password, set the same password under "
-			+ "Project > Editor Settings → gd_time_machine/obs/password."
-		)
-		% _obs_target_text()
-	)
-
-
-## Opens the OBS download page in the system browser.
-func _open_obs_download() -> void:
-	OS.shell_open(OBS_DOWNLOAD_URL)
-
-
-## Persists the "don't show again" flag when the dialog closes with the box
-## ticked. Fires on both the OK button (confirmed) and the window X
-## (close_requested) so the choice survives either exit path.
-func _on_obs_install_dialog_closed() -> void:
-	if _obs_hint_dont_show != null and _obs_hint_dont_show.button_pressed:
+## Persists the "don't show again" flag for the current hint card when the
+## dialog closes with the box ticked. Fires on both the OK button
+## (confirmed) and the window X (close_requested) so the choice survives
+## either exit path.
+func _on_install_dialog_closed() -> void:
+	if _active_hint_suppress_key.is_empty():
+		return
+	if _install_hint_dont_show != null and _install_hint_dont_show.button_pressed:
 		var es := _get_es()
 		if es != null and es.has_method("set_setting"):
-			es.set_setting(OBS_HINT_DONT_SHOW_SETTING, true)
+			es.set_setting(_active_hint_suppress_key, true)
 
 
 ## Returns the settings store to read, or null outside the editor when no fake

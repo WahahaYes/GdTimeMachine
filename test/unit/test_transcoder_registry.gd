@@ -132,3 +132,15 @@ func test_spawn_preferred_instantiates_first_registered_type() -> void:
 	assert_true(fresh is StubTranscoder)
 	assert_ne(fresh, stub, "spawn returns a fresh instance, never the registered one")
 	fresh.free()
+
+
+func test_parse_active_names_accepts_list_string_and_junk() -> void:
+	assert_eq(TranscoderRegistry.parse_active_names(["ffmpeg"]), ["ffmpeg"])
+	assert_eq(
+		TranscoderRegistry.parse_active_names(["handbrake", "ffmpeg"]), ["handbrake", "ffmpeg"]
+	)
+	assert_eq(TranscoderRegistry.parse_active_names("ffmpeg"), ["ffmpeg"])
+	assert_eq(TranscoderRegistry.parse_active_names(["", "  ", "ffmpeg"]), ["ffmpeg"])
+	assert_eq(TranscoderRegistry.parse_active_names(["ffmpeg", "ffmpeg"]), ["ffmpeg"])
+	assert_eq(TranscoderRegistry.parse_active_names(null), [])
+	assert_eq(TranscoderRegistry.parse_active_names([]), [])

@@ -78,6 +78,17 @@ func get_runtime_hint() -> String:
 	return ""
 
 
+## Install-hint card for backends with an installable dependency ({} means
+## none). Keys: "title", "body", "url", "suppress_key" (an EditorSettings
+## flag the dialog persists when "don't show again" is ticked). The dock
+## shows the dialog for ANY backend returning a card — a future
+## HandBrake-dependent backend gets hints free. The card is
+## a pure descriptor; the dock still gates on availability, so an installed
+## backend never triggers its own not-found dialog.
+func get_install_hint() -> Dictionary:
+	return {}
+
+
 ## Native artifact this backend produces, used for transcoder capability
 ## matching. File backends name their container (Movie Maker → AVI, OBS →
 ## MP4); the Screenshot backend produces {"kind": "frames"}. Backends without
@@ -191,6 +202,69 @@ func _on_shared_transcode_failed(error_message: String, detail: String) -> void:
 
 func _on_shared_transcoder_not_found(message: String) -> void:
 	recording_notice.emit(get_backend_name(), message)
+
+
+## EditorSettings store when running inside the editor, else null. Headless
+## runs (unit tests, CLI) resolve settings from ProjectSettings only. Mirrors
+## BackendOBS._get_es()'s access path: EditorInterface directly, since
+## Engine.has_singleton("EditorSettings") is FALSE even in the editor.
+func _editor_settings_store() -> Object:
+	if not Engine.is_editor_hint():
+		return null
+	return EditorInterface.get_editor_settings()
+
+
+## First entry of the transcoders/active preference list (EditorSettings →
+## ProjectSettings, default ["ffmpeg"]). Selects whose transcoders/* section
+## _transcoder_setting() resolves from.
+func _active_transcoder_name() -> String:
+	var raw: Variant = null
+	var es := _editor_settings_store()
+	if es != null and es.has_method("get_setting"):
+		raw = es.get_setting("transcoders/active")
+	if raw == null and ProjectSettings.has_setting("transcoders/active"):
+		raw = ProjectSettings.get_setting("transcoders/active")
+	var names := TranscoderRegistry.parse_active_names(raw)
+	return names[0] if not names.is_empty() else "ffmpeg"
+
+
+## Transcoder-scoped setting with a versioned bridge: transcoders/<active>/
+## first, then transcoders/ffmpeg/, then the pre-namespace ffmpeg/ location
+## (each EditorSettings → ProjectSettings), then default. The pre-namespace
+## read keeps existing user configuration working after the move; new writes
+## (plugin defaults, docs) always use the transcoders/ sections.
+func _transcoder_setting(suffix: String, default: Variant) -> Variant:
+	var active := _active_transcoder_name()
+	var sections: Array = ["transcoders/%s" % active]
+	if active != "ffmpeg":
+		sections.append("transcoders/ffmpeg")
+	sections.append("gd_time_machine/ffmpeg")
+	var es := _editor_settings_store()
+	if es != null and es.has_method("get_setting"):
+		for section in sections:
+			var v: Variant = es.get_setting("%s/%s" % [section, suffix])
+			if v != null:
+				return v
+	for section in sections:
+		var key := "%s/%s" % [section, suffix]
+		if ProjectSettings.has_setting(key):
+			return ProjectSettings.get_setting(key)
+	return default
+
+
+## Reads the auto-convert toggle: config override wins, otherwise the active
+## transcoder's section (see _transcoder_setting), default true.
+func _get_auto_convert_setting(config: Dictionary) -> bool:
+	if config.has("auto_convert"):
+		return bool(config["auto_convert"])
+	return bool(_transcoder_setting("auto_convert", true))
+
+
+## Whether frames/intermediates should be deleted after a successful
+## convert. File backends keep their masters (clean: false at the call
+## site); the frames backend honors this toggle.
+func _get_clean_on_success_setting() -> bool:
+	return bool(_transcoder_setting("clean_frames", true))
 
 
 ## Returns true while a recording is in progress.

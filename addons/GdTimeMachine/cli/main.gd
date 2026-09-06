@@ -259,29 +259,17 @@ func _cmd_doctor(args: PackedStringArray) -> void:
 		print("  [WARN] godotenv not found — will use godot on PATH")
 		if verbose:
 			print("    hint: https://github.com/chickensoft-games/GodotEnv")
-	# ffmpeg
-	var ffmpeg_path := (
-		str(ProjectSettings.get_setting("gd_time_machine/ffmpeg/path"))
-		if ProjectSettings.has_setting("gd_time_machine/ffmpeg/path")
-		else ""
-	)
-	if ffmpeg_path.is_empty():
-		ffmpeg_path = "ffmpeg"
-	var out_ff: Array = []
-	var ff_code := OS.execute(ffmpeg_path, PackedStringArray(["-version"]), out_ff, true)
-	if ff_code == 0 and not out_ff.is_empty():
-		var ff_ver := (
-			str(out_ff[0]).split("\n")[0].strip_edges()
-			if str(out_ff[0]).contains("\n")
-			else str(out_ff[0]).strip_edges()
-		)
-		print("  [OK] ffmpeg — %s (%s)" % [ff_ver, ffmpeg_path])
-	else:
-		print("  [WARN] ffmpeg not found — tier-2 mp4/webm will be unavailable")
-		print(
-			"    hint: sudo apt install ffmpeg / brew install ffmpeg, or set gd_time_machine/ffmpeg/path"
-		)
-		degraded = true
+	# Transcoders (registry-driven: each tool owns its check lines).
+	var doctor_transcoders := TranscoderRegistry.new()
+	var doctor_ffmpeg := GdTMFFmpegConvert.new()
+	doctor_transcoders.register_transcoder(doctor_ffmpeg)
+	for tool in doctor_transcoders.list_transcoders():
+		var report: Dictionary = (tool as RecorderTranscoder).doctor_check()
+		for line in report.get("lines", []):
+			print(line)
+		if not bool(report.get("ok", true)):
+			degraded = true
+	doctor_ffmpeg.free()
 	# OBS
 	var obs_binary := ""
 	if ProjectSettings.has_setting("gd_time_machine/obs/binary_path"):

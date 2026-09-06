@@ -697,38 +697,7 @@ func _stop_polling() -> void:
 		_poll_timer.stop()
 
 
-# --- ffmpeg tier-2 conversion ------------------------------------------
-
-
-## Reads auto-convert toggle: config override wins, otherwise EditorSettings
-## gd_time_machine/ffmpeg/auto_convert, otherwise ProjectSettings same key,
-## default true.
-func _get_auto_convert_setting(config: Dictionary) -> bool:
-	if config.has("auto_convert"):
-		return bool(config["auto_convert"])
-	if Engine.has_singleton("EditorSettings"):
-		var es: Object = Engine.get_singleton("EditorSettings")
-		if es != null and es.has_method("get_setting"):
-			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/auto_convert")
-			if v != null:
-				return bool(v)
-	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/auto_convert"):
-		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/auto_convert"))
-	return true
-
-
-## Whether frames should be deleted after successful convert. Config key
-## clean_frames or EditorSettings gd_time_machine/ffmpeg/clean_frames.
-func _get_clean_on_success_setting() -> bool:
-	if ProjectSettings.has_setting("gd_time_machine/ffmpeg/clean_frames"):
-		return bool(ProjectSettings.get_setting("gd_time_machine/ffmpeg/clean_frames"))
-	if Engine.has_singleton("EditorSettings"):
-		var es: Object = Engine.get_singleton("EditorSettings")
-		if es != null and es.has_method("get_setting"):
-			var v: Variant = es.get_setting("gd_time_machine/ffmpeg/clean_frames")
-			if v != null:
-				return bool(v)
-	return true
+# --- tier-2 transcode (registry-matched frames converter) ---------------------
 
 
 ## Whether the current target wants a transcoded container (anything beyond
@@ -738,9 +707,6 @@ func _needs_ffmpeg_convert() -> bool:
 		return false
 	var fmt := GdTMOutputFormat.from_string(_target_output_format)
 	return is_format_supported(fmt) and format_needs_ffmpeg(fmt)
-
-
-## Factory seam — overridden in tests to inject a fake converter.
 
 
 ## Triggers async conversion for the just-finalized frames dir through the

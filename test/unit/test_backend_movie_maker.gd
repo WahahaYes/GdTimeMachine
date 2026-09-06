@@ -269,6 +269,15 @@ func before_each() -> void:
 	FakeEditorInterface.reset()
 	FakeProjectSettings.reset()
 	FakeFileAccess.reset()
+	for key in [
+		"transcoders/active",
+		"transcoders/ffmpeg/auto_convert",
+		"gd_time_machine/ffmpeg/auto_convert",
+		"transcoders/ffmpeg/clean_frames",
+		"gd_time_machine/ffmpeg/clean_frames",
+	]:
+		if ProjectSettings.has_setting(key):
+			ProjectSettings.clear(key)
 	_captured_started = false
 	_captured_started_path = ""
 	_captured_stopped_count = 0

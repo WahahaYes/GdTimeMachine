@@ -1,6 +1,6 @@
 # Transcoding architecture: from hand lists to capabilities
 
-Status: IMPLEMENTED (Phases 1–3). No migration shims, aliases, or fallbacks — bare backends derive natives-only, test doubles declare artifacts, and the `is_tier2_format` / `frames_need_ffmpeg` / `is_frames_source_format` classifiers plus the `ffmpeg_not_found` signal are deleted. Related: `notes/availability_rework.md` (dropdown availability treatment).
+Status: IMPLEMENTED (Phases 0–4). No migration shims, aliases, or fallbacks — bare backends derive natives-only, test doubles declare artifacts, the `is_tier2_format` / `frames_need_ffmpeg` / `is_frames_source_format` classifiers plus the `ffmpeg_not_found` signal are deleted, and settings live under `transcoders/` (legacy `ffmpeg/*` keys read as fallback). Related: `notes/availability_rework.md` (dropdown availability treatment).
 
 ## 1. Problem statement
 
@@ -125,7 +125,7 @@ transcoders/<name>/...                      # future transcoders
 - **Phase 1 — DONE:** `RecorderTranscoder` + `GdTMFFmpegConvert extends` it (with `can_convert` + `convert_async` dispatch), `TranscoderRegistry` on the controller, plugin registers ffmpeg at startup; dock asks the controller (registry, else one direct probe); doctor untouched (Phase 4).
 - **Phase 2 — DONE:** base `get_supported_formats()` derives natives + registry edges (no registry/artifact → natives only); backends declare `get_native_artifact()` and their hand `get_supported_formats()` lists are deleted; dock calls the interface directly with no fallbacks; registry availability re-populates the dropdown live. Test doubles declare natives + artifacts and attach stub registries (mirroring production).
 - **Phase 3 — DONE:** base `request_transcode()` + shared terminal handlers; per-backend trios (ensure/handlers) deleted, triggers reduced to input-dict builders; `ffmpeg_not_found` deleted everywhere; `auto_convert` lookup unified to config → ES → PS → true. Deviation kept deliberately: file converts still pass `clean: false` (deleting AVI/MP4 intermediates by default would destroy masters users may want — `clean_frames` stays a frames concern until a contributor argues otherwise).
-- **Phase 4 — open:** settings namespace (`transcoders/ffmpeg/*` with migration), doctor iterates the registry, generalized install hints (`get_install_hint()`), OBS stills via file→frames extraction.
+- **Phase 4 — DONE:** `transcoders/active` + `transcoders/ffmpeg/*` settings with copy-if-absent ES migration in the plugin; readers resolve `transcoders/<active>/` → `transcoders/ffmpeg/` → legacy `ffmpeg/` (each ES → PS) via base `_transcoder_setting()` (shared with the converter's binary resolution, now EditorInterface-aware); `_get_auto_convert_setting` and `_get_clean_on_success_setting` moved to the base (four copies deleted); doctor iterates a local registry via `doctor_check()` with byte-identical output (verified live); install hints generalized to `get_install_hint()` cards (OBS provides one, dock shows any backend's, suppression key travels in the card). Deviation kept deliberately: legacy `ffmpeg/*` keys remain readable so existing user configuration keeps working; new writes use `transcoders/`.
 
 ## 6. Open decisions (settled unless noted)
 
@@ -133,4 +133,6 @@ transcoders/<name>/...                      # future transcoders
 1. Registry ownership — SETTLED: controller (owns backends, forwards both signal families). Registry holds weakrefs only; node lifetime stays with whoever add_child'd (controller in production, tests in unit tests).
 1. `ffmpeg_not_found` — SETTLED: deleted outright, no alias.
 1. OBS stills (PNG/JPG via file→frames extraction) — OPEN, needs a new converter builder + edge.
+1. Settings namespace — SETTLED: `transcoders/<name>/` sections with `transcoders/active` preference (registration order follows it); `ffmpeg/*` readable as fallback, removable once a second transcoder ships.
+1. Install hints — SETTLED: `get_install_hint()` cards on the backend contract; dock renders any backend's card.
 1. Per-request vs per-backend transcoder instances — SETTLED for now: per-backend owned instances via the `_create_ffmpeg_converter()` seam (default consults `spawn_preferred()`), preserving the exact old one-job-at-a-time concurrency. Per-request pooling is future work if a second transcoder makes it necessary.

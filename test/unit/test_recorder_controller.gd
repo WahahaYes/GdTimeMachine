@@ -223,6 +223,16 @@ func test_backend_tooltip_returns_reason_then_hint() -> void:
 	assert_eq(controller.get_backend_tooltip("Test"), "")
 
 
+func test_backend_install_hint_defaults_empty() -> void:
+	# Backends without an installable dependency (and unknown names) declare
+	# no hint card, so the dock stays silent for them.
+	var controller := make_controller()
+	var backend := FakeBackend.new("Test", false)
+	controller.register_backend(backend)
+	assert_true(controller.get_backend_install_hint("Test").is_empty())
+	assert_true(controller.get_backend_install_hint("Unknown").is_empty())
+
+
 ## Transcoder registry
 
 

@@ -11,6 +11,18 @@ extends GutTest
 const OUTPUT := "res://media/captures/demo_2026-01-01T00-00-00"
 
 
+func before_each() -> void:
+	for key in [
+		"transcoders/active",
+		"transcoders/ffmpeg/auto_convert",
+		"gd_time_machine/ffmpeg/auto_convert",
+		"transcoders/ffmpeg/clean_frames",
+		"gd_time_machine/ffmpeg/clean_frames",
+	]:
+		if ProjectSettings.has_setting(key):
+			ProjectSettings.clear(key)
+
+
 ## Fake converter: records the convert call and emits synchronously so stop()
 ## hands off to tier-2 without any async/thread involvement.
 class FakeFFmpegConverterForScreenshot:

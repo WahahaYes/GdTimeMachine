@@ -110,9 +110,21 @@ func _enter_tree() -> void:
 	# OBS is a per-project opt-in via the backend dropdown / saved profile.
 	_obs_backend = BackendOBS.new()
 	_recorder_controller.register_backend(_obs_backend)
-	# The built-in ffmpeg transcoder backs every backend's post-record
-	# transcode targets; the registry matches artifacts to it.
-	_recorder_controller.register_transcoder(GdTMFFmpegConvert.new())
+	# Transcoders register in transcoders/active preference order so a future
+	# second tool plugs in here (registry order is the preference). Unknown
+	# names warn instead of failing — forward compatibility for settings
+	# written by newer versions.
+	for transcoder_name in _read_active_transcoders():
+		match str(transcoder_name).strip_edges().to_lower():
+			"ffmpeg":
+				_recorder_controller.register_transcoder(GdTMFFmpegConvert.new())
+			_:
+				push_warning(
+					(
+						"GdTimeMachine: unknown transcoder '%s' in transcoders/active; skipping"
+						% transcoder_name
+					)
+				)
 	_connect_controller_feedback()
 	_dock = preload("res://addons/GdTimeMachine/ui/time_machine_dock.tscn").instantiate()
 	_dock.setup(_recorder_controller, _config_store)
@@ -571,8 +583,9 @@ func _disconnect_controller_feedback() -> void:
 			_recorder_controller.recording_converted.disconnect(_on_feedback_converted)
 
 
-## Registers EditorSettings defaults for ffmpeg (path, auto_convert, clean_frames)
-## so the settings appear in Project > Editor Settings. Safe to call repeatedly.
+## Registers EditorSettings defaults for the transcoder sections and the OBS
+## backend so the settings appear in Project > Editor Settings. Safe to call
+## repeatedly.
 func _ensure_editor_settings_defaults() -> void:
 	if not Engine.is_editor_hint():
 		return
@@ -580,45 +593,26 @@ func _ensure_editor_settings_defaults() -> void:
 	if es == null:
 		return
 	if es.has_method("has_setting") and es.has_method("set_setting"):
-		# Only set when absent — don't overwrite user's existing preference.
-		if not es.has_setting("gd_time_machine/ffmpeg/path"):
-			es.set_setting("gd_time_machine/ffmpeg/path", "")
-			# Add property info so it shows up with hint in EditorSettings UI.
-			if es.has_method("add_property_info"):
-				(
-					es
-					. add_property_info(
-						{
-							"name": "gd_time_machine/ffmpeg/path",
-							"type": TYPE_STRING,
-							"hint": PROPERTY_HINT_GLOBAL_FILE,
-						}
-					)
-				)
-		if not es.has_setting("gd_time_machine/ffmpeg/auto_convert"):
-			es.set_setting("gd_time_machine/ffmpeg/auto_convert", true)
-			if es.has_method("add_property_info"):
-				(
-					es
-					. add_property_info(
-						{
-							"name": "gd_time_machine/ffmpeg/auto_convert",
-							"type": TYPE_BOOL,
-						}
-					)
-				)
-		if not es.has_setting("gd_time_machine/ffmpeg/clean_frames"):
-			es.set_setting("gd_time_machine/ffmpeg/clean_frames", true)
-			if es.has_method("add_property_info"):
-				(
-					es
-					. add_property_info(
-						{
-							"name": "gd_time_machine/ffmpeg/clean_frames",
-							"type": TYPE_BOOL,
-						}
-					)
-				)
+		# Transcoder sections. Only set when absent — don't overwrite the
+		# user's existing preferences. Legacy gd_time_machine/ffmpeg/* values
+		# are copied across once so the Editor UI shows them under their new
+		# names; readers still honor the old keys (see _transcoder_setting).
+		_ensure_setting(es, "transcoders/active", ["ffmpeg"], {"type": TYPE_ARRAY})
+		_ensure_setting(
+			es,
+			"transcoders/ffmpeg/path",
+			"",
+			{"type": TYPE_STRING, "hint": PROPERTY_HINT_GLOBAL_FILE}
+		)
+		_ensure_setting(es, "transcoders/ffmpeg/auto_convert", true, {"type": TYPE_BOOL})
+		_ensure_setting(es, "transcoders/ffmpeg/clean_frames", true, {"type": TYPE_BOOL})
+		_migrate_setting(es, "gd_time_machine/ffmpeg/path", "transcoders/ffmpeg/path")
+		_migrate_setting(
+			es, "gd_time_machine/ffmpeg/auto_convert", "transcoders/ffmpeg/auto_convert"
+		)
+		_migrate_setting(
+			es, "gd_time_machine/ffmpeg/clean_frames", "transcoders/ffmpeg/clean_frames"
+		)
 		# OBS backend settings — the only source BackendOBS._get_obs_settings()
 		# reads. Only set when absent so user preferences (host/port/password)
 		# survive plugin re-enables.
@@ -668,6 +662,40 @@ func _ensure_editor_settings_defaults() -> void:
 			es.set_setting("hints/dont_show_obs_hint", false)
 			if es.has_method("add_property_info"):
 				es.add_property_info({"name": "hints/dont_show_obs_hint", "type": TYPE_BOOL})
+
+
+## Sets an EditorSettings default with property info, only when absent.
+static func _ensure_setting(es: Object, key: String, value: Variant, info: Dictionary) -> void:
+	if es.has_setting(key):
+		return
+	es.set_setting(key, value)
+	if es.has_method("add_property_info"):
+		var full_info := info.duplicate()
+		full_info["name"] = key
+		es.add_property_info(full_info)
+
+
+## One-time copy of a pre-namespace transcoder setting to its new location.
+## Runs only when the new key is absent but the old one exists, so explicit
+## new-location values (and the defaults above) always win.
+static func _migrate_setting(es: Object, old_key: String, new_key: String) -> void:
+	if es.has_setting(new_key) or not es.has_setting(old_key):
+		return
+	es.set_setting(new_key, es.get_setting(old_key))
+
+
+## Reads the transcoders/active preference list (EditorSettings first, else
+## ProjectSettings, default ["ffmpeg"]).
+func _read_active_transcoders() -> Array:
+	var raw: Variant = null
+	if Engine.is_editor_hint():
+		var es: Object = EditorInterface.get_editor_settings()
+		if es != null and es.has_method("get_setting"):
+			raw = es.get_setting("transcoders/active")
+	if raw == null and ProjectSettings.has_setting("transcoders/active"):
+		raw = ProjectSettings.get_setting("transcoders/active")
+	var names := TranscoderRegistry.parse_active_names(raw)
+	return names if not names.is_empty() else ["ffmpeg"]
 
 
 func _on_feedback_started(backend_name: String, output_path: String) -> void:

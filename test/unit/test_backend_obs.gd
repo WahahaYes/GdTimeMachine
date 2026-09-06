@@ -41,6 +41,15 @@ func before_each() -> void:
 	for key in [PASSWORD_KEY, PORT_KEY]:
 		if ProjectSettings.has_setting(key):
 			ProjectSettings.clear(key)
+	for key in [
+		"transcoders/active",
+		"transcoders/ffmpeg/auto_convert",
+		"gd_time_machine/ffmpeg/auto_convert",
+		"transcoders/ffmpeg/clean_frames",
+		"gd_time_machine/ffmpeg/clean_frames",
+	]:
+		if ProjectSettings.has_setting(key):
+			ProjectSettings.clear(key)
 
 
 ## Fake OBSClient whose connect_to_obs() never opens a socket: with
