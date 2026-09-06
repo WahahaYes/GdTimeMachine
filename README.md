@@ -108,7 +108,6 @@ All defaults live in **Project > Editor Settings** and can be overridden per sce
 - `transcoders/ffmpeg/*`: `path` — custom ffmpeg binary (empty = `PATH` lookup)
 - `transcoders/ffmpeg/*`: `auto_convert` — auto-convert tier-2 formats after recording (default `true`)
 - `transcoders/ffmpeg/*`: `clean_frames` — delete frames after successful conversion (default `true`)
-- Previous `gd_time_machine/ffmpeg/*` keys still work (read as fallback); new writes use `transcoders/`.
 
 **OBS (`gd_time_machine/obs/*`):**
 

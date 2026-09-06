@@ -36,9 +36,7 @@ func before_each() -> void:
 	for key in [
 		"transcoders/active",
 		"transcoders/ffmpeg/auto_convert",
-		"gd_time_machine/ffmpeg/auto_convert",
 		"transcoders/ffmpeg/clean_frames",
-		"gd_time_machine/ffmpeg/clean_frames",
 	]:
 		if ProjectSettings.has_setting(key):
 			ProjectSettings.clear(key)
@@ -77,13 +75,11 @@ func test_install_hint_default_empty() -> void:
 	assert_true(backend.get_install_hint().is_empty())
 
 
-func test_auto_convert_prefers_config_then_section_then_legacy() -> void:
+func test_auto_convert_prefers_config_then_section() -> void:
 	var backend: RecorderBackend = autofree(RecorderBackend.new())
 	assert_true(backend._get_auto_convert_setting({}), "default true")
-	ProjectSettings.set_setting("gd_time_machine/ffmpeg/auto_convert", false)
-	assert_false(backend._get_auto_convert_setting({}), "legacy key honored")
-	ProjectSettings.set_setting("transcoders/ffmpeg/auto_convert", true)
-	assert_true(backend._get_auto_convert_setting({}), "section wins over legacy")
+	ProjectSettings.set_setting("transcoders/ffmpeg/auto_convert", false)
+	assert_false(backend._get_auto_convert_setting({}))
 	assert_false(
 		backend._get_auto_convert_setting({"auto_convert": false}),
 		"config override wins over everything"

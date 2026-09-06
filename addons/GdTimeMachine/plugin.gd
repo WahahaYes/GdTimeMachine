@@ -594,9 +594,7 @@ func _ensure_editor_settings_defaults() -> void:
 		return
 	if es.has_method("has_setting") and es.has_method("set_setting"):
 		# Transcoder sections. Only set when absent — don't overwrite the
-		# user's existing preferences. Legacy gd_time_machine/ffmpeg/* values
-		# are copied across once so the Editor UI shows them under their new
-		# names; readers still honor the old keys (see _transcoder_setting).
+		# user's existing preferences.
 		_ensure_setting(es, "transcoders/active", ["ffmpeg"], {"type": TYPE_ARRAY})
 		_ensure_setting(
 			es,
@@ -606,13 +604,6 @@ func _ensure_editor_settings_defaults() -> void:
 		)
 		_ensure_setting(es, "transcoders/ffmpeg/auto_convert", true, {"type": TYPE_BOOL})
 		_ensure_setting(es, "transcoders/ffmpeg/clean_frames", true, {"type": TYPE_BOOL})
-		_migrate_setting(es, "gd_time_machine/ffmpeg/path", "transcoders/ffmpeg/path")
-		_migrate_setting(
-			es, "gd_time_machine/ffmpeg/auto_convert", "transcoders/ffmpeg/auto_convert"
-		)
-		_migrate_setting(
-			es, "gd_time_machine/ffmpeg/clean_frames", "transcoders/ffmpeg/clean_frames"
-		)
 		# OBS backend settings — the only source BackendOBS._get_obs_settings()
 		# reads. Only set when absent so user preferences (host/port/password)
 		# survive plugin re-enables.
@@ -673,15 +664,6 @@ static func _ensure_setting(es: Object, key: String, value: Variant, info: Dicti
 		var full_info := info.duplicate()
 		full_info["name"] = key
 		es.add_property_info(full_info)
-
-
-## One-time copy of a pre-namespace transcoder setting to its new location.
-## Runs only when the new key is absent but the old one exists, so explicit
-## new-location values (and the defaults above) always win.
-static func _migrate_setting(es: Object, old_key: String, new_key: String) -> void:
-	if es.has_setting(new_key) or not es.has_setting(old_key):
-		return
-	es.set_setting(new_key, es.get_setting(old_key))
 
 
 ## Reads the transcoders/active preference list (EditorSettings first, else

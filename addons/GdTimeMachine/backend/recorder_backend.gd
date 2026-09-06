@@ -228,27 +228,17 @@ func _active_transcoder_name() -> String:
 	return names[0] if not names.is_empty() else "ffmpeg"
 
 
-## Transcoder-scoped setting with a versioned bridge: transcoders/<active>/
-## first, then transcoders/ffmpeg/, then the pre-namespace ffmpeg/ location
-## (each EditorSettings → ProjectSettings), then default. The pre-namespace
-## read keeps existing user configuration working after the move; new writes
-## (plugin defaults, docs) always use the transcoders/ sections.
+## Transcoder-scoped setting: reads transcoders/<active>/<suffix>
+## (EditorSettings → ProjectSettings), else default.
 func _transcoder_setting(suffix: String, default: Variant) -> Variant:
-	var active := _active_transcoder_name()
-	var sections: Array = ["transcoders/%s" % active]
-	if active != "ffmpeg":
-		sections.append("transcoders/ffmpeg")
-	sections.append("gd_time_machine/ffmpeg")
+	var key := "transcoders/%s/%s" % [_active_transcoder_name(), suffix]
 	var es := _editor_settings_store()
 	if es != null and es.has_method("get_setting"):
-		for section in sections:
-			var v: Variant = es.get_setting("%s/%s" % [section, suffix])
-			if v != null:
-				return v
-	for section in sections:
-		var key := "%s/%s" % [section, suffix]
-		if ProjectSettings.has_setting(key):
-			return ProjectSettings.get_setting(key)
+		var v: Variant = es.get_setting(key)
+		if v != null:
+			return v
+	if ProjectSettings.has_setting(key):
+		return ProjectSettings.get_setting(key)
 	return default
 
 

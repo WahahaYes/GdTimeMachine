@@ -15,9 +15,7 @@ func before_each() -> void:
 	for key in [
 		"transcoders/active",
 		"transcoders/ffmpeg/auto_convert",
-		"gd_time_machine/ffmpeg/auto_convert",
 		"transcoders/ffmpeg/clean_frames",
-		"gd_time_machine/ffmpeg/clean_frames",
 	]:
 		if ProjectSettings.has_setting(key):
 			ProjectSettings.clear(key)

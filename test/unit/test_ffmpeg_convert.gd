@@ -51,9 +51,8 @@ var _captured_failures: Array = []
 func before_each() -> void:
 	_captured_success_paths = []
 	_captured_failures = []
-	for key in ["transcoders/ffmpeg/path", "gd_time_machine/ffmpeg/path"]:
-		if ProjectSettings.has_setting(key):
-			ProjectSettings.clear(key)
+	if ProjectSettings.has_setting("transcoders/ffmpeg/path"):
+		ProjectSettings.clear("transcoders/ffmpeg/path")
 
 
 func _make_converter() -> FakeFFmpegConvert:
@@ -67,17 +66,8 @@ func _make_converter() -> FakeFFmpegConvert:
 func test_binary_prefers_transcoders_section() -> void:
 	var conv: GdTMFFmpegConvert = autofree(GdTMFFmpegConvert.new())
 	ProjectSettings.set_setting("transcoders/ffmpeg/path", "/opt/ffmpeg/bin/ffmpeg")
-	ProjectSettings.set_setting("gd_time_machine/ffmpeg/path", "/old/ffmpeg")
 	assert_eq(conv._get_ffmpeg_binary(), "/opt/ffmpeg/bin/ffmpeg")
 	ProjectSettings.clear("transcoders/ffmpeg/path")
-	ProjectSettings.clear("gd_time_machine/ffmpeg/path")
-
-
-func test_binary_falls_back_to_legacy_key_then_path() -> void:
-	var conv: GdTMFFmpegConvert = autofree(GdTMFFmpegConvert.new())
-	ProjectSettings.set_setting("gd_time_machine/ffmpeg/path", "/old/ffmpeg")
-	assert_eq(conv._get_ffmpeg_binary(), "/old/ffmpeg")
-	ProjectSettings.clear("gd_time_machine/ffmpeg/path")
 	assert_eq(conv._get_ffmpeg_binary(), "ffmpeg")
 
 

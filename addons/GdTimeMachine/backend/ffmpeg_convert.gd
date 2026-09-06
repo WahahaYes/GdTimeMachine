@@ -5,7 +5,7 @@ class_name GdTMFFmpegConvert
 ## ffmpeg implementation of RecorderTranscoder (tier-2).
 ##
 ## Probe: OS.execute(ffmpeg -version) → present. Setting
-## gd_time_machine/ffmpeg/path overrides PATH.
+## transcoders/ffmpeg/path overrides PATH.
 ##
 ## Thread: blocking OS.execute inside a Thread with stdout/stderr capture array,
 ## call_deferred back to main, wait_to_finish() before free/_exit_tree.
@@ -42,20 +42,19 @@ var _finishing := false
 ## Returns the ffmpeg binary path: EditorSettings override if present,
 ## otherwise "ffmpeg" on PATH.
 func _get_ffmpeg_binary() -> String:
-	# Transcoder section first, then the pre-namespace location. Store-major:
-	# EditorSettings wins over ProjectSettings (the BackendOBS convention).
-	# EditorSettings is reached via EditorInterface — Engine.has_singleton(
-	# "EditorSettings") is FALSE even in the editor, so the singleton path
-	# would never see stored values. Headless runs (tests, CLI) see PS only.
-	for key in ["transcoders/ffmpeg/path", "gd_time_machine/ffmpeg/path"]:
-		var from_es := _read_editor_setting(key)
-		if not from_es.is_empty():
-			return from_es
-	for key in ["transcoders/ffmpeg/path", "gd_time_machine/ffmpeg/path"]:
-		if ProjectSettings.has_setting(key):
-			var pv: Variant = ProjectSettings.get_setting(key)
-			if pv != null and not str(pv).strip_edges().is_empty():
-				return str(pv).strip_edges()
+	# Transcoder section first (EditorSettings wins over ProjectSettings, the
+	# BackendOBS convention), then PATH fallback. EditorSettings is reached
+	# via EditorInterface — Engine.has_singleton("EditorSettings") is FALSE
+	# even in the editor, so the singleton path would never see stored
+	# values. Headless runs (tests, CLI) see ProjectSettings only.
+	const KEY := "transcoders/ffmpeg/path"
+	var from_es := _read_editor_setting(KEY)
+	if not from_es.is_empty():
+		return from_es
+	if ProjectSettings.has_setting(KEY):
+		var pv: Variant = ProjectSettings.get_setting(KEY)
+		if pv != null and not str(pv).strip_edges().is_empty():
+			return str(pv).strip_edges()
 	return "ffmpeg"
 
 
