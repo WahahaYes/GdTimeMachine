@@ -440,6 +440,24 @@ func test_poll_natural_scene_exit_finalizes() -> void:
 	assert_false(backend._active)
 
 
+func test_poll_while_pending_start_waits_for_launch() -> void:
+	# Launch is async: the first poll tick routinely fires before playback
+	# begins. It must wait — finalizing here emits a "successful" stop for a
+	# session that never recorded (empty/black output).
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	backend._active = true
+	backend._pending_start = true
+	backend._output_path = "res://test.avi"
+	backend._fake_editor._playing_scene = false
+	backend.recording_stopped.connect(
+		func(_name: String, _path: String) -> void: _captured_stopped_count += 1
+	)
+	backend._on_poll_timeout()
+	assert_eq(_captured_stopped_count, 0)
+	assert_true(backend._active)
+	assert_true(backend._pending_start)
+
+
 ## Duration timeout tests
 
 

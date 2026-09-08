@@ -329,6 +329,20 @@ func _on_screenshot_received(rq_id: int, width: int, height: int, path: String) 
 		_restart_no_reply_timer()
 		_send_next_request()
 		return
+	# The reply dims can lie: the channel has been observed reporting a full
+	# viewport size (e.g. 1152×648) while the PNG on disk is a 4×4 magenta
+	# placeholder stub. A stub frame_00001 poisons the whole clip — ffmpeg
+	# initializes its output resolution from the first frame, then
+	# reconfigures mid-stream when the real frames arrive, yielding a broken
+	# (black/tiny) video of correct length. Verify the file on disk and scrub
+	# the same way when IT is tiny.
+	var file_dims := _get_image_dimensions(path)
+	var file_w := int(file_dims.get("width", width))
+	var file_h := int(file_dims.get("height", height))
+	if file_w < MIN_FRAME_DIMENSION or file_h < MIN_FRAME_DIMENSION:
+		_restart_no_reply_timer()
+		_send_next_request()
+		return
 	_last_frame_width = width
 	_last_frame_height = height
 	var now := _now()

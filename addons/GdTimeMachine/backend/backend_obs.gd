@@ -40,6 +40,21 @@ const POLL_INTERVAL := 0.5
 const AVAILABILITY_TTL := 5.0
 const PROBE_TIMEOUT := 1.5
 const CONNECT_TIMEOUT := 3.0
+## Per-request timeout for the empty-scene preflight in _begin_recording().
+const SCENE_CHECK_TIMEOUT := 2.0
+## Scene created by the auto-setup below (never touches the user's scenes).
+const AUTO_SETUP_SCENE_NAME := "GdTimeMachine"
+## Capture source name inside the auto-setup scene.
+const AUTO_SETUP_INPUT_NAME := "GdTimeMachine Capture"
+## PipeWire desktop-capture kind (Wayland). The only display/window capture
+## available in a Wayland session — XSHM/composite kinds don't exist there.
+const PIPEWIRE_CAPTURE_KIND := "pipewire-screen-capture-source"
+## How long _begin_recording waits for the human to complete the portal
+## share-picker after auto-setup creates the source (seconds). Overridable
+## via _get_setup_wait_timeout() so tests don't sit here.
+const SETUP_WAIT_TIMEOUT := 120.0
+## Poll interval while waiting for the portal pick (seconds).
+const SETUP_WAIT_POLL := 1.0
 const LAUNCH_WAIT_TIMEOUT := 10.0
 const LAUNCH_POLL_INTERVAL := 0.5
 
@@ -531,8 +546,359 @@ func _begin_recording() -> void:
 			)
 			return
 		client = _obs_client
+	# Preflight: an OBS scene with no enabled sources records a black video
+	# of correct length that looks successful (confirmed Sep 2026: empty
+	# "Scene" produced 1280×720 black MP4s). With auto-setup on (default),
+	# build a dedicated scene + capture source instead of refusing; without
+	# it (or when setup can't run), refuse fast with an actionable error
+	# instead of a black file. Unknown/query-failed stays fail-open so
+	# an older OBS never blocks a valid recording.
+	var preflight := await _check_record_scene_ready()
+	if not bool(preflight.get("ok", true)):
+		if bool(preflight.get("setup_eligible", false)) and _get_auto_setup_setting():
+			recording_notice.emit(
+				get_backend_name(),
+				(
+					"OBS scene '%s' is empty — setting up a capture scene automatically…"
+					% str(preflight.get("scene", "current"))
+				)
+			)
+			var setup := await _auto_setup_record_scene()
+			if bool(setup.get("ok", false)):
+				# Setup already set the program scene to the new record
+				# scene (and remembered it) — go straight to StartRecord.
+				_send_start_record()
+				return
+			_active = false
+			_pending_start = false
+			_stop_polling()
+			_stop_duration_timer()
+			recording_error.emit(
+				get_backend_name(), str(setup.get("message", preflight.get("message", "")))
+			)
+			return
+		_active = false
+		_pending_start = false
+		_stop_polling()
+		_stop_duration_timer()
+		recording_error.emit(get_backend_name(), str(preflight.get("message", "")))
+		return
 	_switch_scene_if_needed()
 	_send_start_record()
+
+
+## Preflight for the black-video failure: resolves the scene OBS would record
+## (the configured obs/scene setting, else the current program scene) and
+## verifies it contains at least one enabled source via a transient OBS
+## client (kept off _obs_client so start/stop request bookkeeping is
+## untouched). Returns {"ok": true} to proceed, or {"ok": false, "message":
+## error} to abort. Any query failure (unknown scene, timeout, old OBS
+## without GetSceneItemList) is fail-open {"ok": true}.
+func _check_record_scene_ready() -> Dictionary:
+	var settings := _get_obs_settings()
+	var target := str(settings.get("scene", "")).strip_edges()
+	var host: String = str(settings.get("host", OBSClient.DEFAULT_HOST))
+	var port: int = int(settings.get("port", OBSClient.DEFAULT_PORT))
+	var password: String = str(settings.get("password", ""))
+	var client := _create_obs_client()
+	if client == null or not is_inside_tree():
+		if client != null:
+			client.queue_free()
+		return {"ok": true}
+	add_child(client)
+	var cleanup := func() -> void:
+		if client.is_inside_tree():
+			client.get_parent().remove_child(client)
+		client.queue_free()
+	if client.connect_to_obs(host, port, password) != OK:
+		cleanup.call()
+		return {"ok": true}
+	if not await _await_auth(client, CONNECT_TIMEOUT):
+		cleanup.call()
+		return {"ok": true}
+	var scene_name := target
+	if scene_name.is_empty():
+		var cur := await _obs_request_await_on(
+			client, "GetCurrentProgramScene", {}, SCENE_CHECK_TIMEOUT
+		)
+		if not bool(cur.get("ok", false)) or not bool(cur.get("result", false)):
+			cleanup.call()
+			return {"ok": true}
+		scene_name = str(Dictionary(cur.get("data", {})).get("currentProgramSceneName", ""))
+		if scene_name.is_empty():
+			cleanup.call()
+			return {"ok": true}
+	var items_resp := await _obs_request_await_on(
+		client, "GetSceneItemList", {"sceneName": scene_name}, SCENE_CHECK_TIMEOUT
+	)
+	cleanup.call()
+	if not bool(items_resp.get("ok", false)) or not bool(items_resp.get("result", false)):
+		return {"ok": true}
+	var data: Dictionary = items_resp.get("data", {})
+	# Fail open when the key is absent (unexpected shape / older OBS) — only
+	# an explicitly empty (or all-disabled) item list aborts the recording.
+	if not data.has("sceneItems"):
+		return {"ok": true}
+	var items: Array = data.get("sceneItems", [])
+	if items.is_empty():
+		return {
+			"ok": false,
+			"message": _describe_empty_scene_error(scene_name),
+			"setup_eligible": true,
+			"scene": scene_name,
+		}
+	for it in items:
+		if it is Dictionary and bool(it.get("sceneItemEnabled", true)):
+			return {"ok": true}
+	return {
+		"ok": false,
+		"message": _describe_empty_scene_error(scene_name),
+		"setup_eligible": true,
+		"scene": scene_name,
+	}
+
+
+## Actionable error for the empty-scene preflight above: names the scene and
+## tells the user exactly which OBS source to add (PipeWire Screen Capture is
+## the Wayland path; the log that diagnosed this showed EGL/Wayland).
+func _describe_empty_scene_error(scene_name: String) -> String:
+	var shown := scene_name if not scene_name.is_empty() else "current"
+	return (
+		(
+			"OBS scene '%s' has no enabled sources — recording now would produce a black video. "
+			% shown
+		)
+		+ "In OBS, add a capture source to that scene (e.g. Screen Capture (PipeWire) → "
+		+ "share the game window or monitor), then press Record again."
+	)
+
+
+## Whether the preflight may build the capture scene automatically on Record.
+## EditorSettings-first (see _read_setting), default true. When false, an
+## empty scene keeps the refuse-fast recording_error above.
+func _get_auto_setup_setting() -> bool:
+	var v := _read_setting("gd_time_machine/obs/auto_setup_scene")
+	return bool(v) if v != null else true
+
+
+## How long to wait for the portal share-picker after auto-setup creates the
+## source. Seam so tests don't sit in the wait loop.
+func _get_setup_wait_timeout() -> float:
+	return SETUP_WAIT_TIMEOUT
+
+
+## Auto-setup: builds a dedicated record scene + desktop-capture source after
+## the preflight found the current scene empty. Runs on its own transient
+## client (same bookkeeping isolation as the preflight). Steps:
+## kinds → scene (reuse ours when present) → input → scene item → program
+## scene → properties dialog (parks the human on the picker) → wait for the
+## portal RestoreToken. Returns {"ok": true} when OBS is ready to StartRecord,
+## else {"ok": false, "message": actionable error}. Any unexpected shape is
+## fail-closed here with guidance (unlike the preflight: we already know the
+## scene is empty, so proceeding can only make black).
+func _auto_setup_record_scene() -> Dictionary:
+	var refuse := func(detail: String) -> Dictionary:
+		return {
+			"ok": false,
+			"message":
+			(
+				"OBS auto-setup could not create a capture source (%s). " % detail
+				+ "In OBS, add a Screen Capture (PipeWire) source to a scene, "
+				+ "complete the share picker, then press Record again. "
+				+ "(Disable this attempt via gd_time_machine/obs/auto_setup_scene.)"
+			),
+		}
+	var settings := _get_obs_settings()
+	var host: String = str(settings.get("host", OBSClient.DEFAULT_HOST))
+	var port: int = int(settings.get("port", OBSClient.DEFAULT_PORT))
+	var password: String = str(settings.get("password", ""))
+	var client := _create_obs_client()
+	if client == null or not is_inside_tree():
+		if client != null:
+			client.queue_free()
+		return refuse.call("no OBS client")
+	add_child(client)
+	var cleanup := func() -> void:
+		if client.is_inside_tree():
+			client.get_parent().remove_child(client)
+		client.queue_free()
+	if client.connect_to_obs(host, port, password) != OK:
+		cleanup.call()
+		return refuse.call("connect failed")
+	if not await _await_auth(client, CONNECT_TIMEOUT):
+		cleanup.call()
+		return refuse.call("authentication failed")
+	# Capture kind: PipeWire desktop capture on Wayland. Anything else is a
+	# platform this path doesn't know — bail with guidance, don't guess.
+	var kinds := await _obs_request_await_on(
+		client, "GetInputKindList", {"unversioned": true}, SCENE_CHECK_TIMEOUT
+	)
+	if not bool(kinds.get("ok", false)) or not bool(kinds.get("result", false)):
+		cleanup.call()
+		return refuse.call("could not list input kinds")
+	var available: Array = Dictionary(kinds.get("data", {})).get("inputKinds", [])
+	if not available.has(PIPEWIRE_CAPTURE_KIND):
+		cleanup.call()
+		return refuse.call("no PipeWire capture (need Wayland + OBS PipeWire support)")
+	# Scene: reuse ours when a previous setup already made it.
+	var scene_list := await _obs_request_await_on(client, "GetSceneList", {}, SCENE_CHECK_TIMEOUT)
+	var have_scene := false
+	if bool(scene_list.get("ok", false)) and bool(scene_list.get("result", false)):
+		for sc in Dictionary(scene_list.get("data", {})).get("scenes", []):
+			if sc is Dictionary and str(sc.get("sceneName", "")) == AUTO_SETUP_SCENE_NAME:
+				have_scene = true
+	if not have_scene:
+		var created := await _obs_request_await_on(
+			client, "CreateScene", {"sceneName": AUTO_SETUP_SCENE_NAME}, SCENE_CHECK_TIMEOUT
+		)
+		if not bool(created.get("ok", false)) or not bool(created.get("result", false)):
+			cleanup.call()
+			return refuse.call("could not create scene '%s'" % AUTO_SETUP_SCENE_NAME)
+	# Input + scene item. CreateInput with sceneName also creates the item on
+	# obs-websocket 5.x, but CreateSceneItem is sent explicitly so older
+	# builds that split the calls still end up with a visible source; a
+	# duplicate-item failure here is ignored when the item list shows it.
+	var made_input := await _obs_request_await_on(
+		client,
+		"CreateInput",
+		{
+			"sceneName": AUTO_SETUP_SCENE_NAME,
+			"inputName": AUTO_SETUP_INPUT_NAME,
+			"inputKind": PIPEWIRE_CAPTURE_KIND,
+		},
+		SCENE_CHECK_TIMEOUT
+	)
+	if not bool(made_input.get("ok", false)) or not bool(made_input.get("result", false)):
+		# Name collision with our own previous input is fine — reuse it.
+		var existing := await _obs_request_await_on(
+			client, "GetInputList", {"inputKind": PIPEWIRE_CAPTURE_KIND}, SCENE_CHECK_TIMEOUT
+		)
+		var found := false
+		if bool(existing.get("ok", false)) and bool(existing.get("result", false)):
+			for inp in Dictionary(existing.get("data", {})).get("inputs", []):
+				if inp is Dictionary and str(inp.get("inputName", "")) == AUTO_SETUP_INPUT_NAME:
+					found = true
+		if not found:
+			cleanup.call()
+			return refuse.call("could not create input '%s'" % AUTO_SETUP_INPUT_NAME)
+	var made_item := await _obs_request_await_on(
+		client,
+		"CreateSceneItem",
+		{"sceneName": AUTO_SETUP_SCENE_NAME, "sourceName": AUTO_SETUP_INPUT_NAME},
+		SCENE_CHECK_TIMEOUT
+	)
+	if not bool(made_item.get("ok", false)):
+		cleanup.call()
+		return refuse.call("no reply creating the scene item")
+	# Show it: program scene so OBS records it, and pop the properties dialog
+	# so the human lands on the picker (fire-and-forget — OBS may be trayed).
+	await _obs_request_await_on(
+		client, "SetCurrentProgramScene", {"sceneName": AUTO_SETUP_SCENE_NAME}, SCENE_CHECK_TIMEOUT
+	)
+	await _obs_request_await_on(
+		client,
+		"OpenInputPropertiesDialog",
+		{"inputName": AUTO_SETUP_INPUT_NAME},
+		SCENE_CHECK_TIMEOUT
+	)
+	_remember_setup_scene()
+	recording_notice.emit(
+		get_backend_name(),
+		(
+			(
+				"Created OBS scene '%s' — pick the game window/monitor in the "
+				+ "share picker OBS just opened, then recording starts automatically."
+			)
+			% AUTO_SETUP_SCENE_NAME
+		)
+	)
+	# Wait for the portal pick: the source persists a RestoreToken once the
+	# human shares. Abort promptly when the user stops the pending record.
+	var deadline := Time.get_ticks_msec() / 1000.0 + _get_setup_wait_timeout()
+	while Time.get_ticks_msec() / 1000.0 < deadline:
+		if not _active or _stopping:
+			cleanup.call()
+			return {"ok": false, "message": ""}
+		var cur := await _obs_request_await_on(
+			client, "GetInputSettings", {"inputName": AUTO_SETUP_INPUT_NAME}, SCENE_CHECK_TIMEOUT
+		)
+		if bool(cur.get("ok", false)) and bool(cur.get("result", false)):
+			var token := str(
+				Dictionary(Dictionary(cur.get("data", {})).get("inputSettings", {})).get(
+					"RestoreToken", ""
+				)
+			)
+			if not token.is_empty():
+				cleanup.call()
+				return {"ok": true}
+		await _sleep(SETUP_WAIT_POLL)
+	cleanup.call()
+	return {
+		"ok": false,
+		"message":
+		(
+			(
+				"OBS scene '%s' was created but no screen share was picked in time. "
+				% AUTO_SETUP_SCENE_NAME
+			)
+			+ (
+				"In OBS, open the '%s' source properties, share the game window/monitor, "
+				% AUTO_SETUP_INPUT_NAME
+			)
+			+ "then press Record again."
+		),
+	}
+
+
+## Remembers the auto-setup scene in the obs/scene setting so the next Record
+## targets it explicitly. Best-effort: silently skips when no settings store
+## is reachable (headless tests).
+func _remember_setup_scene() -> void:
+	var es := _get_es()
+	if es != null and es.has_method("set_setting"):
+		es.set_setting("gd_time_machine/obs/scene", AUTO_SETUP_SCENE_NAME)
+
+
+## One-off OBS request/response on the given client (never touches
+## _pending_request_id/kind, which belong to start/stop). The request id is
+## pre-generated so the one-shot matcher closes over a fixed value.
+## Returns {"ok": bool, "result": bool, "code": int, "data": Dictionary}.
+## Uses the wall clock (not _now(), which tests freeze) so a lost reply can
+## never hang the loop.
+func _obs_request_await_on(
+	client: OBSClient, request_type: String, request_data: Dictionary, timeout: float
+) -> Dictionary:
+	var fallback := {"ok": false, "result": false, "code": -1, "data": {}}
+	if client == null or not client.is_connected_to_obs():
+		return fallback
+	var rq_id := "gdtime_preflight_%d" % absi(randi())
+	var box := {"done": false, "result": false, "code": -1, "data": {}}
+	var on_resp := func(resp_id: String, res: bool, resp_code: int, resp_data: Dictionary) -> void:
+		if resp_id != rq_id:
+			return
+		box["done"] = true
+		box["result"] = res
+		box["code"] = resp_code
+		box["data"] = resp_data
+	client.request_completed.connect(on_resp)
+	var sent_id := client.send_request(request_type, request_data, rq_id)
+	if sent_id.is_empty() or sent_id != rq_id:
+		if client.request_completed.is_connected(on_resp):
+			client.request_completed.disconnect(on_resp)
+		return fallback
+	var deadline := Time.get_ticks_msec() / 1000.0 + timeout
+	while not bool(box["done"]) and Time.get_ticks_msec() / 1000.0 < deadline:
+		await _sleep(0.05)
+	if client.request_completed.is_connected(on_resp):
+		client.request_completed.disconnect(on_resp)
+	if not bool(box["done"]):
+		return fallback
+	return {
+		"ok": true,
+		"result": bool(box["result"]),
+		"code": int(box["code"]),
+		"data": box["data"],
+	}
 
 
 func _connect_obs_with_timeout() -> bool:

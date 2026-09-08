@@ -631,6 +631,11 @@ func _ensure_editor_settings_defaults() -> void:
 			["gd_time_machine/obs/auto_launch", true, {"type": TYPE_BOOL}],
 			["gd_time_machine/obs/auto_close", true, {"type": TYPE_BOOL}],
 			[
+				"gd_time_machine/obs/auto_setup_scene",
+				true,
+				{"type": TYPE_BOOL},
+			],
+			[
 				"gd_time_machine/obs/binary_path",
 				"",
 				{"type": TYPE_STRING, "hint": PROPERTY_HINT_GLOBAL_FILE},

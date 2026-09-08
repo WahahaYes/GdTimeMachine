@@ -232,6 +232,12 @@ func _on_poll_timeout() -> void:
 			# is the soft notice; this is the enforcement).
 			_check_avi_size_limit()
 	else:
+		# While pending-start the scene simply hasn't launched yet (launch is
+		# async — the first poll often fires before playback begins). Wait for
+		# it; only a natural exit AFTER recording started finalizes here. The
+		# never-starts case is owned by the duration timer (recording_error).
+		if _pending_start:
+			return
 		_finalize_stopped()
 
 

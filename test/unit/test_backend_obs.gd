@@ -61,6 +61,9 @@ class FakeOBSClient:
 	var respond_result := true
 	var respond_code := OBSClient.STATUS_SUCCESS
 	var respond_data := {}
+	## Per-request-type reply data for multi-step flows (e.g. auto-setup):
+	## consulted before respond_data, keyed by requestType.
+	var respond_data_by_type := {}
 	var requests: Array = []
 	# Test seam: when true, request_completed is emitted inline (no defer) for
 	# tests that drive replies manually. Default false: the one-process_frame
@@ -89,7 +92,7 @@ class FakeOBSClient:
 		var rid := request_id
 		var ok := respond_result
 		var code := respond_code
-		var data: Dictionary = respond_data
+		var data: Dictionary = respond_data_by_type.get(request_type, respond_data)
 		if sync_reply:
 			emit_signal("request_completed", rid, ok, code, data)
 			return rid
@@ -189,6 +192,9 @@ class RecordingBackend:
 	var client_fail_message := ""
 	var client_result := true
 	var client_code := OBSClient.STATUS_SUCCESS
+	var client_respond_data := {}
+	var client_respond_data_by_type := {}
+	var setup_wait_timeout := 0.5
 	var scene_name := ""
 	var fake_now := 0.0
 	var persisted_pid := 0
@@ -235,7 +241,12 @@ class RecordingBackend:
 		client.fail_message = client_fail_message
 		client.respond_result = client_result
 		client.respond_code = client_code
+		client.respond_data = client_respond_data
+		client.respond_data_by_type = client_respond_data_by_type
 		return client
+
+	func _get_setup_wait_timeout() -> float:
+		return setup_wait_timeout
 
 	func _launch_obs_process(_binary: String) -> int:
 		return 4711
@@ -1250,6 +1261,150 @@ func test_start_record_refusal_emits_recording_error() -> void:
 	)
 	assert_false(backend.is_recording())
 	assert_signal_not_emitted(backend, "recording_started")
+
+
+func test_empty_scene_without_pipewire_kind_errors_actionably() -> void:
+	# Empty scene where auto-setup can't run (no PipeWire kind — e.g. OBS
+	# without PipeWire support): no StartRecord, and the error says why setup
+	# bailed plus how to finish manually. (The old refuse-fast path now only
+	# runs with gd_time_machine/obs/auto_setup_scene=false; see below.)
+	var backend := _make_recording_backend()
+	backend.scene_name = "Main"
+	backend.client_respond_data = {"sceneItems": []}
+	backend.playing = true
+	var errors: Array = []
+	backend.recording_error.connect(
+		func(_backend_name: String, message: String) -> void: errors.append(message)
+	)
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_empty_scene"})
+	assert_true(
+		await wait_for_signal(backend.recording_error, REPLY_BUDGET),
+		"empty OBS scene must emit recording_error instead of a black recording",
+	)
+	assert_eq(errors.size(), 1)
+	assert_true(
+		str(errors[0]).contains("auto-setup could not create"),
+		"error must say setup failed, got: '%s'" % errors[0],
+	)
+	assert_true(
+		str(errors[0]).contains("PipeWire"),
+		"error must name the missing capture kind, got: '%s'" % errors[0],
+	)
+	assert_false(backend.is_recording())
+	assert_signal_not_emitted(backend, "recording_started")
+	var client := backend._obs_client as FakeOBSClient
+	for req in client.requests:
+		assert_ne(str(req[0]), "StartRecord", "StartRecord must never fire for an empty scene")
+
+
+func test_start_scene_with_enabled_source_proceeds() -> void:
+	# Allow-path lock: a scene containing an enabled source passes the
+	# preflight and reaches StartRecord.
+	var backend := _make_recording_backend()
+	backend.scene_name = "Main"
+	backend.client_respond_data = {
+		"sceneItems": [{"sceneItemEnabled": true, "sourceName": "Window Capture"}]
+	}
+	backend.playing = true
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_scene_ok"})
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"scene with an enabled source must record",
+	)
+	assert_true(backend.is_recording())
+
+
+func _auto_setup_replies(token: String) -> Dictionary:
+	return {
+		"GetSceneItemList": {"sceneItems": []},
+		"GetInputKindList": {"inputKinds": ["pipewire-screen-capture-source"]},
+		"GetSceneList": {"scenes": [{"sceneName": "Scene"}]},
+		"CreateScene": {},
+		"CreateInput": {"inputUuid": "uuid-1"},
+		"CreateSceneItem": {"sceneItemId": 7},
+		"SetCurrentProgramScene": {},
+		"OpenInputPropertiesDialog": {},
+		"GetInputSettings": {"inputSettings": {"RestoreToken": token, "ShowCursor": true}},
+	}
+
+
+func test_empty_scene_auto_setup_reaches_start_record() -> void:
+	# Empty scene + auto-setup on: the backend builds the GdTimeMachine scene
+	# + PipeWire source, parks on the picker, sees the RestoreToken, and
+	# records — StartRecord fires on the main client last.
+	var backend := _make_recording_backend()
+	backend.scene_name = "Main"
+	backend.client_respond_data_by_type = _auto_setup_replies("tok-123")
+	backend.playing = true
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_auto_setup"})
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"auto-setup must end in a recording once the share is picked",
+	)
+	assert_true(backend.is_recording())
+	var client := backend._obs_client as FakeOBSClient
+	var kinds: Array = []
+	for req in client.requests:
+		kinds.append(str(req[0]))
+	assert_eq(kinds, ["StartRecord"], "main client only ever sends StartRecord")
+
+
+func test_auto_setup_timeout_emits_actionable_error() -> void:
+	# Share picker never completed (empty RestoreToken): no StartRecord, and
+	# the error tells the human how to finish setup manually.
+	var backend := _make_recording_backend()
+	backend.scene_name = "Main"
+	backend.client_respond_data_by_type = _auto_setup_replies("")
+	backend.setup_wait_timeout = 0.3
+	backend.playing = true
+	var errors: Array = []
+	backend.recording_error.connect(
+		func(_backend_name: String, message: String) -> void: errors.append(message)
+	)
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_setup_timeout"})
+	assert_true(
+		await wait_for_signal(backend.recording_error, REPLY_BUDGET + 2.0),
+		"an uncompleted share pick must surface as an error, not a black file",
+	)
+	assert_eq(errors.size(), 1)
+	assert_true(
+		str(errors[0]).contains("no screen share was picked"),
+		"error must name the uncompleted pick, got: '%s'" % errors[0],
+	)
+	assert_false(backend.is_recording())
+	assert_signal_not_emitted(backend, "recording_started")
+	var client := backend._obs_client as FakeOBSClient
+	for req in client.requests:
+		assert_ne(str(req[0]), "StartRecord", "StartRecord must never fire without a share")
+
+
+func test_auto_setup_off_keeps_refuse_fast_error() -> void:
+	# Opt-out via gd_time_machine/obs/auto_setup_scene=false: the empty scene
+	# refuses immediately with the no-sources error and no setup traffic.
+	ProjectSettings.set_setting("gd_time_machine/obs/auto_setup_scene", false)
+	var backend := _make_recording_backend()
+	backend.scene_name = "Main"
+	backend.client_respond_data = {"sceneItems": []}
+	backend.playing = true
+	var errors: Array = []
+	backend.recording_error.connect(
+		func(_backend_name: String, message: String) -> void: errors.append(message)
+	)
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_no_setup"})
+	assert_true(
+		await wait_for_signal(backend.recording_error, REPLY_BUDGET),
+		"opted-out empty scene must still refuse fast",
+	)
+	assert_true(
+		str(errors[0]).contains("no enabled sources"),
+		"opt-out error stays the refuse-fast one, got: '%s'" % errors[0],
+	)
+	ProjectSettings.set_setting("gd_time_machine/obs/auto_setup_scene", true)
 
 
 func test_wrong_request_id_is_ignored() -> void:

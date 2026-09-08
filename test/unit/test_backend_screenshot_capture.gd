@@ -394,6 +394,23 @@ func test_tiny_and_narrow_frames_scrubbed_loop_continues() -> void:
 	assert_eq(backend.manifests[0][1]["frame_count"], 0, "scrubs never reach the manifest")
 
 
+func test_stub_file_with_valid_reply_dims_is_scrubbed() -> void:
+	# The reply dims can lie: observed 1152×648 reply with a 4×4 magenta PNG
+	# on disk. Copying it poisons frame_00001, and ffmpeg then initializes
+	# its output at 4×4 before reconfiguring mid-stream — a broken
+	# (black/tiny) video of correct length. The file on disk must be verified
+	# too, not just the reply.
+	var backend := _make_backend()
+	_start_capture(backend)
+	backend.next_dims = {"width": 4, "height": 4}
+	backend._on_screenshot_received(0, 1280, 720, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 0, "tiny file must not be copied despite valid reply dims")
+	assert_eq(backend.requests, [0, 1], "next request issues right after a file-dim scrub")
+	backend.next_dims = {"width": 1280, "height": 720}
+	backend._on_screenshot_received(1, 1280, 720, "user://tmp/frame.png")
+	assert_eq(backend.copies.size(), 1, "real file after a scrub is kept")
+
+
 ## Stop / finalize
 
 
