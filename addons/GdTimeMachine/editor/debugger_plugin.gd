@@ -4,7 +4,7 @@ class_name GdTMDebuggerPlugin
 
 ## Editor-side bridge to the running game's debugger channel.
 ##
-## Two channels share this one plugin registration:
+## Three channels share this one plugin registration:
 ##   1. Graceful-stop broadcast: messages are sent on EditorDebuggerSession
 ##      instances via send_message(), using the gd_time_machine prefix (full
 ##      "prefix:payload" wire form); the game side registers a capture on the
@@ -15,6 +15,11 @@ class_name GdTMDebuggerPlugin
 ##      recording is active — claiming it while idle would shadow the
 ##      engine's GameViewDebugger and break the embedded preview. Replies are
 ##      re-emitted as screenshot_received for the active backend to consume.
+##   3. Window identity: the editor sends gd_time_machine:rq_window_handle
+##      with an id, and the game replies gd_time_machine:window_handle
+##      [id, handle, display, exe, title]. The gd_time_machine prefix is
+##      always claimed, so these replies are never gated; they are re-emitted
+##      as window_handle_received for the OBS backend's targeting.
 
 ## Wire message sent to the running game to request a screenshot frame.
 const SCREENSHOT_REQUEST_MESSAGE := "scene:rq_screenshot"
@@ -23,6 +28,13 @@ const SCREENSHOT_REQUEST_MESSAGE := "scene:rq_screenshot"
 ## Sent when a screenshot recording starts, so an occluded/unfocused game
 ## window (which Godot throttles to ~1 fps) comes to the front for full rate.
 const FOCUS_WINDOW_MESSAGE := "gd_time_machine:focus_window"
+
+## Wire message requesting the game's OS window identity for OBS targeting.
+## The game replies gd_time_machine:window_handle (see below).
+const WINDOW_HANDLE_REQUEST_MESSAGE := "gd_time_machine:rq_window_handle"
+
+## Full wire form of the game's window-identity reply.
+const WINDOW_HANDLE_REPLY_MESSAGE := "gd_time_machine:window_handle"
 
 ## Capture prefix for screenshot replies (game_view:get_screenshot).
 const SCREENSHOT_CAPTURE_PREFIX := "game_view"
@@ -40,6 +52,19 @@ var _last_screenshot_rq_id := -1
 ## recording); consumers must copy the PNG promptly — the game may clean up
 ## its temp files at any time.
 signal screenshot_received(rq_id: int, width: int, height: int, path: String)
+
+## Emitted when the game answers a window-identity request:
+## [rq_id, native_handle, display_server, exe_name, title_guess, debug_build].
+## Unlike screenshot replies this is never gated: identity requests only go
+## out while a recording is being set up, so any answer belongs to us.
+signal window_handle_received(
+	rq_id: int,
+	handle: int,
+	display_name: String,
+	exe_name: String,
+	title_guess: String,
+	debug_build: int
+)
 
 
 ## Whether this plugin claims a capture prefix. gd_time_machine is always
@@ -65,9 +90,19 @@ func _has_capture(capture: String) -> bool:
 ##   Be aggressively tolerant: accept StringName, handle int-as-string, and
 ##   always try to find a png path.
 func _capture(message: String, data: Array, _session_id: int) -> bool:
+	# Window-identity replies ride the always-claimed gd_time_machine prefix
+	# and are never gated: a request only goes out during record setup, so any
+	# answer belongs to the in-flight request (matched by rq id downstream).
+	var m := str(message)
+	if m == WINDOW_HANDLE_REPLY_MESSAGE or m == "window_handle":
+		if data.size() >= 6:
+			window_handle_received.emit(
+				int(data[0]), int(data[1]), str(data[2]), str(data[3]), str(data[4]), int(data[5])
+			)
+			return true
+		return false
 	if not _screenshot_capture_active:
 		return false
-	var m := str(message)
 	if m != "get_screenshot" and not m.ends_with("get_screenshot"):
 		return false
 	# Fast path: exact engine shape [id, w, h, path] — engine always
@@ -226,6 +261,32 @@ func _send_screenshot_to_session(session: EditorDebuggerSession, rq_id: int) -> 
 		return false
 	_last_screenshot_rq_id = rq_id
 	session.send_message(SCREENSHOT_REQUEST_MESSAGE, [rq_id])
+	return true
+
+
+## Requests the game's OS window identity from the FIRST active debugger
+## session (same targeting as screenshot/focus requests). The game answers
+## gd_time_machine:window_handle, re-emitted as window_handle_received.
+## Returns true when the request was sent.
+func send_window_handle_request(rq_id: int) -> bool:
+	var sessions := get_sessions()
+	for i in range(sessions.size()):
+		if _send_window_handle_to_session(get_session(i), rq_id):
+			return true
+	if not sessions.is_empty():
+		return false
+	var fallback := get_session(0)
+	if fallback != null:
+		return _send_window_handle_to_session(fallback, rq_id)
+	return false
+
+
+## Sends a gd_time_machine:rq_window_handle request to a session. Returns
+## true when the message was sent to a live session. Overridable seam.
+func _send_window_handle_to_session(session: EditorDebuggerSession, rq_id: int) -> bool:
+	if session == null or not session.is_active():
+		return false
+	session.send_message(WINDOW_HANDLE_REQUEST_MESSAGE, [rq_id])
 	return true
 
 

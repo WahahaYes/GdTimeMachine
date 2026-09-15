@@ -59,12 +59,16 @@ OBS always appears in the backend list under its plain name — installed-but-id
 
 ## OBS Setup
 
+Linux and Windows only — on other platforms the backend stays unselectable with the reason shown.
+
 1. **Install OBS Studio** (obsproject.com).
 1. In OBS: **Tools → WebSocket Server Settings → Enable WebSocket Server** (default port `4455`). Set a password if desired.
 1. In Godot: **Project > Editor Settings → `gd_time_machine/obs/*`** — set matching `host`, `port`, and `password`.
-1. Optional `obs/*` settings: `scene` (auto-switch on record), `auto_launch` (default on), `auto_close` (stop OBS we launched when Godot closes), `binary_path` (custom OBS binary).
+1. Optional `obs/*` settings: `scene` (record target, default `GdTimeMachine`), `auto_launch` (default on), `auto_close` (stop OBS we launched when Godot closes), `binary_path` (custom OBS binary).
 
-If OBS isn't reachable and `auto_launch` is on, GdTimeMachine launches it minimized to tray and waits for the WebSocket (with status narration). If `auto_launch` is off or OBS isn't installed, recording reports an actionable error.
+Each Record targets your game window directly — no picker: on Linux the game reports its X11 window id over the debugger channel and OBS captures it via `xcomposite_input` (OBS is auto-launched under XWayland so the kind registers); on Windows OBS captures `[exe]: title` via `window_capture` (best-effort — exact-title matching is OBS-side). Whatever can't be targeted programmatically falls back exactly once to PipeWire screen capture (which needs one human share pick, remembered afterwards); if that fails too, the recording errors instead of going black. Progress is narrated in both the dock status line and the terminal `[GdTM]` log.
+
+The gear button next to the backend dropdown re-opens the capture status dialog anytime: which scene/source/target the next Record will use, plus a one-shot **Set up window capture now** action. **If PipeWire-fallback recordings show the wrong window**: its saved share points at the wrong target — delete that share in OBS (or the whole `GdTimeMachine` scene and let the next Record rebuild it) and re-pick the game window.
 
 ## Output Formats
 

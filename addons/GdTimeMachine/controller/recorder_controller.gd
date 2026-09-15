@@ -228,6 +228,27 @@ func get_capture_mode() -> RecorderBackend.CaptureMode:
 	return active_backend.get_capture_mode()
 
 
+## OBS capture-setup summary for the dock's setup dialog ({} when the active
+## backend doesn't offer one). Async: the OBS backend queries OBS over a
+## transient client; other backends simply have no setup surface.
+func get_obs_setup_summary() -> Dictionary:
+	if active_backend == null or not active_backend.has_method("get_setup_summary"):
+		return {}
+	return await active_backend.get_setup_summary()
+
+
+## Runs OBS window-capture setup on demand (dock setup dialog): resolves the
+## game identity and ensures the input without recording. Returns {}-shape
+## {"ok", "message"}; non-OBS backends get a not-active refusal so the dialog
+## can show it instead of touching backend internals. Focuses the game window
+## first so it is frontmost and resolvable.
+func run_obs_setup_now() -> Dictionary:
+	if active_backend == null or not active_backend.has_method("run_setup_now"):
+		return {"ok": false, "message": "OBS Studio backend is not active."}
+	_request_window_focus()
+	return await active_backend.run_setup_now()
+
+
 ## Starts recording on the active backend with the given config. Before
 ## starting, asks the running game to bring its own window to focus so a
 ## backgrounded game window (which Godot throttles) doesn't starve the

@@ -48,6 +48,9 @@ const ICON_RECORD_PATH := "res://addons/GdTimeMachine/ui/icons/icon_record.svg"
 ## Icon path for the stop state.
 const ICON_STOP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_stop.svg"
 
+## Icon path for the OBS capture-setup button (gear glyph).
+const ICON_SETUP_PATH := "res://addons/GdTimeMachine/ui/icons/icon_setup.svg"
+
 ## Icon path for the dock's brand logo (title bar).
 const ICON_LOGO_PATH := "res://addons/GdTimeMachine/ui/icons/icon_logo.svg"
 
@@ -62,6 +65,9 @@ var _icon_record: Texture2D
 
 ## Loaded stop icon (scaled to button height — see _ready()).
 var _icon_stop: Texture2D
+
+## Loaded setup gear icon for the OBS capture-setup button (see _ready()).
+var _icon_setup: Texture2D
 
 ## Loaded brand logo (full-size; the TitleIcon TextureRect scales it to fit).
 var _icon_logo: Texture2D
@@ -110,6 +116,9 @@ var _fake_time := -1.0
 
 ## Backend selector dropdown.
 @onready var _backend_option: OptionButton = $Split/RightColumn/BackendRow/BackendOption
+
+## OBS capture-setup icon button (visible only while OBS Studio is active).
+@onready var _setup_button: Button = $Split/RightColumn/BackendRow/ObsSetupButton
 
 ## Row holding the scene picker (hidden for in-place backends).
 @onready var _scene_row: HBoxContainer = $Split/RightColumn/SettingsGroup/SceneRow
@@ -189,6 +198,21 @@ var _active_hint_url := ""
 ## Suppression-flag settings key of the currently shown hint card.
 var _active_hint_suppress_key := ""
 
+## OBS capture-setup AcceptDialog (tscn node): live status plus a "set up
+## now" action. Re-opened anytime via the gear button to inspect what the
+## next Record will capture.
+@onready var _setup_dialog: AcceptDialog = $ObsSetupDialog
+
+## Live capture status inside the setup dialog (rebuilt on every open).
+@onready var _setup_status_label: Label = $ObsSetupDialog/SetupContent/SetupStatusLabel
+
+## On-demand setup action inside the setup dialog.
+@onready var _setup_now_button: Button = $ObsSetupDialog/SetupContent/SetupNowButton
+
+## Test seam: count of times the setup dialog was requested to pop up
+## (mirrors _install_hint_popups — headless can't reflect Window.visible).
+var _setup_dialog_popups := 0
+
 
 ## Called by plugin.gd before the dock enters the tree; stores the
 ## controller and optional config store. UI wiring happens in _ready().
@@ -229,10 +253,14 @@ func _ready() -> void:
 		ICON_RECORD_PATH, GdTMIconFactory.DOCKS_BUTTON_HEIGHT
 	)
 	_icon_stop = GdTMIconFactory.scaled_texture(ICON_STOP_PATH, GdTMIconFactory.DOCKS_BUTTON_HEIGHT)
+	_icon_setup = GdTMIconFactory.scaled_texture(ICON_SETUP_PATH, GdTMIconFactory.BUTTON_HEIGHT)
 	_icon_logo = load(ICON_LOGO_PATH) as Texture2D
 	_title_icon.texture = _icon_logo
 	_record_button.icon = _icon_record
 	_record_button.text = "Record"
+	_setup_button.icon = _icon_setup
+	_setup_button.pressed.connect(_on_setup_pressed)
+	_setup_now_button.pressed.connect(_on_setup_now_pressed)
 	_backend_option.item_selected.connect(_on_backend_selected)
 	_use_current_button.pressed.connect(_on_use_current_pressed)
 	_record_button.pressed.connect(_on_record_pressed)
@@ -817,6 +845,72 @@ func _on_install_dialog_closed() -> void:
 			es.set_setting(_active_hint_suppress_key, true)
 
 
+## Opens the OBS capture-setup dialog (gear button) and fills it with live
+## state. Re-openable anytime to inspect what the next Record will capture.
+func _on_setup_pressed() -> void:
+	if _setup_dialog == null or _controller == null:
+		return
+	_setup_dialog_popups += 1
+	_setup_dialog.popup_centered()
+	await _refresh_setup_dialog()
+
+
+## Refreshes the setup dialog: the action button follows recording state (no
+## setup churn mid-record) and the status label gets the live OBS summary.
+func _refresh_setup_dialog() -> void:
+	if _controller == null:
+		return
+	_setup_now_button.disabled = _controller.is_recording()
+	_setup_status_label.text = "Checking OBS…"
+	var summary: Dictionary = await _controller.get_obs_setup_summary()
+	_setup_status_label.text = compose_setup_status(summary)
+
+
+## Pure status text for the setup dialog, so GUT can pin the wording without
+## standing up OBS.
+static func compose_setup_status(summary: Dictionary) -> String:
+	if summary.is_empty():
+		return "OBS Studio backend is not active."
+	if summary.has("error"):
+		return "Status unavailable: %s" % str(summary["error"])
+	var scene := str(summary.get("scene", "current"))
+	var source := str(summary.get("source", ""))
+	var mode := str(summary.get("mode", "none"))
+	var detail := str(summary.get("detail", ""))
+	var head := "Scene '%s' has no capture source — recordings would be black." % scene
+	if mode == "window" and not source.is_empty():
+		head = "Scene '%s' captures the game window via '%s' (%s)." % [scene, source, detail]
+	elif mode == "pipewire" and not source.is_empty():
+		head = ("Scene '%s' captures via PipeWire '%s' (fallback: %s)." % [scene, source, detail])
+	return "%s\n%s" % [head, picker_hint_line()]
+
+
+## The share-picker instruction with the actual game window title, for the
+## PipeWire fallback path (the programmatic path never shows a picker).
+static func picker_hint_line() -> String:
+	var title := "the game"
+	if ProjectSettings.has_setting("application/config/name"):
+		var t := str(ProjectSettings.get_setting("application/config/name")).strip_edges()
+		if not t.is_empty():
+			title = t
+	return "PipeWire fallback only: choose Window (not Entire screen) and select '%s'." % title
+
+
+## Ensures window capture from the dialog, then refreshes. A failure lands
+## under the refreshed summary so both states stay visible.
+func _on_setup_now_pressed() -> void:
+	if _controller == null:
+		return
+	_setup_now_button.disabled = true
+	_setup_status_label.text = "Targeting the game window…"
+	var res: Dictionary = await _controller.run_obs_setup_now()
+	await _refresh_setup_dialog()
+	if not bool(res.get("ok", false)):
+		_setup_status_label.text = (
+			"%s\n%s" % [_setup_status_label.text, str(res.get("message", "Setup failed."))]
+		)
+
+
 ## Returns the settings store to read, or null outside the editor when no fake
 ## was injected. Mirrors BackendOBS._get_es() for consistent EditorSettings access.
 func _get_es() -> Object:
@@ -855,6 +949,18 @@ func _update_backend_visibility() -> void:
 		_scene_row.visible = true
 	if _format_row != null:
 		_format_row.visible = true
+	# Gear button is OBS-only: it re-opens the capture-setup dialogue so the
+	# auto-setup result can be revisited and adjusted after it first ran.
+	if _setup_button != null:
+		_setup_button.visible = _is_obs_active()
+
+
+## Whether OBS Studio is the active backend (the setup gear's visibility
+## gate). Pure read of controller state — no backend references held.
+func _is_obs_active() -> bool:
+	if _controller == null or _controller.active_backend == null:
+		return false
+	return _controller.active_backend.get_backend_name() == OBS_BACKEND_NAME
 
 
 ## Handles the "Use Current" button: fills the scene field and refreshes

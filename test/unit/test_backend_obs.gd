@@ -64,6 +64,15 @@ class FakeOBSClient:
 	## Per-request-type reply data for multi-step flows (e.g. auto-setup):
 	## consulted before respond_data, keyed by requestType.
 	var respond_data_by_type := {}
+	## Shared plain-text request log ([requestType, requestData] per send),
+	## filled by every client so tests can assert cross-client traffic without
+	## holding freed node refs (transients are queue_free'd mid-flow).
+	var shared_log: Array = []
+	## Sequenced replies for flows that poll the same request (e.g. waiting
+	## for a RestoreToken): keyed by requestType, consumed in order, one entry
+	## per call; falls back to respond_data_by_type/respond_data when spent.
+	var respond_sequence_by_type := {}
+	var _sequence_cursors := {}
 	var requests: Array = []
 	# Test seam: when true, request_completed is emitted inline (no defer) for
 	# tests that drive replies manually. Default false: the one-process_frame
@@ -89,10 +98,17 @@ class FakeOBSClient:
 			request_id = "req_%d" % _next_request_id
 			_next_request_id += 1
 		requests.append([request_type, request_data, request_id])
+		shared_log.append([request_type, request_data])
 		var rid := request_id
 		var ok := respond_result
 		var code := respond_code
 		var data: Dictionary = respond_data_by_type.get(request_type, respond_data)
+		if respond_sequence_by_type.has(request_type):
+			var seq: Array = respond_sequence_by_type[request_type]
+			var cursor: int = int(_sequence_cursors.get(request_type, 0))
+			if cursor < seq.size():
+				data = seq[cursor]
+				_sequence_cursors[request_type] = cursor + 1
 		if sync_reply:
 			emit_signal("request_completed", rid, ok, code, data)
 			return rid
@@ -194,7 +210,26 @@ class RecordingBackend:
 	var client_code := OBSClient.STATUS_SUCCESS
 	var client_respond_data := {}
 	var client_respond_data_by_type := {}
+	var client_respond_sequence_by_type := {}
+	## Plain-text log of every request sent by every client this backend
+	## spawned (main + transients). Tests assert on this, never on node refs.
+	var request_log: Array = []
 	var setup_wait_timeout := 0.5
+	## Instant settle: the real 1.5 s OBS teardown grace (SETTLE_DELAY) is
+	## wall-clock and would stall every settle test; 0 keeps the ordering
+	## assertions while skipping the wait.
+	var settle_delay := 0.0
+	## Canned game-window identity answered without a debugger round-trip.
+	var window_identity := {
+		"ok": true,
+		"handle": 20971526,
+		"display": "X11",
+		"exe": "godot",
+		"title": "Game",
+		"debug": 1,
+	}
+	## Pinned OS name for platform tests (real suite runs on Linux).
+	var os_name := "Linux"
 	var scene_name := ""
 	var fake_now := 0.0
 	var persisted_pid := 0
@@ -243,10 +278,21 @@ class RecordingBackend:
 		client.respond_code = client_code
 		client.respond_data = client_respond_data
 		client.respond_data_by_type = client_respond_data_by_type
+		client.respond_sequence_by_type = client_respond_sequence_by_type
+		client.shared_log = request_log
 		return client
 
 	func _get_setup_wait_timeout() -> float:
 		return setup_wait_timeout
+
+	func _get_settle_delay() -> float:
+		return settle_delay
+
+	func _get_os_name() -> String:
+		return os_name
+
+	func _request_game_window_identity() -> Dictionary:
+		return window_identity
 
 	func _launch_obs_process(_binary: String) -> int:
 		return 4711
@@ -1266,8 +1312,8 @@ func test_start_record_refusal_emits_recording_error() -> void:
 func test_empty_scene_without_pipewire_kind_errors_actionably() -> void:
 	# Empty scene where auto-setup can't run (no PipeWire kind — e.g. OBS
 	# without PipeWire support): no StartRecord, and the error says why setup
-	# bailed plus how to finish manually. (The old refuse-fast path now only
-	# runs with gd_time_machine/obs/auto_setup_scene=false; see below.)
+	# bailed plus how to finish manually. (The refuse-fast path also runs
+	# with AUTO_SETUP_PIPEWIRE=false; see below.)
 	var backend := _make_recording_backend()
 	backend.scene_name = "Main"
 	backend.client_respond_data = {"sceneItems": []}
@@ -1382,10 +1428,11 @@ func test_auto_setup_timeout_emits_actionable_error() -> void:
 		assert_ne(str(req[0]), "StartRecord", "StartRecord must never fire without a share")
 
 
-func test_auto_setup_off_keeps_refuse_fast_error() -> void:
-	# Opt-out via gd_time_machine/obs/auto_setup_scene=false: the empty scene
-	# refuses immediately with the no-sources error and no setup traffic.
-	ProjectSettings.set_setting("gd_time_machine/obs/auto_setup_scene", false)
+func test_auto_setup_off_const_refuses_fast() -> void:
+	# AUTO_SETUP_PIPEWIRE=false: the empty scene refuses immediately with the
+	# no-sources error and no setup traffic. Default true keeps the
+	# historical auto-setup behavior covered above.
+	BackendOBS.AUTO_SETUP_PIPEWIRE = false
 	var backend := _make_recording_backend()
 	backend.scene_name = "Main"
 	backend.client_respond_data = {"sceneItems": []}
@@ -1404,7 +1451,503 @@ func test_auto_setup_off_keeps_refuse_fast_error() -> void:
 		str(errors[0]).contains("no enabled sources"),
 		"opt-out error stays the refuse-fast one, got: '%s'" % errors[0],
 	)
-	ProjectSettings.set_setting("gd_time_machine/obs/auto_setup_scene", true)
+	BackendOBS.AUTO_SETUP_PIPEWIRE = true
+
+
+## Setup dedupe: our input already exists (previous run) — reuse it, send no
+## second CreateInput, and still reach the token wait.
+func test_run_setup_now_reuses_existing_input() -> void:
+	# Standalone ensure with our input already present AND placed: settings
+	# refreshed with the live xid, never a duplicate CreateInput, and the
+	# healthy placement is kept (no churn).
+	var backend := _make_recording_backend()
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": [{"sceneName": "GdTimeMachine"}]},
+		"GetInputList":
+		{
+			"inputs":
+			[
+				{
+					"inputName": "GdTimeMachine Capture",
+					"inputUuid": "uuid-kept",
+					"inputKind": "xcomposite_input",
+				}
+			]
+		},
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-kept",
+					"inputKind": "xcomposite_input",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+				}
+			]
+		},
+		"SetCurrentProgramScene": {},
+	}
+	var res: Dictionary = await backend.run_setup_now()
+	assert_true(bool(res.get("ok", false)), "reuse path must succeed, got: %s" % res)
+	var refreshed := false
+	for req in backend.request_log:
+		assert_ne(str(req[0]), "CreateInput", "existing input must be reused, not duplicated")
+		assert_ne(str(req[0]), "RemoveSceneItem", "healthy placement must be kept, not churned")
+		if str(req[0]) == "SetInputSettings":
+			var payload: Dictionary = (req[1] as Dictionary).get("inputSettings", {})
+			if str(payload.get("capture_window", "")).contains("20971526"):
+				refreshed = true
+	assert_true(refreshed, "live xid must be pushed to the kept input")
+
+
+func test_run_setup_now_places_missing_item_without_churn() -> void:
+	# Input exists but has NO scene item (fresh CreateInput placement was
+	# lost, or cross-kind replacement): exactly one CreateSceneItem, no
+	# RemoveSceneItem (nothing to remove).
+	var backend := _make_recording_backend()
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": [{"sceneName": "GdTimeMachine"}]},
+		"GetInputList":
+		{
+			"inputs":
+			[
+				{
+					"inputName": "GdTimeMachine Capture",
+					"inputUuid": "uuid-kept",
+					"inputKind": "xcomposite_input",
+				}
+			]
+		},
+		"GetSceneItemList": {"sceneItems": []},
+		"CreateSceneItem": {"sceneItemId": 9},
+		"SetCurrentProgramScene": {},
+	}
+	var res: Dictionary = await backend.run_setup_now()
+	assert_true(bool(res.get("ok", false)), "place-missing path must succeed, got: %s" % res)
+	var created := 0
+	for req in backend.request_log:
+		assert_ne(str(req[0]), "RemoveSceneItem", "nothing to remove — must not churn")
+		if str(req[0]) == "CreateSceneItem":
+			created += 1
+	assert_eq(created, 1, "exactly one placement, got log: %s" % str(backend.request_log))
+
+
+func test_setup_summary_reports_window_mode_with_target() -> void:
+	# Our xcomposite input present: dialog learns the exact window target.
+	var backend := _make_recording_backend()
+	backend.client_respond_data_by_type = {
+		"GetCurrentProgramScene": {"currentProgramSceneName": "GdTimeMachine"},
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-9",
+					"inputKind": "xcomposite_input",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+				}
+			]
+		},
+		"GetInputSettings": {"inputSettings": {"capture_window": "20971526\r\nGame\r\nGodot"}},
+	}
+	var summary: Dictionary = await backend.get_setup_summary()
+	assert_eq(str(summary.get("scene", "")), "GdTimeMachine")
+	assert_eq(str(summary.get("mode", "")), "window")
+	assert_eq(str(summary.get("source", "")), "GdTimeMachine Capture")
+	assert_true(
+		str(summary.get("detail", "")).contains("20971526"),
+		"detail names the xid, got: %s" % summary
+	)
+
+
+func test_setup_summary_reports_pipewire_mode() -> void:
+	# Portal source with a saved share: dialog learns reuse is silent.
+	var backend := _make_recording_backend()
+	backend.client_respond_data_by_type = {
+		"GetCurrentProgramScene": {"currentProgramSceneName": "GdTimeMachine"},
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-9",
+					"inputKind": "pipewire-screen-capture-source",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+				}
+			]
+		},
+	}
+	var summary: Dictionary = await backend.get_setup_summary()
+	assert_eq(str(summary.get("mode", "")), "pipewire")
+
+
+func test_setup_summary_reports_none_when_empty() -> void:
+	var backend := _make_recording_backend()
+	backend.client_respond_data_by_type = {
+		"GetCurrentProgramScene": {"currentProgramSceneName": "Scene"},
+		"GetSceneItemList": {"sceneItems": []},
+	}
+	var summary: Dictionary = await backend.get_setup_summary()
+	assert_eq(str(summary.get("mode", "")), "none")
+
+
+func test_programmatic_path_sets_capture_window_and_records() -> void:
+	# Linux + X11 game + xcomposite kind: the record input is created with the
+	# game xid baked in — no picker, ever — then StartRecord fires.
+	var backend := _make_recording_backend()
+	backend.playing = true
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": []},
+		"GetInputList": {"inputs": []},
+		"GetSceneItemList": {"sceneItems": []},
+		"CreateScene": {},
+		"CreateSceneItem": {"sceneItemId": 3},
+		"SetCurrentProgramScene": {},
+	}
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_x11"})
+	assert_true(
+		await wait_for_signal(backend.recording_started, REPLY_BUDGET),
+		"programmatic path must reach StartRecord",
+	)
+	var client := backend._obs_client as FakeOBSClient
+	var kinds: Array = []
+	var capture_window := ""
+	for req in client.requests:
+		kinds.append(str(req[0]))
+		if str(req[0]) == "CreateInput":
+			capture_window = str(
+				(req[1] as Dictionary).get("inputSettings", {}).get("capture_window", "")
+			)
+	assert_true(kinds.has("CreateInput"), "record input must be created, got: %s" % str(kinds))
+	assert_true(
+		capture_window.contains("20971526"), "xid must be baked in, got: '%s'" % capture_window
+	)
+	assert_eq(kinds[kinds.size() - 1], "StartRecord")
+
+
+func test_programmatic_path_replaces_stale_pipewire_input() -> void:
+	# PipeWire-era source owns our input name: the programmatic path must
+	# RemoveInput it first (same-name CreateInput with a new kind fails 601),
+	# then create the xcomposite input and reach StartRecord.
+	var backend := _make_recording_backend()
+	backend.playing = true
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": [{"sceneName": "GdTimeMachine"}]},
+		"GetInputList":
+		{
+			"inputs":
+			[
+				{
+					"inputName": "GdTimeMachine Capture",
+					"inputUuid": "uuid-stale-pipewire",
+					"inputKind": "pipewire-screen-capture-source",
+				}
+			]
+		},
+		"GetSceneItemList": {"sceneItems": []},
+		"CreateInput": {"inputUuid": "uuid-xcomp"},
+		"CreateSceneItem": {"sceneItemId": 8},
+		"SetCurrentProgramScene": {},
+	}
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_x11_replace"})
+	assert_true(await wait_for_signal(backend.recording_started, REPLY_BUDGET))
+	var order: Array = []
+	for req in backend.request_log:
+		order.append(str(req[0]))
+	var drop_at := order.find("RemoveInput")
+	var make_at := order.find("CreateInput")
+	assert_true(drop_at >= 0, "stale input must be removed, got: %s" % str(order))
+	assert_true(make_at > drop_at, "create must follow remove, got: %s" % str(order))
+
+
+func test_programmatic_path_refreshes_existing_input_settings() -> void:
+	# Input survives across records (xid changes per launch): existing input
+	# gets SetInputSettings with the fresh xid, never a duplicate CreateInput.
+	# The healthy placement is KEPT (no RemoveSceneItem churn — same-tick
+	# destroy/rebuild goes source-less and records black, reproduced live).
+	var backend := _make_recording_backend()
+	backend.playing = true
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": [{"sceneName": "GdTimeMachine"}]},
+		"GetInputList":
+		{
+			"inputs":
+			[
+				{
+					"inputName": "GdTimeMachine Capture",
+					"inputUuid": "uuid-kept",
+					"inputKind": "xcomposite_input"
+				}
+			]
+		},
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-kept",
+					"inputKind": "xcomposite_input",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+				}
+			]
+		},
+		"SetCurrentProgramScene": {},
+	}
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_x11_reuse"})
+	assert_true(await wait_for_signal(backend.recording_started, REPLY_BUDGET))
+	var client := backend._obs_client as FakeOBSClient
+	var refreshed := false
+	for req in client.requests:
+		assert_ne(str(req[0]), "CreateInput", "existing input must be reused")
+		assert_ne(str(req[0]), "RemoveSceneItem", "healthy placement must be kept, not churned")
+		if str(req[0]) == "SetInputSettings":
+			var payload: Dictionary = (req[1] as Dictionary).get("inputSettings", {})
+			if str(payload.get("capture_window", "")).contains("20971526"):
+				refreshed = true
+	assert_true(refreshed, "fresh xid must be pushed to the kept input")
+
+
+func test_programmatic_path_heals_stranger_items_only() -> void:
+	# Owned scene holds our healthy placement plus a PipeWire-era stranger:
+	# the stranger goes, ours stays (no CreateSceneItem — CreateInput
+	# already placed it — and no RemoveSceneItem for the kept item).
+	var backend := _make_recording_backend()
+	backend.playing = true
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": [{"sceneName": "GdTimeMachine"}]},
+		"GetInputList":
+		{
+			"inputs":
+			[
+				{
+					"inputName": "GdTimeMachine Capture",
+					"inputUuid": "uuid-kept",
+					"inputKind": "xcomposite_input"
+				}
+			]
+		},
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-kept",
+					"inputKind": "xcomposite_input",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+				},
+				{
+					"sourceName": "Old PipeWire Share",
+					"sourceUuid": "uuid-stale",
+					"inputKind": "pipewire-screen-capture-source",
+					"sceneItemEnabled": true,
+					"sceneItemId": 5,
+				},
+			]
+		},
+		"SetCurrentProgramScene": {},
+	}
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_x11_heal"})
+	assert_true(await wait_for_signal(backend.recording_started, REPLY_BUDGET))
+	var removed: Array = []
+	var created_items := 0
+	for req in backend.request_log:
+		if str(req[0]) == "RemoveSceneItem":
+			removed.append(int((req[1] as Dictionary).get("sceneItemId", -1)))
+		if str(req[0]) == "CreateSceneItem":
+			created_items += 1
+	assert_eq(removed, [5], "only the stranger goes, got: %s" % str(removed))
+	assert_eq(created_items, 0, "kept placement must not be re-created")
+
+
+func test_identity_failure_falls_back_to_pipewire_once() -> void:
+	# No game answering: exactly one fallback notice, then the PipeWire chain
+	# proceeds to StartRecord — no chains, no loops.
+	var backend := _make_recording_backend()
+	backend.playing = true
+	backend.window_identity = {
+		"ok": false, "handle": 0, "display": "", "exe": "", "title": "", "debug": 0
+	}
+	backend.scene_name = "Main"
+	var replies := _auto_setup_replies("tok-fallback")
+	backend.client_respond_data_by_type = replies
+	var notices: Array = []
+	backend.recording_notice.connect(
+		func(_backend_name: String, message: String) -> void: notices.append(message)
+	)
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_fallback"})
+	assert_true(await wait_for_signal(backend.recording_started, REPLY_BUDGET))
+	var fallback_notices := notices.filter(
+		func(m: String) -> bool: return m.contains("falling back")
+	)
+	assert_eq(fallback_notices.size(), 1, "fallback announced exactly once, got: %s" % str(notices))
+
+
+func test_windows_capture_window_format() -> void:
+	assert_eq(
+		BackendOBS._build_windows_capture_window({"exe": "godot.exe", "title": "Game", "debug": 1}),
+		"[godot.exe]: Game (DEBUG)"
+	)
+	assert_eq(
+		BackendOBS._build_windows_capture_window({"exe": "game.exe", "title": "Game", "debug": 0}),
+		"[game.exe]: Game"
+	)
+	assert_eq(BackendOBS._build_windows_capture_window({"exe": "", "title": "Game"}), "")
+	assert_eq(BackendOBS._build_windows_capture_window({"exe": "godot.exe", "title": ""}), "")
+
+
+func test_windows_path_selects_window_capture_kind() -> void:
+	var backend := _make_recording_backend()
+	backend.os_name = "Windows"
+	backend.playing = true
+	backend.window_identity = {
+		"ok": true,
+		"handle": 0,
+		"display": "Windows",
+		"exe": "godot.exe",
+		"title": "Game",
+		"debug": 0,
+	}
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["window_capture"]},
+		"GetSceneList": {"scenes": []},
+		"GetInputList": {"inputs": []},
+		"GetSceneItemList": {"sceneItems": []},
+		"CreateScene": {},
+		"CreateSceneItem": {"sceneItemId": 3},
+		"SetCurrentProgramScene": {},
+	}
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_win"})
+	assert_true(await wait_for_signal(backend.recording_started, REPLY_BUDGET))
+	var client := backend._obs_client as FakeOBSClient
+	var window_value := ""
+	var kind_value := ""
+	for req in client.requests:
+		if str(req[0]) == "CreateInput":
+			kind_value = str((req[1] as Dictionary).get("inputKind", ""))
+			window_value = str((req[1] as Dictionary).get("inputSettings", {}).get("window", ""))
+	assert_eq(kind_value, "window_capture")
+	assert_eq(window_value, "[godot.exe]: Game")
+
+
+func test_unsupported_os_gate() -> void:
+	var backend := _make_recording_backend()
+	backend.os_name = "macOS"
+	assert_false(backend.is_available())
+	assert_true(backend.get_unavailable_reason().contains("Linux and Windows"))
+
+
+func test_resolve_reason_names_missing_kind() -> void:
+	# Native-Wayland OBS (no xcomposite): the reason must say exactly that so
+	# the fallback notice tells the user to relaunch OBS.
+	var backend := _make_recording_backend()
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["pipewire-screen-capture-source"]}
+	}
+	var resolved: Dictionary = await backend._resolve_programmatic_spec()
+	assert_true((resolved.get("spec", {}) as Dictionary).is_empty())
+	assert_true(
+		str(resolved.get("reason", "")).contains("xcomposite"),
+		"reason must name the missing kind, got: '%s'" % resolved.get("reason", ""),
+	)
+
+
+func test_resolve_reason_names_identity_failure() -> void:
+	var backend := _make_recording_backend()
+	backend.window_identity = {
+		"ok": false, "handle": 0, "display": "", "exe": "", "title": "", "debug": 0
+	}
+	var resolved: Dictionary = await backend._resolve_programmatic_spec()
+	assert_true((resolved.get("spec", {}) as Dictionary).is_empty())
+	assert_true(
+		str(resolved.get("reason", "")).contains("no game window answer"),
+		"got: '%s'" % resolved.get("reason", ""),
+	)
+
+
+func test_resolve_reason_names_wayland_game() -> void:
+	var backend := _make_recording_backend()
+	backend.window_identity = {
+		"ok": true,
+		"handle": 0,
+		"display": "Wayland",
+		"exe": "godot",
+		"title": "Game",
+		"debug": 1,
+	}
+	backend.client_respond_data_by_type = {"GetInputKindList": {"inputKinds": ["xcomposite_input"]}}
+	var resolved: Dictionary = await backend._resolve_programmatic_spec()
+	assert_true((resolved.get("spec", {}) as Dictionary).is_empty())
+	assert_true(
+		str(resolved.get("reason", "")).contains("Wayland"),
+		"got: '%s'" % resolved.get("reason", ""),
+	)
+
+
+func test_heal_removes_duplicate_own_items() -> void:
+	# Fallback-era twins stacked under our scene: heal keeps the first
+	# enabled item and removes the rest. Driven directly (heal is
+	# fallback-internal; Record covers it end to end).
+	var backend := _make_recording_backend()
+	backend.client_respond_data_by_type = {
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-kept",
+					"inputKind": "pipewire-screen-capture-source",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+				},
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-stale",
+					"inputKind": "pipewire-screen-capture-source",
+					"sceneItemEnabled": true,
+					"sceneItemId": 5,
+				},
+				{
+					"sourceName": "Other Source",
+					"sourceUuid": "uuid-other",
+					"inputKind": "ffmpeg_source",
+					"sceneItemEnabled": true,
+					"sceneItemId": 6,
+				},
+			]
+		},
+	}
+	var client := backend._create_obs_client() as FakeOBSClient
+	backend.add_child(client)
+	assert_eq(client.connect_to_obs(), OK)
+	await backend._heal_own_scene_duplicates(client)
+	var removed: Array = []
+	for req in client.requests:
+		if str(req[0]) == "RemoveSceneItem":
+			removed.append(int((req[1] as Dictionary).get("sceneItemId", -1)))
+	assert_eq(removed, [5], "only the twin goes; others are untouched")
 
 
 func test_wrong_request_id_is_ignored() -> void:

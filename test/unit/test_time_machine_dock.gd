@@ -105,6 +105,24 @@ class MockOBSBackend:
 	func stop() -> void:
 		recording = false
 
+	## Scripted OBS setup surface for the gear-dialog tests (new summary
+	## shape: scene/source/mode/detail).
+	var setup_summary := {
+		"scene": "GdTimeMachine",
+		"source": "GdTimeMachine Capture",
+		"mode": "window",
+		"detail": "window 20971526",
+	}
+	var setup_run_result := {"ok": true}
+	var setup_calls := 0
+
+	func get_setup_summary() -> Dictionary:
+		return setup_summary
+
+	func run_setup_now() -> Dictionary:
+		setup_calls += 1
+		return setup_run_result
+
 
 ## Stub transcoder with scripted availability and ffmpeg-style file+frames
 ## edges, attached to the test controller's registry so derivation (not hand
@@ -714,6 +732,104 @@ func test_obs_unavailable_selection_reverts_and_does_not_persist() -> void:
 	var profile := dock._build_profile_from_ui()
 	assert_eq(profile.backend_name, "Godot Movie Maker")
 	assert_false(profile.backend_name.contains("not available"))
+
+
+## OBS setup gear dialog
+
+
+func _select_available_obs(ctx: Dictionary) -> TimeMachineDock:
+	var dock := ctx["dock"] as TimeMachineDock
+	dock._on_backend_selected(_obs_item_index(dock))
+	return dock
+
+
+func test_setup_gear_visible_only_for_obs() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := ctx["dock"] as TimeMachineDock
+	assert_false(dock._setup_button.visible, "gear hidden while Movie Maker is active")
+	_select_available_obs(ctx)
+	assert_true(dock._setup_button.visible, "gear shown while OBS Studio is active")
+
+
+func test_setup_gear_opens_dialog_with_live_status() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var dock := _select_available_obs(ctx)
+	await dock._on_setup_pressed()
+	assert_eq(dock._setup_dialog_popups, 1)
+	assert_true(
+		dock._setup_status_label.text.contains("GdTimeMachine"),
+		"status names the record scene, got: '%s'" % dock._setup_status_label.text,
+	)
+	assert_true(
+		dock._setup_status_label.text.contains("window 20971526"),
+		"status names the capture target, got: '%s'" % dock._setup_status_label.text,
+	)
+
+
+func test_setup_dialog_empty_scene_status() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var obs := ctx["obs"] as MockOBSBackend
+	obs.setup_summary = {"scene": "Scene", "source": "", "mode": "none", "detail": ""}
+	var dock := _select_available_obs(ctx)
+	await dock._on_setup_pressed()
+	assert_true(
+		dock._setup_status_label.text.contains("no capture source"),
+		"empty scene must read as would-be-black, got: '%s'" % dock._setup_status_label.text,
+	)
+
+
+func test_setup_dialog_pipewire_fallback_status() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var obs := ctx["obs"] as MockOBSBackend
+	obs.setup_summary = {
+		"scene": "Scene",
+		"source": "Screen Share",
+		"mode": "pipewire",
+		"detail": "saved portal share — reused silently on Record",
+	}
+	var dock := _select_available_obs(ctx)
+	await dock._on_setup_pressed()
+	assert_true(
+		dock._setup_status_label.text.contains("PipeWire"),
+		"fallback mode must be explicit, got: '%s'" % dock._setup_status_label.text,
+	)
+
+
+func test_setup_now_reports_result_in_dialog() -> void:
+	var ctx := _build_dock_with_obs(FakeStore.new(), "res://scenes/a.tscn", true)
+	var obs := ctx["obs"] as MockOBSBackend
+	obs.setup_run_result = {"ok": false, "message": "boom-no-window"}
+	var dock := _select_available_obs(ctx)
+	await dock._on_setup_pressed()
+	await dock._on_setup_now_pressed()
+	assert_eq(obs.setup_calls, 1)
+	assert_true(
+		dock._setup_status_label.text.contains("boom-no-window"),
+		(
+			"run failure must land under the refreshed summary, got: '%s'"
+			% dock._setup_status_label.text
+		),
+	)
+
+
+func test_compose_setup_status_wording() -> void:
+	assert_true(TimeMachineDock.compose_setup_status({}).contains("not active"))
+	assert_true(
+		TimeMachineDock.compose_setup_status({"error": "nope"}).contains("Status unavailable")
+	)
+	var ready := (
+		TimeMachineDock
+		. compose_setup_status(
+			{
+				"scene": "GdTimeMachine",
+				"source": "GdTimeMachine Capture",
+				"mode": "window",
+				"detail": "window 20971526",
+			}
+		)
+	)
+	assert_true(ready.contains("window 20971526"), "got: '%s'" % ready)
+	assert_true(ready.contains("PipeWire fallback only"), "got: '%s'" % ready)
 
 
 ## Format dropdown — ffmpeg common treatment (disabled + tooltip)

@@ -12,6 +12,8 @@ const PLUGIN_SOURCE_PATH := "res://addons/GdTimeMachine/editor/debugger_plugin.g
 
 const WIRE_MESSAGE := "gd_time_machine:graceful_stop"
 const FOCUS_MESSAGE := "gd_time_machine:focus_window"
+const WINDOW_HANDLE_REQUEST_MESSAGE := "gd_time_machine:rq_window_handle"
+const WINDOW_HANDLE_REPLY_MESSAGE := "gd_time_machine:window_handle"
 const CAPTURE_PREFIX := "gd_time_machine"
 const SCREENSHOT_REQUEST_MESSAGE := "scene:rq_screenshot"
 const SCREENSHOT_CAPTURE_PREFIX := "game_view"
@@ -26,7 +28,9 @@ const EXPECTED_METHODS := [
 	"send_screenshot_request",
 	"_send_screenshot_to_session",
 	"send_focus_request",
-	"_send_focus_to_session"
+	"_send_focus_to_session",
+	"send_window_handle_request",
+	"_send_window_handle_to_session"
 ]
 
 
@@ -49,6 +53,14 @@ class FakeSession:
 class PluginBehaviorMirror:
 	extends RefCounted
 	signal screenshot_received(rq_id: int, width: int, height: int, path: String)
+	signal window_handle_received(
+		rq_id: int,
+		handle: int,
+		display_name: String,
+		exe_name: String,
+		title_guess: String,
+		debug_build: int
+	)
 
 	var sessions: Array = []
 	var fallback_session: Object = null
@@ -66,9 +78,23 @@ class PluginBehaviorMirror:
 	# "get_screenshot", ids/dims may be int/float/numeric-string, and paths may
 	# be .png/.jpg/.jpeg.
 	func _capture(message: String, data: Array, _session_id: int) -> bool:
+		# Window-identity replies ride the always-claimed gd_time_machine
+		# prefix and are never gated (verbatim port of the real branch).
+		var m := str(message)
+		if m == "gd_time_machine:window_handle" or m == "window_handle":
+			if data.size() >= 6:
+				window_handle_received.emit(
+					int(data[0]),
+					int(data[1]),
+					str(data[2]),
+					str(data[3]),
+					str(data[4]),
+					int(data[5])
+				)
+				return true
+			return false
 		if not _screenshot_capture_active:
 			return false
-		var m := str(message)
 		if m != "get_screenshot" and not m.ends_with("get_screenshot"):
 			return false
 		# Fast path: exact engine shape [id, w, h, path] — engine always
@@ -222,6 +248,24 @@ class PluginBehaviorMirror:
 		if session == null or not session.is_active():
 			return false
 		session.send_message("gd_time_machine:focus_window", [])
+		return true
+
+	func send_window_handle_request(rq_id: int) -> bool:
+		var all_sessions := get_sessions()
+		for i in range(all_sessions.size()):
+			if _send_window_handle_to_session(get_session(i), rq_id):
+				return true
+		if not all_sessions.is_empty():
+			return false
+		var fallback: Object = get_session(0)
+		if fallback != null:
+			return _send_window_handle_to_session(fallback, rq_id)
+		return false
+
+	func _send_window_handle_to_session(session: Object, rq_id: int) -> bool:
+		if session == null or not session.is_active():
+			return false
+		session.send_message("gd_time_machine:rq_window_handle", [rq_id])
 		return true
 
 
@@ -510,3 +554,62 @@ func test_send_focus_to_session_skips_inactive_and_null() -> void:
 	assert_false(plugin._send_focus_to_session(session))
 	assert_eq(session.sent.size(), 0)
 	assert_false(plugin._send_focus_to_session(null))
+
+
+## Window-identity channel
+
+
+func test_window_handle_reply_emitted_without_capture_gate() -> void:
+	# Unlike screenshots, identity replies are never gated on capture state.
+	var plugin := _make_mirror()
+	var received: Array = []
+	plugin.window_handle_received.connect(
+		func(rq: int, handle: int, display: String, exe: String, title: String, debug: int) -> void:
+			received.append([rq, handle, display, exe, title, debug])
+	)
+	assert_true(
+		plugin._capture("gd_time_machine:window_handle", [7, 99, "X11", "godot", "Game", 1], 0)
+	)
+	assert_eq(received, [[7, 99, "X11", "godot", "Game", 1]])
+
+
+func test_window_handle_reply_accepts_stripped_form() -> void:
+	var plugin := _make_mirror()
+	var received: Array = []
+	plugin.window_handle_received.connect(
+		func(rq: int, handle: int, _d: String, _e: String, _t: String, _b: int) -> void:
+			received.append([rq, handle])
+	)
+	assert_true(plugin._capture("window_handle", [3, 55, "Windows", "godot.exe", "Game", 0], 0))
+	assert_eq(received, [[3, 55]])
+
+
+func test_window_handle_reply_rejects_short_payload() -> void:
+	var plugin := _make_mirror()
+	assert_false(plugin._capture("gd_time_machine:window_handle", [1, 2, "X11"], 0))
+
+
+func test_send_window_handle_request_targets_first_active_session() -> void:
+	var plugin := _make_mirror()
+	var dead: FakeSession = autofree(FakeSession.new())
+	dead.active = false
+	var live: FakeSession = autofree(FakeSession.new())
+	plugin.sessions = [dead, live]
+	assert_true(plugin.send_window_handle_request(11))
+	assert_eq(dead.sent.size(), 0)
+	assert_eq(live.sent, [["gd_time_machine:rq_window_handle", [11]]])
+
+
+func test_send_window_handle_request_falls_back_to_session_zero() -> void:
+	var plugin := _make_mirror()
+	var fallback: FakeSession = autofree(FakeSession.new())
+	plugin.fallback_session = fallback
+	assert_true(plugin.send_window_handle_request(5))
+	assert_eq(fallback.sent, [["gd_time_machine:rq_window_handle", [5]]])
+
+
+func test_window_handle_wire_constants_present_in_source() -> void:
+	var source := FileAccess.get_file_as_string(PLUGIN_SOURCE_PATH)
+	assert_true(source.contains("gd_time_machine:rq_window_handle"))
+	assert_true(source.contains("gd_time_machine:window_handle"))
+	assert_true(source.contains("window_handle_received.emit"))

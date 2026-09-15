@@ -108,7 +108,10 @@ func _enter_tree() -> void:
 	_recorder_controller.register_backend(_screenshot_backend)
 	# OBS Studio is registered third; Movie Maker is the default backend and
 	# OBS is a per-project opt-in via the backend dropdown / saved profile.
+	# It gets the debugger plugin too: the game-identity round-trip targets
+	# the exact game window for capture.
 	_obs_backend = BackendOBS.new()
+	_obs_backend._debugger_plugin = _debugger_plugin
 	_recorder_controller.register_backend(_obs_backend)
 	# Transcoders register in transcoders/active preference order so a future
 	# second tool plugs in here (registry order is the preference). Unknown
@@ -169,6 +172,8 @@ func _exit_tree() -> void:
 			_movie_maker_backend._debugger_plugin = null
 		if _screenshot_backend:
 			_screenshot_backend._debugger_plugin = null
+		if _obs_backend:
+			_obs_backend._debugger_plugin = null
 		if _recorder_controller:
 			_recorder_controller._debugger_plugin = null
 		remove_debugger_plugin(_debugger_plugin)
@@ -630,11 +635,6 @@ func _ensure_editor_settings_defaults() -> void:
 			["gd_time_machine/obs/scene", "", {"type": TYPE_STRING}],
 			["gd_time_machine/obs/auto_launch", true, {"type": TYPE_BOOL}],
 			["gd_time_machine/obs/auto_close", true, {"type": TYPE_BOOL}],
-			[
-				"gd_time_machine/obs/auto_setup_scene",
-				true,
-				{"type": TYPE_BOOL},
-			],
 			[
 				"gd_time_machine/obs/binary_path",
 				"",

@@ -48,6 +48,11 @@ text = "Backend:"
 [node name="BackendOption" type="OptionButton" parent="Split/RightColumn/BackendRow" unique_name_in_owner = true]
 size_flags_horizontal = 3
 
+[node name="ObsSetupButton" type="Button" parent="Split/RightColumn/BackendRow" unique_name_in_owner = true]
+flat = true
+tooltip_text = "OBS capture setup — inspect the record scene, re-run auto-setup, or adjust automatic setup."
+focus_mode = 0
+
 [node name="SettingsGroup" type="VBoxContainer" parent="Split/RightColumn"]
 theme_override_constants/separation = 2
 
@@ -155,3 +160,18 @@ text = "Open obsproject.com"
 
 [node name="DontShowAgain" type="CheckBox" parent="ObsInstallDialog/HintContent"]
 text = "Don't show this hint again"
+
+[node name="ObsSetupDialog" type="AcceptDialog" parent="."]
+title = "OBS Capture Setup"
+
+[node name="SetupContent" type="VBoxContainer" parent="ObsSetupDialog"]
+custom_minimum_size = Vector2(460, 0)
+theme_override_constants/separation = 8
+
+[node name="SetupStatusLabel" type="Label" parent="ObsSetupDialog/SetupContent"]
+size_flags_horizontal = 3
+text = "Checking OBS…"
+autowrap_mode = 3
+
+[node name="SetupNowButton" type="Button" parent="ObsSetupDialog/SetupContent"]
+text = "Set up window capture now"

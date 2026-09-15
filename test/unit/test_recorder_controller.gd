@@ -93,6 +93,24 @@ func make_controller() -> RecorderController:
 	return controller
 
 
+## OBS setup passthrough guards
+
+
+func test_obs_setup_summary_empty_without_obs_backend() -> void:
+	var controller := make_controller()
+	controller.register_backend(FakeBackend.new("Fake Backend"))
+	var summary: Dictionary = await controller.get_obs_setup_summary()
+	assert_true(summary.is_empty(), "non-OBS backend offers no setup surface")
+
+
+func test_obs_setup_actions_refuse_without_obs_backend() -> void:
+	var controller := make_controller()
+	controller.register_backend(FakeBackend.new("Fake Backend"))
+	var setup: Dictionary = await controller.run_obs_setup_now()
+	assert_false(bool(setup.get("ok", true)))
+	assert_true(str(setup.get("message", "")).contains("not active"))
+
+
 ## Backend registration tests
 
 
