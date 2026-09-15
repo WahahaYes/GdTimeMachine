@@ -1313,7 +1313,7 @@ func test_empty_scene_without_pipewire_kind_errors_actionably() -> void:
 	# Empty scene where auto-setup can't run (no PipeWire kind — e.g. OBS
 	# without PipeWire support): no StartRecord, and the error says why setup
 	# bailed plus how to finish manually. (The refuse-fast path also runs
-	# with AUTO_SETUP_PIPEWIRE=false; see below.)
+	# with gd_time_machine/obs/auto_setup_scene=false; see below.)
 	var backend := _make_recording_backend()
 	backend.scene_name = "Main"
 	backend.client_respond_data = {"sceneItems": []}
@@ -1428,12 +1428,14 @@ func test_auto_setup_timeout_emits_actionable_error() -> void:
 		assert_ne(str(req[0]), "StartRecord", "StartRecord must never fire without a share")
 
 
-func test_auto_setup_off_const_refuses_fast() -> void:
-	# AUTO_SETUP_PIPEWIRE=false: the empty scene refuses immediately with the
-	# no-sources error and no setup traffic. Default true keeps the
-	# historical auto-setup behavior covered above.
-	BackendOBS.AUTO_SETUP_PIPEWIRE = false
+func test_auto_setup_off_setting_refuses_fast() -> void:
+	# gd_time_machine/obs/auto_setup_scene=false: the empty scene refuses
+	# immediately with the no-sources error and no setup traffic. Default
+	# true keeps the historical auto-setup behavior covered above.
 	var backend := _make_recording_backend()
+	var fake := FakeEditorSettings.new()
+	fake.set_v("gd_time_machine/obs/auto_setup_scene", false)
+	backend._editor_settings = fake
 	backend.scene_name = "Main"
 	backend.client_respond_data = {"sceneItems": []}
 	backend.playing = true
@@ -1446,6 +1448,30 @@ func test_auto_setup_off_const_refuses_fast() -> void:
 	assert_true(
 		await wait_for_signal(backend.recording_error, REPLY_BUDGET),
 		"opted-out empty scene must still refuse fast",
+	)
+	assert_true(
+		str(errors[0]).contains("no enabled sources"),
+		"opt-out error stays the refuse-fast one, got: '%s'" % errors[0],
+	)
+
+
+func test_auto_setup_static_seam_refuses_fast() -> void:
+	# Static seam off (no settings store involved): same refuse-fast path.
+	# Guards the headless/no-store fallback inside _get_auto_setup_setting.
+	BackendOBS.AUTO_SETUP_PIPEWIRE = false
+	var backend := _make_recording_backend()
+	backend.scene_name = "Main"
+	backend.client_respond_data = {"sceneItems": []}
+	backend.playing = true
+	var errors: Array = []
+	backend.recording_error.connect(
+		func(_backend_name: String, message: String) -> void: errors.append(message)
+	)
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_no_setup_seam"})
+	assert_true(
+		await wait_for_signal(backend.recording_error, REPLY_BUDGET),
+		"seam-off empty scene must still refuse fast",
 	)
 	assert_true(
 		str(errors[0]).contains("no enabled sources"),

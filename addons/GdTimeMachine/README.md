@@ -64,7 +64,7 @@ Linux and Windows only — on other platforms the backend stays unselectable wit
 1. **Install OBS Studio** (obsproject.com).
 1. In OBS: **Tools → WebSocket Server Settings → Enable WebSocket Server** (default port `4455`). Set a password if desired.
 1. In Godot: **Project > Editor Settings → `gd_time_machine/obs/*`** — set matching `host`, `port`, and `password`.
-1. Optional `obs/*` settings: `scene` (record target, default `GdTimeMachine`), `auto_launch` (default on), `auto_close` (stop OBS we launched when Godot closes), `binary_path` (custom OBS binary).
+1. Optional `obs/*` settings: `scene` (record target, default `GdTimeMachine`), `auto_launch` (default on), `auto_close` (stop OBS we launched when Godot closes), `auto_setup_scene` (default on — build the PipeWire capture scene when the record scene is empty), `binary_path` (custom OBS binary).
 
 Each Record targets your game window directly — no picker: on Linux the game reports its X11 window id over the debugger channel and OBS captures it via `xcomposite_input` (OBS is auto-launched under XWayland so the kind registers); on Windows OBS captures `[exe]: title` via `window_capture` (best-effort — exact-title matching is OBS-side). Whatever can't be targeted programmatically falls back exactly once to PipeWire screen capture (which needs one human share pick, remembered afterwards); if that fails too, the recording errors instead of going black. Progress is narrated in both the dock status line and the terminal `[GdTM]` log.
 
@@ -115,7 +115,7 @@ All defaults live in **Project > Editor Settings** and can be overridden per sce
 
 **OBS (`gd_time_machine/obs/*`):**
 
-- `host`, `port`, `password`, `scene`, `auto_launch`, `auto_close`, `binary_path`
+- `host`, `port`, `password`, `scene`, `auto_launch`, `auto_close`, `auto_setup_scene`, `binary_path`
 
 **Shortcut:**
 

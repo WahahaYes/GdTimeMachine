@@ -1143,19 +1143,23 @@ func _describe_empty_scene_error(scene_name: String) -> String:
 	)
 
 
-## Whether the preflight may build the capture scene automatically on Record.
-## Static seam (no EditorSettings key — plugin.gd registers no such default).
-## When the PipeWire fallback would otherwise create a capture source from
-## nothing, refusing fast keeps a stale monitor-sized portal share from ever
-## being the thing a Record silently reuses (that reuse is exactly the
-## "VSCode behind the game" failure). true keeps the historic behavior
-## (empty scene → create PipeWire source + wait for the human pick); tests
-## flip it false to pin the refuse-fast path. The programmatic xcomposite
-## path is unaffected (its own scene/input logic).
+## Whether the preflight may build the capture scene automatically on
+## Record. EditorSettings key `gd_time_machine/obs/auto_setup_scene`
+## (default true, registered by plugin.gd): when the PipeWire fallback would
+## otherwise create a capture source from nothing, refusing fast keeps a
+## stale monitor-sized portal share from ever being the thing a Record
+## silently reuses (that reuse is exactly the "VSCode behind the game"
+## failure). True keeps the historic behavior (empty scene → create PipeWire
+## source + wait for the human pick); tests flip the static seam below to
+## pin the refuse-fast path. The programmatic xcomposite path is unaffected
+## (its own scene/input logic).
 static var AUTO_SETUP_PIPEWIRE := true
 
 
 func _get_auto_setup_setting() -> bool:
+	var v := _read_setting("gd_time_machine/obs/auto_setup_scene")
+	if v != null:
+		return bool(v)
 	return BackendOBS.AUTO_SETUP_PIPEWIRE
 
 
