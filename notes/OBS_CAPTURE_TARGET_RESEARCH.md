@@ -2,7 +2,7 @@
 
 > Follow-up: `notes/OBS_PROGRAMMATIC_CAPTURE_PLAN.md` turns this research into the two-tier build (programmatic primary, single PipeWire fallback). The research below stands as the evidence.
 
-Date: 2026-09-08. Status: researched, fix NOT yet implemented.
+Date: 2026-09-08. Status: implemented 2026-09-15 (two-tier Record in `_begin_recording`, committed).
 
 ## The bug
 
@@ -11,7 +11,7 @@ OBS recordings capture the wrong content: VSCode (behind the game) instead of th
 1. **Wrong share target.** The PipeWire portal share pointed at a monitor (or the wrong window). Live probe of this machine (2026-09-07/08) showed the `GdTimeMachine` scene holding **two** same-named `GdTimeMachine Capture` inputs (`pipewire-screen-capture-source`), each 1920x1080 (full-monitor sized) with a saved `RestoreToken`. Every Record captured the whole monitor — frontmost window wins, which was VSCode. Auto-setup had stacked the duplicate instead of reusing (fixed: input reuse + twin healing in `_auto_setup_record_scene` / `_heal_own_scene_duplicates`, `backend_obs.gd`).
 1. **Frozen frame.** When a saved portal share goes stale (target window gone, token invalidated), the source keeps rendering its last buffers. OBS cannot tell us the share is dead — the token is opaque.
 
-Related pre-existing defects already fixed on the way here (all in `backend_obs.gd` + `time_machine_dock.gd` + `recorder_controller.gd`, all covered by GUT tests, suite 351/351 green 2026-09-08):
+Related pre-existing defects already fixed on the way here (all in `backend_obs.gd` + `time_machine_dock.gd` + `recorder_controller.gd`, all covered by GUT tests, suite green 2026-09-08):
 
 - Empty OBS scene recorded black video of correct length with no complaint → fail-fast preflight (`_check_record_scene_ready`) + auto-setup on Record.
 - Auto-setup created a scene+source but the human still had to complete the portal picker → wait-for-`RestoreToken` loop, `OpenInputPropertiesDialog` parking, setup gear dialog (`ObsSetupDialog`) with status / auto-setup toggle / set-up-now / **re-pick** (`repick_capture_target` clears the token and re-opens the picker — the current wrong-window remedy).
@@ -49,7 +49,7 @@ X11 capture is **Linux-only**. Per-OS programmatic story:
 
 So: X11 wipes out PipeWire **on Linux only**, and only when both OBS (xcb flag) and the game (X11 driver) cooperate — detection + fallback required. Windows/macOS keep their own programmatic kinds; PipeWire remains the Linux fallback, never the default when xcomposite is available.
 
-## Proposed fix (not implemented)
+## Proposed fix (implemented 2026-09-15 — summary, see code)
 
 1. Game-side autoload reports `DisplayServer.window_get_native_handle()` (+ a Wayland/X11 flag) over the debugger channel on request, with timeout.
 1. Preflight/Record path: if OBS exposes `xcomposite_input` (Linux) and the game reports a nonzero X11 handle → `SetInputSettings capture_window` (`"<id>\r\n\r\n"`) on the record input, then `StartRecord`. No picker.
@@ -62,7 +62,7 @@ So: X11 wipes out PipeWire **on Linux only**, and only when both OBS (xcb flag) 
 - `GetInputKindList` on xcb OBS: `xcomposite_input` present.
 - `SetInputSettings(capture_window=<game xid>)` → log resolves title/class → `SaveSourceScreenshot` returns live 1152x648 game pixels.
 - All 14 obs-websocket request types the flows use verified present on the project's OBS 32.1 / websocket 5.7.2 (`RemoveSceneItem`, `SetSceneItemEnabled`, `SetInputSettings` included).
-- GUT suite 351/351 green (covers preflight, auto-setup, dedupe/heal, re-pick, summary, dialog, controller guards).
+- GUT suite green at implementation time (covers preflight, auto-setup, dedupe/heal, re-pick, summary, dialog, controller guards). Live E2E 2026-09-15: real `BackendOBS.start()` recorded the live smoke scene (`media/captures/live_backend_e2e.mp4`, 1280×720, hue-cycling frames).
 
 ## Open questions
 

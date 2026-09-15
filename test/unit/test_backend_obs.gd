@@ -1779,6 +1779,106 @@ func test_programmatic_path_heals_stranger_items_only() -> void:
 	assert_eq(created_items, 0, "kept placement must not be re-created")
 
 
+func test_programmatic_path_fits_owned_item_to_canvas() -> void:
+	# Owned scene, healthy placement: after the program switch the backend
+	# fits our item with aspect-preserving canvas bounds (GetVideoSettings →
+	# SetSceneItemTransform SCALE_INNER). Without this the 1152×648 game
+	# records as a top-left stamp on the 1920×1080 canvas (reproduced live).
+	var backend := _make_recording_backend()
+	backend.playing = true
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": [{"sceneName": "GdTimeMachine"}]},
+		"GetInputList":
+		{
+			"inputs":
+			[
+				{
+					"inputName": "GdTimeMachine Capture",
+					"inputUuid": "uuid-kept",
+					"inputKind": "xcomposite_input"
+				}
+			]
+		},
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-kept",
+					"inputKind": "xcomposite_input",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+					"sceneItemTransform": {"boundsType": "OBS_BOUNDS_NONE"},
+				}
+			]
+		},
+		"GetVideoSettings": {"baseWidth": 1920, "baseHeight": 1080},
+		"SetCurrentProgramScene": {},
+	}
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_x11_fit"})
+	assert_true(await wait_for_signal(backend.recording_started, REPLY_BUDGET))
+	var fits: Array = []
+	for req in backend.request_log:
+		if str(req[0]) == "SetSceneItemTransform":
+			fits.append(req[1] as Dictionary)
+	assert_eq(fits.size(), 1, "exactly one fit, got: %s" % str(backend.request_log))
+	var xf: Dictionary = (fits[0] as Dictionary).get("sceneItemTransform", {})
+	assert_eq(str(xf.get("boundsType", "")), "OBS_BOUNDS_SCALE_INNER")
+	assert_eq(float(xf.get("boundsWidth", 0)), 1920.0)
+	assert_eq(float(xf.get("boundsHeight", 0)), 1080.0)
+
+
+func test_programmatic_path_skips_fit_when_already_fitted() -> void:
+	# Idempotence: an already-fitted item (same bounds) is left alone — no
+	# SetSceneItemTransform churn on every Record.
+	var backend := _make_recording_backend()
+	backend.playing = true
+	backend.client_respond_data_by_type = {
+		"GetInputKindList": {"inputKinds": ["xcomposite_input"]},
+		"GetSceneList": {"scenes": [{"sceneName": "GdTimeMachine"}]},
+		"GetInputList":
+		{
+			"inputs":
+			[
+				{
+					"inputName": "GdTimeMachine Capture",
+					"inputUuid": "uuid-kept",
+					"inputKind": "xcomposite_input"
+				}
+			]
+		},
+		"GetSceneItemList":
+		{
+			"sceneItems":
+			[
+				{
+					"sourceName": "GdTimeMachine Capture",
+					"sourceUuid": "uuid-kept",
+					"inputKind": "xcomposite_input",
+					"sceneItemEnabled": true,
+					"sceneItemId": 4,
+					"sceneItemTransform":
+					{
+						"boundsType": "OBS_BOUNDS_SCALE_INNER",
+						"boundsWidth": 1920.0,
+						"boundsHeight": 1080.0,
+					},
+				}
+			]
+		},
+		"GetVideoSettings": {"baseWidth": 1920, "baseHeight": 1080},
+		"SetCurrentProgramScene": {},
+	}
+	watch_signals(backend)
+	await backend.start({"output_path": "res://media/captures/obs/obs_x11_fit_skip"})
+	assert_true(await wait_for_signal(backend.recording_started, REPLY_BUDGET))
+	for req in backend.request_log:
+		assert_ne(str(req[0]), "SetSceneItemTransform", "fitted item must not be re-fitted")
+
+
 func test_identity_failure_falls_back_to_pipewire_once() -> void:
 	# No game answering: exactly one fallback notice, then the PipeWire chain
 	# proceeds to StartRecord — no chains, no loops.

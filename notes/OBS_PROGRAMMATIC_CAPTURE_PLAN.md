@@ -34,9 +34,18 @@ Rules that keep it cascade-free:
 - Editor (`editor/debugger_plugin.gd`): route `gd_time_machine:window_handle` in `_capture` (outside the screenshot gate), emit `window_handle_received(rq_id, handle, display, exe, title)`; add `send_window_handle_request(rq_id)` mirroring `send_screenshot_request` (first live session + session-0 fallback).
 - Backend (`backend_obs.gd`): `_request_game_window_identity()` awaits the signal with rq-id match on the wall clock (3 s), then disconnects. Test seam: override in the RecordingBackend double with canned dicts (same pattern as existing `_get_setup_wait_timeout` seam).
 
-## Backend changes (`backend_obs.gd`)
+## Backend changes (`backend_obs.gd`) — as implemented 2026-09-15
 
 - ADD: `_debugger_plugin: Object` member (mirror movie maker); `_next_win_rq_id`.
 - ADD: `_get_os_name()` seam (`OS.get_name()`; tests pin "macOS"/"Windows").
 - `is_available()`: false with reason outside Linux/Windows.
-- ADD: `_platform_capture_spec(identity, kinds)` pure-ish (no OBS I/O): returns `{kind, settings}` or `{error}`. Linux/X11/handle → xcomposite + `{"capture_window": "%d\r\n\r\n" % handle}`; Windows/exe/title → ...[truncated 3881 chars]
+- ADD: `_resolve_programmatic_spec(client = null)` (identity + `GetInputKindList` on a transient): Linux/X11/handle + `xcomposite_input` present → `{kind, settings: {"capture_window": "%d\r\n\r\n" % handle}}`; Windows/exe/title + `window_capture` present → `{kind, settings: {"window": "[exe]: title"}}` (UNVALIDATED); else `{spec: {}, reason}` naming the failed gate.
+- ADD: `_ensure_window_capture(client, spec)` (own scene vs configured scene): cross-kind `RemoveInput` + 1.5 s settle (`SETTLE_DELAY`, `_get_settle_delay` seam); reuse + `SetInputSettings` fresh xid; keep healthy placement, remove strangers/twin dups, create only when missing; `SetCurrentProgramScene`; `_fit_owned_item_to_canvas` (`GetVideoSettings` base + `SetSceneItemTransform` `OBS_BOUNDS_SCALE_INNER`, idempotent, best-effort).
+- `_begin_recording`: exactly one branch — programmatic ensure → `StartRecord`, else single PipeWire fallback (`_pipewire_begin`) → `StartRecord` or `_fail_begin`. `run_setup_now` reuses the same path outside recording; `get_setup_summary` reports window/pipewire/none for the dock dialog.
+
+## Live validation 2026-09-14/15 (this machine, OBS 32.1 / websocket 5.7.2, xcb)
+
+- Same-tick `RemoveInput` → `CreateInput` fails 601 or records source-less black; `RemoveSceneItem` → `CreateSceneItem` fails 600 "no source found" + black (`media/captures/2026-09-14 19-36-02.mp4` all-black). Settled paths record live.
+- Real `BackendOBS.start()` end-to-end: `media/captures/live_backend_e2e.mp4` (1280x720, hue-cycling smoke scene, all frames live).
+- Game 1152x648 on 1920x1080 canvas otherwise records as top-left stamp; `SCALE_INNER` bounds fill the frame (verified via `SaveSourceScreenshot`).
+- Never call `GetInputPropertiesListPropertyItems` on xcomposite kinds (crashes OBS, see research note).

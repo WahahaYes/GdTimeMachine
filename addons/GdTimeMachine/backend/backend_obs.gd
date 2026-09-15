@@ -996,8 +996,65 @@ func _ensure_window_capture(client: OBSClient, spec: Dictionary) -> bool:
 	)
 	if not bool(switched.get("ok", false)) or not bool(switched.get("result", false)):
 		return false
+	await _fit_owned_item_to_canvas(client, scene, input_uuid)
 	_remember_scene(scene)
 	return true
+
+
+## Fits our owned-scene item to the canvas with aspect-preserving bounds
+## (SCALE_INNER against the live base size): an unscaled 1152×648 game on a
+## 1920×1080 canvas otherwise records as a top-left stamp with black bars
+## (reproduced Sep 2026: live pixels in a 769×432 corner of 1280×720).
+## Best-effort and idempotent: any failed query or set is skipped, never
+## fatal to the record. Only the owned scene is ever touched.
+func _fit_owned_item_to_canvas(client: OBSClient, scene: String, input_uuid: String) -> void:
+	if scene != AUTO_SETUP_SCENE_NAME:
+		return
+	var video := await _obs_request_await_on(client, "GetVideoSettings", {}, SCENE_CHECK_TIMEOUT)
+	if not bool(video.get("ok", false)) or not bool(video.get("result", false)):
+		return
+	var canvas := Dictionary(video.get("data", {}))
+	var base_w := float(canvas.get("baseWidth", 0))
+	var base_h := float(canvas.get("baseHeight", 0))
+	if base_w <= 0.0 or base_h <= 0.0:
+		return
+	var items := await _obs_request_await_on(
+		client, "GetSceneItemList", {"sceneName": scene}, SCENE_CHECK_TIMEOUT
+	)
+	if not bool(items.get("ok", false)) or not bool(items.get("result", false)):
+		return
+	for it in Dictionary(items.get("data", {})).get("sceneItems", []):
+		if not (it is Dictionary):
+			continue
+		if (
+			str(it.get("sourceUuid", "")) != input_uuid
+			and str(it.get("sourceName", "")) != AUTO_SETUP_INPUT_NAME
+		):
+			continue
+		var xf := Dictionary((it as Dictionary).get("sceneItemTransform", {}))
+		if (
+			str(xf.get("boundsType", "")) == "OBS_BOUNDS_SCALE_INNER"
+			and float(xf.get("boundsWidth", 0)) == base_w
+			and float(xf.get("boundsHeight", 0)) == base_h
+		):
+			return
+		await _obs_request_await_on(
+			client,
+			"SetSceneItemTransform",
+			{
+				"sceneName": scene,
+				"sceneItemId": int(it.get("sceneItemId", -1)),
+				"sceneItemTransform":
+				{
+					"boundsType": "OBS_BOUNDS_SCALE_INNER",
+					"boundsAlignment": 5,
+					"boundsWidth": base_w,
+					"boundsHeight": base_h,
+				},
+			},
+			SCENE_CHECK_TIMEOUT
+		)
+		return
 
 
 ## Preflight for the black-video failure: resolves the scene OBS would record
