@@ -10,7 +10,8 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
-        exclude: '(?i)\.(png|jpe?g|webp|avif|svg|gif|html)$'
+        args: ['--maxkb=512']
+        exclude: '(?i)\.(png|jpe?g|webp|avif|svg|gif|html|glb|gltf)$'
       - id: check-merge-conflict
       - id: fix-byte-order-marker
 
