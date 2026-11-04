@@ -145,6 +145,19 @@ var _format_warning_label: Label = $Split/RightColumn/SettingsGroup/FormatWarnin
 ## Capture FPS.
 @onready var _fps_spin: SpinBox = $Split/RightColumn/SettingsGroup/FpsRow/FpsSpin
 
+## Row holding the capture size (restart-scene backends only).
+@onready var _resolution_row: HBoxContainer = $Split/RightColumn/SettingsGroup/ResolutionRow
+
+## Capture size "WIDTHxHEIGHT"; empty = the project's window size.
+@onready
+var _resolution_edit: LineEdit = $Split/RightColumn/SettingsGroup/ResolutionRow/ResolutionEdit
+
+## Row holding the game's user args (restart-scene backends only).
+@onready var _args_row: HBoxContainer = $Split/RightColumn/SettingsGroup/ArgsRow
+
+## Space-separated args for the captured game, passed after `--`.
+@onready var _args_edit: LineEdit = $Split/RightColumn/SettingsGroup/ArgsRow/ArgsEdit
+
 ## Output directory for recordings.
 @onready var _output_edit: LineEdit = $Split/RightColumn/SettingsGroup/OutputRow/OutputEdit
 
@@ -266,6 +279,8 @@ func _ready() -> void:
 	_record_button.pressed.connect(_on_record_pressed)
 	_output_edit.text_changed.connect(func(_t): _on_output_changed())
 	_output_edit.tooltip_text = "Directory where recordings are saved. File names are auto-generated from scene name + timestamp."
+	_resolution_edit.text_changed.connect(func(_t): _on_resolution_changed())
+	_args_edit.text_changed.connect(func(_t): _on_args_changed())
 	_duration_spin.value_changed.connect(func(_v): _on_duration_changed())
 	_fps_spin.value_changed.connect(func(_v): _on_fps_changed())
 	_scene_edit.text_changed.connect(_on_scene_edit_changed)
@@ -297,6 +312,10 @@ func _apply_setup() -> void:
 	_fps_spin.tooltip_text = "Target frames per second for the recording."
 	$Split/RightColumn/SettingsGroup/FpsRow.tooltip_text = _fps_spin.tooltip_text
 	$Split/RightColumn/SettingsGroup/FpsRow/FpsLabel.tooltip_text = _fps_spin.tooltip_text
+	_resolution_edit.tooltip_text = "Capture size as WIDTHxHEIGHT (e.g. 1920x1080). Empty uses the project's window size.\nMovie Maker only: written to res://override.cfg while recording, then restored."
+	_resolution_row.tooltip_text = _resolution_edit.tooltip_text
+	_args_edit.tooltip_text = "Args for the game, space-separated (no quoting), passed after -- so the game reads them with OS.get_cmdline_user_args().\nMovie Maker only: appended to editor/run/main_run_args while recording, then restored."
+	_args_row.tooltip_text = _args_edit.tooltip_text
 	$Split/RightColumn/SettingsGroup/SceneRow.tooltip_text = _scene_edit.tooltip_text
 	$Split/RightColumn/SettingsGroup/OutputRow.tooltip_text = _output_edit.tooltip_text
 	$Split/RightColumn/SettingsGroup/FormatRow.tooltip_text = (
@@ -582,6 +601,8 @@ func _load_profile_into_ui(profile: RecordingProfile) -> void:
 	)
 	_duration_spin.value = profile.duration
 	_fps_spin.value = float(profile.fps) if profile.fps > 0 else DEFAULT_FPS
+	_resolution_edit.text = profile.resolution
+	_args_edit.text = profile.user_args
 	_select_format_item(profile.output_format)
 	_update_format_warning()
 	if not profile.backend_name.is_empty():
@@ -604,6 +625,8 @@ func _build_profile_from_ui() -> RecordingProfile:
 		p.output_dir = DEFAULT_OUTPUT_DIR
 	p.output_format = _get_selected_format()
 	p.fps = int(_fps_spin.value)
+	p.resolution = _resolution_edit.text.strip_edges()
+	p.user_args = _args_edit.text.strip_edges()
 	p.duration = 0.0 if _duration_spin.value <= 0.0 else float(_duration_spin.value)
 	p.scene_path = _scene_edit.text.strip_edges()
 	if _backend_option.selected >= 0:
@@ -668,6 +691,20 @@ func _on_duration_changed() -> void:
 
 ## Handles FPS edits.
 func _on_fps_changed() -> void:
+	if _applying_profile:
+		return
+	_persist_default_profile()
+
+
+## Handles capture size edits.
+func _on_resolution_changed() -> void:
+	if _applying_profile:
+		return
+	_persist_default_profile()
+
+
+## Handles game args edits.
+func _on_args_changed() -> void:
 	if _applying_profile:
 		return
 	_persist_default_profile()
@@ -949,6 +986,12 @@ func _update_backend_visibility() -> void:
 		_scene_row.visible = true
 	if _format_row != null:
 		_format_row.visible = true
+	# Capture size applies when the backend launches the game itself; in-place
+	# backends record whatever window is already running.
+	if _resolution_row != null:
+		_resolution_row.visible = not in_place
+	if _args_row != null:
+		_args_row.visible = not in_place
 	# Gear button is OBS-only: it re-opens the capture-setup dialogue so the
 	# auto-setup result can be revisited and adjusted after it first ran.
 	if _setup_button != null:
@@ -1124,6 +1167,8 @@ func build_config() -> Dictionary:
 		"fps": effective.fps,
 		"duration": effective.duration,
 		"output_format": GdTMOutputFormat.to_extension(effective.output_format),
+		"resolution": GdTMCaptureOptions.normalize_resolution(effective.resolution),
+		"user_args": GdTMCaptureOptions.split_args(effective.user_args),
 	}
 
 

@@ -105,6 +105,7 @@ All defaults live in **Project > Editor Settings** and can be overridden per sce
 - `default_backend` — backend selected by default
 - `default_fps` — target FPS cap
 - `default_duration` — seconds (`0` = until stopped)
+- `default_resolution` — capture size `WIDTHxHEIGHT`, e.g. `1920x1080` (empty = the project's window size)
 
 **Transcoders (`transcoders/*`):**
 
@@ -133,9 +134,33 @@ duration = 30
 ["res://scenes/menu.tscn"]
 fps = 30
 output_format = png
+resolution = 1920x1080
+user_args = --shot=wide --seed=3
 ```
 
 Each `["res://..."]` overrides `[default]`. Edit directly or use *Remember settings for this scene* in the dock. Commit for shared team profiles.
+
+**Capture size** (dock *Size*, `resolution`): Movie Maker fixes its frame size from the project's window size settings when the game starts — `--resolution` alone resizes the window, not the footage. So the Movie Maker backend writes the size into `res://override.cfg` (`display/window/size/window_*_override`) for the duration of the recording and then restores the file exactly as it was (or removes it). If the editor crashes mid-recording, the file says so in its first line; delete it. Sizes larger than the screen work (e.g. `2560x1440` for a downscaled master). In-place backends record the running window as is.
+
+**Game args** (dock *Args*, `user_args`): space-separated args for the game, e.g. `--shot=wide --seed=3`, passed after `--` so the game reads them with `OS.get_cmdline_user_args()`. The Movie Maker backend appends them to `editor/run/main_run_args` (in memory) while recording and restores it afterwards. No quoting: the editor splits run args on spaces. Stored per scene in `profiles.cfg`, not in Editor Settings.
+
+## Game log
+
+Each Movie Maker recording saves what the game printed beside the clip: `<label>.log` from `gdtime run`, `<scene>_<timestamp>.log` from the dock. Everything that goes through Godot's logger lands there — `print`, `printerr` (marked `(stderr)`), `push_warning`/`push_error` and engine errors — after a few `#` header lines (scene, fps, resolution, args; for `gdtime`, the commit and its resolved SHA):
+
+```text
+# gdtime capture: intro-plan
+# commit: scene-visual-pass -> 3f2a9c1…
+# lines: [frame N | T s] text — N is the 0-based video frame the line was printed on, T = N / fps
+[frame 0 | 0.000s] smoke: user args ["--seed=3"]
+[frame 124 | 2.067s] RESULT plan: gather -> build
+```
+
+Lines are stamped with the **movie frame** rather than the wall clock: Movie Maker runs fixed-step (each frame advances exactly `1/fps` of game time however long it takes to render), so `N` is the first video frame that can show the line's effect and `T` is its timestamp in the footage — overlays can sync to it exactly. Wall-clock time drifts from the footage whenever rendering is slower or faster than real time.
+
+How: the recorder creates the log file before launching the game, and a logger in the game (`autoload/capture_log.gd`, hosted by the GdTimeMachine autoload) appends to it only when the game is writing a movie and that file exists, so plain Movie Maker runs and exported games are untouched. `gdtime run` copies the two scripts into each worktree (`.gdtime/`) and registers them through `override.cfg`, so commits that predate the addon get a log too. Needs Godot 4.5+ in the captured game (`Logger`); older engines get a one-line note instead. The game's output still appears in the terminal or the editor's Output panel as before.
+
+Screenshot and OBS recordings have no game log: their game is not writing a movie, which is what the in-game logger keys on, and the editor sees that game's output only over the debugger connection, which the recorder does not tap.
 
 ## CLI — batch capture (history)
 
@@ -150,7 +175,11 @@ gdtime --help
 gdtime --version
 ```
 
-**Manifest** (`res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json`): `project_root`, `captures[]` with `commit` (hex 4–40 or `HEAD`), `scene` (`res://…`), `label` (`[A-Za-z0-9_-]+`, unique), optional `duration`/`fps`/`godot_version_hint`/`output_path`/`build_command` and top-level `godot_path`/`build_command`/`output_dir`.
+**Manifest** (`res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json`): `project_root`, `captures[]` with `commit` (any git ref `git rev-parse` resolves: SHA, branch, tag, `HEAD`; the resolved SHA is printed), `scene` (`res://…`), `label` (`[A-Za-z0-9_-]+`, unique), optional `duration`/`fps`/`fullscreen`/`resolution`/`godot_version_hint`/`output_path`/`build_command` and top-level `godot_path`/`build_command`/`output_dir`/`resolution`/`user_args` (defaults for entries without their own).
+
+- `resolution` — `"1920x1080"`: passed as `--resolution` and written into the worktree's `override.cfg` as the window size override, which is what sizes Movie Maker footage.
+- `user_args` — `["--scene=res://a.tscn", "--seed=3"]`: appended after `--` on the game's command line (`OS.get_cmdline_user_args()`). An entry's list replaces the top-level one.
+- `fullscreen` — passes `--fullscreen`. The footage keeps the project's window size (or `resolution`), not the screen's.
 
 **`run` options:** `--dry-run` (preview), `--resume LABEL` (skip before label), `--keep-worktrees` / `--keep-failed`, `--no-git` (HEAD-only), `--force` (overwrite), `--build-timeout SECS` (default 600), `--fail-fast`, `--strict`.
 

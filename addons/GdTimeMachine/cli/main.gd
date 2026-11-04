@@ -9,6 +9,33 @@ extends SceneTree
 const PLUGIN_CFG_PATH := "res://addons/GdTimeMachine/plugin.cfg"
 const SCHEMA_PATH := "res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json"
 
+## Keys --strict accepts at the manifest's top level (mirrors the schema).
+const TOP_LEVEL_KEYS := [
+	"project_root",
+	"godot_path",
+	"build_command",
+	"output_dir",
+	"resolution",
+	"user_args",
+	"obs",
+	"captures",
+]
+
+## Keys --strict accepts in a captures[] entry (mirrors the schema).
+const CAPTURE_KEYS := [
+	"commit",
+	"scene",
+	"label",
+	"duration",
+	"fps",
+	"fullscreen",
+	"resolution",
+	"user_args",
+	"godot_version_hint",
+	"output_path",
+	"build_command",
+]
+
 
 func _get_version() -> String:
 	var cfg := ConfigFile.new()
@@ -141,6 +168,14 @@ func _validate_manifest(path: String, strict: bool) -> String:
 	var arr: Array = captures
 	if arr.is_empty():
 		return "captures must be non-empty"
+	if dict.has("resolution"):
+		var top_res_err := GdTMCaptureOptions.validate_resolution(dict["resolution"])
+		if not top_res_err.is_empty():
+			return "resolution %s" % top_res_err
+	if dict.has("user_args"):
+		var top_args_err := GdTMCaptureOptions.validate_user_args(dict["user_args"])
+		if not top_args_err.is_empty():
+			return "user_args %s" % top_args_err
 	var labels := {}
 	for i in range(arr.size()):
 		var entry = arr[i]
@@ -165,36 +200,29 @@ func _validate_manifest(path: String, strict: bool) -> String:
 		var scene := String(e["scene"])
 		if not scene.begins_with("res://"):
 			return "captures[%d].scene must start with res://, got '%s'" % [i, scene]
+		if e.has("resolution"):
+			var res_err := GdTMCaptureOptions.validate_resolution(e["resolution"])
+			if not res_err.is_empty():
+				return "captures[%d].resolution %s" % [i, res_err]
+		if e.has("user_args"):
+			var args_err := GdTMCaptureOptions.validate_user_args(e["user_args"])
+			if not args_err.is_empty():
+				return "captures[%d].user_args %s" % [i, args_err]
+		if e.has("fullscreen") and typeof(e["fullscreen"]) != TYPE_BOOL:
+			return "captures[%d].fullscreen must be true or false" % i
 		var commit := String(e["commit"])
-		var cregex := RegEx.new()
-		cregex.compile("^[0-9a-fA-F]{4,40}$|^HEAD$")
-		if cregex.search(commit) == null:
-			return "captures[%d].commit '%s' must be hex 4-40 chars or HEAD" % [i, commit]
+		if not GdTMWorktree.is_valid_ref(commit):
+			return (
+				"captures[%d].commit '%s' must be a git ref (SHA, branch, tag or HEAD) without spaces or a leading '-'"
+				% [i, commit]
+			)
 		if strict:
 			for k in e.keys():
-				if (
-					k
-					not in [
-						"commit",
-						"scene",
-						"label",
-						"duration",
-						"fps",
-						"fullscreen",
-						"godot_version_hint",
-						"output_path",
-						"build_command"
-					]
-				):
+				if k not in CAPTURE_KEYS:
 					return "captures[%d] unknown key '%s' (strict mode)" % [i, k]
 	if strict:
 		for k in dict.keys():
-			if (
-				k
-				not in [
-					"project_root", "godot_path", "build_command", "output_dir", "obs", "captures"
-				]
-			):
+			if k not in TOP_LEVEL_KEYS:
 				return "Unknown top-level key '%s' (strict mode)" % k
 	return ""
 
@@ -599,7 +627,16 @@ func _cmd_run(args: PackedStringArray) -> void:
 			if outp.is_empty():
 				outp = top_output_dir.path_join(lbl)
 			var backend_dry := str(entry.get("backend", "OBS Studio"))
-			print("[dry-run] would create worktree .worktrees/%s for %s" % [lbl, cm])
+			var options_dry := GdTMCaptureOptions.entry_options(entry, dict)
+			var sha_dry := GdTMWorktree.resolve_commit(project_root, cm)
+			if sha_dry.is_empty():
+				print("[dry-run] commit %s does not resolve in %s" % [cm, project_root])
+			print(
+				(
+					"[dry-run] would create worktree .worktrees/%s for %s"
+					% [lbl, _describe_commit(cm, sha_dry)]
+				)
+			)
 			if not sc.is_empty():
 				print("  scene: %s" % sc)
 			var gpath := top_godot_path
@@ -613,10 +650,18 @@ func _cmd_run(args: PackedStringArray) -> void:
 				print("  build: %s" % bcmd)
 			print(
 				(
-					"  record: %s -> %s (duration %s, fps %d, backend %s)"
-					% [sc, outp, str(dur), fps_v, backend_dry]
+					"  record: %s -> %s (duration %s, fps %d, backend %s%s)"
+					% [
+						sc,
+						outp,
+						str(dur),
+						fps_v,
+						backend_dry,
+						_describe_options(options_dry),
+					]
 				)
 			)
+			print("  log: %s.log" % outp.get_basename())
 		print("dry-run complete — no worktrees created")
 		quit(0)
 		return
@@ -636,8 +681,15 @@ func _cmd_run(args: PackedStringArray) -> void:
 			if entry.has("build_command")
 			else top_build_r
 		)
-		print("creating worktree for %s (%s)..." % [lbl, cm])
-		var wt_path := GdTMWorktree.add_worktree(lbl, cm, project_root, force)
+		var sha := GdTMWorktree.resolve_commit(project_root, cm)
+		if sha.is_empty():
+			printerr("[FAIL] commit %s does not resolve in %s (git rev-parse)" % [cm, project_root])
+			failed_labels.append(lbl)
+			if fail_fast:
+				break
+			continue
+		print("creating worktree for %s (%s)..." % [lbl, _describe_commit(cm, sha)])
+		var wt_path := GdTMWorktree.add_worktree(lbl, sha, project_root, force)
 		if wt_path.is_empty():
 			printerr("[FAIL] failed to create worktree .worktrees/%s for %s" % [lbl, cm])
 			failed_labels.append(lbl)
@@ -671,14 +723,16 @@ func _cmd_run(args: PackedStringArray) -> void:
 		elif not out_r.begins_with("/"):
 			out_r = project_root.path_join(out_r)
 		var backend_r := str(entry.get("backend", "OBS Studio"))
-		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin) != 0:
+		var options_r := GdTMCaptureOptions.entry_options(entry, dict)
+		options_r["log_header"] = _log_header(lbl, cm, sha, scene_r, fps_r, dur_r, options_r)
+		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin, options_r) != 0:
 			printerr("[FAIL] record failed for %s" % lbl)
 			failed_labels.append(lbl)
 			if fail_fast:
 				break
 			continue
 		created.append(lbl)
-		print("[OK] %s done (worktree + build + record)" % lbl)
+		print("[OK] %s done at %s (worktree + build + record)" % [lbl, sha])
 
 	# --- cleanup: atexit/SIGINT trap equivalent — ensure no orphans ---
 	if keep_worktrees:
@@ -712,6 +766,53 @@ func _cmd_run(args: PackedStringArray) -> void:
 			)
 			quit(1)
 			return
+
+
+## Header lines for a capture's game log ("<label>.log" beside the clip).
+func _log_header(
+	label: String,
+	ref: String,
+	sha: String,
+	scene: String,
+	fps: int,
+	duration: float,
+	options: Dictionary
+) -> PackedStringArray:
+	var lines := PackedStringArray()
+	lines.append("gdtime capture: %s" % label)
+	lines.append("commit: %s" % _describe_commit(ref, sha))
+	lines.append("scene: %s" % scene)
+	lines.append("fps: %d, duration: %ss" % [fps, str(duration)])
+	var res := str(options.get("resolution", ""))
+	lines.append("resolution: %s" % (res if not res.is_empty() else "project window size"))
+	if bool(options.get("fullscreen", false)):
+		lines.append("fullscreen: true")
+	var user_args: PackedStringArray = options.get("user_args", PackedStringArray())
+	if not user_args.is_empty():
+		lines.append("user args: -- %s" % " ".join(user_args))
+	lines.append("started: %s" % Time.get_datetime_string_from_system())
+	return lines
+
+
+## Dry-run suffix listing the non-default capture options.
+func _describe_options(options: Dictionary) -> String:
+	var parts := ""
+	if not str(options.get("resolution", "")).is_empty():
+		parts += ", resolution %s" % options["resolution"]
+	if bool(options.get("fullscreen", false)):
+		parts += ", fullscreen"
+	var user_args: PackedStringArray = options.get("user_args", PackedStringArray())
+	if not user_args.is_empty():
+		parts += ", args -- %s" % " ".join(user_args)
+	return parts
+
+
+## "<ref> -> <sha>" when the ref is not already the resolved SHA, else the SHA
+## (or the bare ref when it did not resolve).
+func _describe_commit(ref: String, sha: String) -> String:
+	if sha.is_empty() or sha == ref:
+		return ref
+	return "%s -> %s" % [ref, sha]
 
 
 func _cmd_list_commits(args: PackedStringArray) -> void:

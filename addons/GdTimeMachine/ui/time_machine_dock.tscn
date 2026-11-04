@@ -115,6 +115,28 @@ min_value = 15.0
 max_value = 240.0
 value = 60.0
 
+[node name="ResolutionRow" type="HBoxContainer" parent="Split/RightColumn/SettingsGroup" unique_name_in_owner = true]
+theme_override_constants/separation = 4
+
+[node name="ResolutionLabel" type="Label" parent="Split/RightColumn/SettingsGroup/ResolutionRow"]
+custom_minimum_size = Vector2(60, 0)
+text = "Size:"
+
+[node name="ResolutionEdit" type="LineEdit" parent="Split/RightColumn/SettingsGroup/ResolutionRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+placeholder_text = "project window size (e.g. 1920x1080)"
+
+[node name="ArgsRow" type="HBoxContainer" parent="Split/RightColumn/SettingsGroup" unique_name_in_owner = true]
+theme_override_constants/separation = 4
+
+[node name="ArgsLabel" type="Label" parent="Split/RightColumn/SettingsGroup/ArgsRow"]
+custom_minimum_size = Vector2(60, 0)
+text = "Args:"
+
+[node name="ArgsEdit" type="LineEdit" parent="Split/RightColumn/SettingsGroup/ArgsRow" unique_name_in_owner = true]
+size_flags_horizontal = 3
+placeholder_text = "game args after -- (e.g. --shot=wide --seed=3)"
+
 [node name="OutputRow" type="HBoxContainer" parent="Split/RightColumn/SettingsGroup" unique_name_in_owner = true]
 theme_override_constants/separation = 4
 

@@ -4,6 +4,8 @@ output_format="mp4"
 fps=60
 duration=5.0
 backend_name="OBS Studio"
+resolution=""
+user_args=""
 
 # Per-scene override example:
 # ["res://scenes/menu.tscn"]
@@ -12,3 +14,5 @@ backend_name="OBS Studio"
 # fps=30
 # duration=10.0
 # backend_name="Screenshot"
+# resolution="1920x1080"
+# user_args="--shot=wide --seed=3"

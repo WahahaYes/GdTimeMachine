@@ -215,3 +215,40 @@ func test_composite_store_get_all_scene_paths_delegates() -> void:
 	(comp.get_local_store() as ProjectLocalConfigStore)._saver = func(_c: ConfigFile) -> void: pass
 	var paths := comp.get_all_scene_paths()
 	assert_eq(paths, ["res://a.tscn"])
+
+
+## Capture size (resolution) round-trips through every store.
+
+
+func test_editor_store_resolution_round_trip() -> void:
+	var fake_es := FakeEditorSettings.new()
+	var store := EditorSettingsConfigStore.new(fake_es)
+	assert_eq(store.get_default_profile().resolution, "")
+	var profile := RecordingProfile.new()
+	profile.resolution = "1920x1080"
+	store.save_default_profile(profile)
+	assert_eq(fake_es.get_setting("gd_time_machine/recorder/default_resolution"), "1920x1080")
+	assert_eq(store.get_default_profile().resolution, "1920x1080")
+
+
+func test_project_local_store_scene_resolution() -> void:
+	var cf := ConfigFile.new()
+	var store := ProjectLocalConfigStore.new("")
+	_wire_store(store, cf)
+	var profile := RecordingProfile.new()
+	profile.resolution = "2560x1440"
+	store.save_scene_profile("res://scenes/intro.tscn", profile)
+	assert_eq(cf.get_value("res://scenes/intro.tscn", "resolution"), "2560x1440")
+	assert_eq(store.get_scene_profile("res://scenes/intro.tscn").resolution, "2560x1440")
+	assert_eq(profile.duplicate_profile().resolution, "2560x1440")
+
+
+func test_project_local_store_scene_user_args() -> void:
+	var cf := ConfigFile.new()
+	var store := ProjectLocalConfigStore.new("")
+	_wire_store(store, cf)
+	var profile := RecordingProfile.new()
+	profile.user_args = "--shot=wide --seed=3"
+	store.save_scene_profile("res://scenes/intro.tscn", profile)
+	assert_eq(store.get_scene_profile("res://scenes/intro.tscn").user_args, "--shot=wide --seed=3")
+	assert_eq(profile.duplicate_profile().user_args, "--shot=wide --seed=3")

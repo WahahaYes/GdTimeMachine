@@ -24,6 +24,16 @@
       "type": "string",
       "description": "Default output directory for captures (res:// or absolute path)."
     },
+    "resolution": {
+      "type": "string",
+      "pattern": "^[0-9]+[xX][0-9]+$",
+      "description": "Default capture size WIDTHxHEIGHT (e.g. 1920x1080) for entries without their own; absent means the project's window size."
+    },
+    "user_args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Default user args for entries without their own: appended after `--` on the game's command line (OS.get_cmdline_user_args())."
+    },
     "obs": {
       "type": "object",
       "description": "OBS WebSocket defaults for batch recording.",
@@ -59,8 +69,8 @@
         "properties": {
           "commit": {
             "type": "string",
-            "pattern": "^[0-9a-fA-F]{4,40}$",
-            "description": "Git commit SHA (short or full hex)."
+            "pattern": "^[^\\s-]\\S*$",
+            "description": "Any git ref that `git rev-parse` resolves to a commit: SHA (short or full), branch, tag, HEAD, HEAD~2. The resolved SHA is printed and recorded in the capture log."
           },
           "scene": {
             "type": "string",
@@ -87,7 +97,17 @@
           },
           "fullscreen": {
             "type": "boolean",
-            "description": "Whether to capture fullscreen."
+            "description": "Run the game fullscreen (--fullscreen). Movie Maker footage keeps the project's window size or `resolution`, not the screen's."
+          },
+          "resolution": {
+            "type": "string",
+            "pattern": "^[0-9]+[xX][0-9]+$",
+            "description": "Capture size WIDTHxHEIGHT (e.g. 1920x1080), passed as --resolution and as the window size override that sizes Movie Maker footage. Overrides the top-level resolution."
+          },
+          "user_args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Args for the captured game, appended after `--` (e.g. [\"--shot=wide\", \"--seed=3\"]); the game reads them with OS.get_cmdline_user_args(). Replaces the top-level user_args."
           },
           "godot_version_hint": {
             "type": "string",

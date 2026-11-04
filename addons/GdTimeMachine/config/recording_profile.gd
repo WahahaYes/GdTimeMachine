@@ -28,6 +28,15 @@ var scene_path: String = ""
 ## Empty = use whatever the controller selects.
 var backend_name: String = ""
 
+## Capture size "WIDTHxHEIGHT" (e.g. "1920x1080"). Empty = the project's
+## window size. Applied by restart-scene backends (Movie Maker).
+var resolution: String = ""
+
+## Args for the captured game, space-separated (e.g. "--shot=wide --seed=3");
+## passed after `--` by restart-scene backends (Movie Maker). Lives in
+## profiles.cfg only — project-specific, so not an editor-wide setting.
+var user_args: String = ""
+
 
 ## Duplicates this profile.
 func duplicate_profile() -> RecordingProfile:
@@ -38,6 +47,8 @@ func duplicate_profile() -> RecordingProfile:
 	p.duration = duration
 	p.scene_path = scene_path
 	p.backend_name = backend_name
+	p.resolution = resolution
+	p.user_args = user_args
 	return p
 
 
@@ -49,6 +60,8 @@ func to_dict() -> Dictionary:
 		"fps": fps,
 		"duration": duration,
 		"backend_name": backend_name,
+		"resolution": resolution,
+		"user_args": user_args,
 	}
 
 
@@ -67,4 +80,8 @@ static func from_dict(d: Dictionary) -> RecordingProfile:
 		p.scene_path = str(d["scene_path"])
 	if d.has("backend_name"):
 		p.backend_name = str(d["backend_name"])
+	if d.has("resolution"):
+		p.resolution = str(d["resolution"]).strip_edges()
+	if d.has("user_args"):
+		p.user_args = str(d["user_args"]).strip_edges()
 	return p

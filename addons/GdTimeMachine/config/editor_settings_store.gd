@@ -12,6 +12,7 @@ const KEY_DEFAULT_DURATION := "gd_time_machine/recorder/default_duration"
 const KEY_DEFAULT_FPS := "gd_time_machine/recorder/default_fps"
 const KEY_DEFAULT_BACKEND := "gd_time_machine/recorder/default_backend"
 const KEY_OUTPUT_FORMAT := "gd_time_machine/recorder/output_format"
+const KEY_DEFAULT_RESOLUTION := "gd_time_machine/recorder/default_resolution"
 
 const FALLBACK_DIR := "res://media/captures"
 const FALLBACK_DURATION := 30.0
@@ -67,6 +68,8 @@ func get_default_profile() -> RecordingProfile:
 	p.duration = float(v) if v != null else FALLBACK_DURATION
 	v = _get_setting(KEY_DEFAULT_BACKEND)
 	p.backend_name = str(v) if v != null else ""
+	v = _get_setting(KEY_DEFAULT_RESOLUTION)
+	p.resolution = str(v).strip_edges() if v != null else ""
 	return p
 
 
@@ -75,6 +78,7 @@ func save_default_profile(profile: RecordingProfile) -> void:
 	_set_setting(KEY_OUTPUT_FORMAT, GdTMOutputFormat.to_extension(profile.output_format))
 	_set_setting(KEY_DEFAULT_FPS, profile.fps)
 	_set_setting(KEY_DEFAULT_DURATION, profile.duration)
+	_set_setting(KEY_DEFAULT_RESOLUTION, profile.resolution)
 	if not profile.backend_name.is_empty():
 		_set_setting(KEY_DEFAULT_BACKEND, profile.backend_name)
 
