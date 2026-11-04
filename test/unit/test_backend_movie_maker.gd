@@ -198,6 +198,8 @@ class TestableMovieMaker:
 	var _fake_override_cfg: Variant = null
 	## In-memory editor/run/main_run_args.
 	var _fake_run_args := ""
+	## Game log calls: [output_path, header].
+	var _game_log_calls: Array = []
 
 	func _init() -> void:
 		_fake_editor = FakeEditorInterface.get_singleton()
@@ -276,6 +278,10 @@ class TestableMovieMaker:
 
 	func _remove_override_cfg() -> void:
 		_fake_override_cfg = null
+
+	func _start_game_log(output_path: String, header: PackedStringArray) -> String:
+		_game_log_calls.append([output_path, header])
+		return output_path.get_basename() + ".log"
 
 	func _get_main_run_args() -> String:
 		return _fake_run_args
@@ -821,3 +827,32 @@ func test_start_without_user_args_leaves_run_args() -> void:
 	assert_eq(backend._fake_run_args, "--verbose")
 	backend._finalize_stopped()
 	assert_eq(backend._fake_run_args, "--verbose")
+
+
+## Game log: created beside the recording before the game launches.
+
+
+func test_start_creates_game_log_beside_intermediate() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	(
+		backend
+		. start(
+			{
+				"output_path": "res://cap/intro.mp4",
+				"output_format": "mp4",
+				"fps": 30,
+				"scene_path": "res://intro.tscn",
+				"resolution": "1920x1080",
+				"user_args": PackedStringArray(["--shot=wide"]),
+			}
+		)
+	)
+	assert_eq(backend._game_log_calls.size(), 1)
+	assert_eq(backend._game_log_calls[0][0], "res://cap/intro.avi")
+	assert_eq(backend._game_log_path, "res://cap/intro.log")
+	var header := "\n".join(backend._game_log_calls[0][1])
+	assert_string_contains(header, "scene: res://intro.tscn")
+	assert_string_contains(header, "fps: 30")
+	assert_string_contains(header, "resolution: 1920x1080")
+	assert_string_contains(header, "run args: -- --shot=wide")
+	backend._finalize_stopped()

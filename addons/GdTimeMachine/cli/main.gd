@@ -661,6 +661,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 					]
 				)
 			)
+			print("  log: %s.log" % outp.get_basename())
 		print("dry-run complete — no worktrees created")
 		quit(0)
 		return
@@ -723,6 +724,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 			out_r = project_root.path_join(out_r)
 		var backend_r := str(entry.get("backend", "OBS Studio"))
 		var options_r := GdTMCaptureOptions.entry_options(entry, dict)
+		options_r["log_header"] = _log_header(lbl, cm, sha, scene_r, fps_r, dur_r, options_r)
 		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin, options_r) != 0:
 			printerr("[FAIL] record failed for %s" % lbl)
 			failed_labels.append(lbl)
@@ -764,6 +766,32 @@ func _cmd_run(args: PackedStringArray) -> void:
 			)
 			quit(1)
 			return
+
+
+## Header lines for a capture's game log ("<label>.log" beside the clip).
+func _log_header(
+	label: String,
+	ref: String,
+	sha: String,
+	scene: String,
+	fps: int,
+	duration: float,
+	options: Dictionary
+) -> PackedStringArray:
+	var lines := PackedStringArray()
+	lines.append("gdtime capture: %s" % label)
+	lines.append("commit: %s" % _describe_commit(ref, sha))
+	lines.append("scene: %s" % scene)
+	lines.append("fps: %d, duration: %ss" % [fps, str(duration)])
+	var res := str(options.get("resolution", ""))
+	lines.append("resolution: %s" % (res if not res.is_empty() else "project window size"))
+	if bool(options.get("fullscreen", false)):
+		lines.append("fullscreen: true")
+	var user_args: PackedStringArray = options.get("user_args", PackedStringArray())
+	if not user_args.is_empty():
+		lines.append("user args: -- %s" % " ".join(user_args))
+	lines.append("started: %s" % Time.get_datetime_string_from_system())
+	return lines
 
 
 ## Dry-run suffix listing the non-default capture options.

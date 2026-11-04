@@ -1,5 +1,18 @@
+@tool
 class_name GdTMMovieWriter
 extends RefCounted
+
+## Worktree folder (relative to its root) for the injected capture log scripts.
+const INJECT_DIR := ".gdtime"
+
+## Where the capture log scripts are copied from (this project's addon).
+const CAPTURE_LOG_SRC_DIR := "res://addons/GdTimeMachine/autoload"
+
+## Capture log scripts; the first is the autoload node.
+const CAPTURE_LOG_SCRIPTS := ["capture_log.gd", "capture_logger.gd"]
+
+## Autoload name the capture log is registered under in a worktree.
+const CAPTURE_LOG_AUTOLOAD := "GdTimeMachineCaptureLog"
 
 
 ## Builds the godot command line for one Movie Maker capture. options holds
@@ -36,11 +49,29 @@ static func build_args(
 
 
 ## Writes the project-setting overrides a capture needs (the footage size)
-## into the worktree's override.cfg, keeping anything already there. The
-## worktree is disposable, so nothing is restored. Returns false when the file
-## cannot be written.
-static func prepare_project(worktree_path: String, options: Dictionary) -> bool:
+## into the worktree's override.cfg, keeping anything already there. With
+## with_log, also installs the capture log: its scripts go into
+## <worktree>/.gdtime/ and are registered as an autoload there, so the log
+## works at commits that predate it. The worktree is disposable, so nothing is
+## restored. Returns false when a file cannot be written.
+static func prepare_project(
+	worktree_path: String, options: Dictionary, with_log: bool = false
+) -> bool:
 	var overrides := GdTMCaptureOptions.project_overrides(options)
+	if with_log:
+		var inject_dir := worktree_path.path_join(INJECT_DIR)
+		DirAccess.make_dir_recursive_absolute(inject_dir)
+		for script_name in CAPTURE_LOG_SCRIPTS:
+			var src := CAPTURE_LOG_SRC_DIR.path_join(script_name)
+			var dst := FileAccess.open(inject_dir.path_join(script_name), FileAccess.WRITE)
+			if dst == null:
+				printerr("movie_writer: cannot write %s" % inject_dir.path_join(script_name))
+				return false
+			dst.store_string(FileAccess.get_file_as_string(src))
+			dst.close()
+		overrides["autoload/%s" % CAPTURE_LOG_AUTOLOAD] = (
+			"*res://%s/%s" % [INJECT_DIR, CAPTURE_LOG_SCRIPTS[0]]
+		)
 	if overrides.is_empty():
 		return true
 	var cfg_path := worktree_path.path_join("override.cfg")
@@ -56,7 +87,28 @@ static func prepare_project(worktree_path: String, options: Dictionary) -> bool:
 	return true
 
 
-## Records scene in worktree_path via `godot --write-movie` (Vulkan, no --headless). Converts AVI→mp4/webm via ffmpeg if requested. options: see build_args(). Returns 0 on success.
+## Creates (or truncates) the capture log beside movie_path with header lines
+## ("# key: value") and returns its path; the game appends its stamped output
+## (see autoload/capture_logger.gd). Returns "" when it cannot be written.
+static func start_log(movie_path: String, header: PackedStringArray) -> String:
+	var path := movie_path.get_basename() + ".log"
+	var f := FileAccess.open(path, FileAccess.WRITE)
+	if f == null:
+		printerr("movie_writer: cannot write log %s" % path)
+		return ""
+	for line in header:
+		f.store_line("# %s" % line)
+	(
+		f
+		. store_line(
+			"# lines: [frame N | T s] text — N is the 0-based video frame the line was printed on, T = N / fps"
+		)
+	)
+	f.close()
+	return path
+
+
+## Records scene in worktree_path via `godot --write-movie` (Vulkan, no --headless). Converts AVI→mp4/webm via ffmpeg if requested. options: see build_args(); log_header (PackedStringArray) turns on the capture log, "<output>.log" beside the clip. Returns 0 on success.
 static func record(
 	worktree_path: String,
 	scene: String,
@@ -81,8 +133,11 @@ static func record(
 			% [scene, movie_path, fps, str(duration), (", " + size_note) if size_note else ""]
 		)
 	)
-	if not prepare_project(worktree_path, options):
+	var log_header: Variant = options.get("log_header", null)
+	var with_log := log_header != null
+	if not prepare_project(worktree_path, options, with_log):
 		return 1
+	var log_path := start_log(movie_path, log_header) if with_log else ""
 	var args := build_args(worktree_path, scene, movie_path, fps, duration, options)
 	var pid := OS.create_process(godot_bin, args)
 	if pid <= 0:
@@ -98,6 +153,8 @@ static func record(
 		print("movie_writer: still running, killing pid %d" % pid)
 		OS.kill(pid)
 		OS.delay_msec(500)
+	if not log_path.is_empty():
+		print("movie_writer: game log -> %s" % log_path)
 	if FileAccess.file_exists(movie_path):
 		print("movie_writer: output exists %s" % movie_path)
 		if output.get_extension().to_lower() in ["mp4", "webm"] and output != movie_path:

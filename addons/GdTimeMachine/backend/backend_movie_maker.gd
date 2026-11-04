@@ -116,6 +116,10 @@ var _override_cfg_written := false
 ## this recording did not change it.
 var _prev_run_args: Variant = null
 
+## Game log beside the recording ("<output>.log"); "" when it could not be
+## created.
+var _game_log_path := ""
+
 
 ## Human-readable backend name shown in the UI.
 func get_backend_name() -> String:
@@ -206,6 +210,7 @@ func start(config: Dictionary) -> void:
 	_project_overrides = GdTMCaptureOptions.project_overrides(config)
 	_apply_project_overrides()
 	_apply_user_args(config.get("user_args", PackedStringArray()))
+	_game_log_path = _start_game_log(_output_path, _game_log_header(config))
 	_set_movie_maker_enabled(true)
 	_start_polling()
 	# Start the duration timer now so a scene that never starts still errors
@@ -414,6 +419,32 @@ func _write_override_cfg(text: String) -> void:
 ## Deletes res://override.cfg.
 func _remove_override_cfg() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(OVERRIDE_CFG_PATH))
+
+
+# --- Game log ------------------------------------------------------------------
+
+
+## Header lines for the game log. The game's GdTimeMachine autoload appends
+## its frame-stamped output once it sees the file (autoload/capture_log.gd).
+func _game_log_header(config: Dictionary) -> PackedStringArray:
+	var lines := PackedStringArray()
+	lines.append("GdTimeMachine recording: %s" % _output_path)
+	var scene := str(config.get("scene_path", ""))
+	lines.append("scene: %s" % (scene if not scene.is_empty() else "current scene"))
+	lines.append("fps: %d" % _target_fps)
+	var res := str(config.get("resolution", ""))
+	lines.append("resolution: %s" % (res if not res.is_empty() else "project window size"))
+	var user_args := str(_get_main_run_args()) if _prev_run_args != null else ""
+	if not user_args.is_empty():
+		lines.append("run args: %s" % user_args)
+	lines.append("started: %s" % Time.get_datetime_string_from_system())
+	return lines
+
+
+## Creates the game log beside output_path; returns its path or "". Seam for
+## tests (no file I/O there).
+func _start_game_log(output_path: String, header: PackedStringArray) -> String:
+	return GdTMMovieWriter.start_log(ProjectSettings.globalize_path(output_path), header)
 
 
 # --- User args via the editor's run arguments ---------------------------------

@@ -9,12 +9,21 @@
 ## Registration is safe to attempt even headless: when EngineDebugger is
 ## inactive the capture registration is a harmless no-op, and the callback
 ## runs on the game main thread, so calling quit() from it is safe.
+##
+## Also hosts the capture log (capture_log.gd), which saves the game's output
+## beside a Movie Maker recording when the recorder asked for it.
 extends Node
+
+## Capture log node script, added as a child on _ready.
+const CAPTURE_LOG_PATH := "res://addons/GdTimeMachine/autoload/capture_log.gd"
 
 
 ## Registers the debugger message capture for the gd_time_machine prefix,
 ## unconditionally (no-op when EngineDebugger is inactive, e.g. headless/CI).
 func _ready() -> void:
+	# Before the main scene's _ready, so its output is captured. A no-op unless
+	# this run writes a movie whose recorder created the log file.
+	add_child(load(CAPTURE_LOG_PATH).new())
 	# Register unconditionally. Safe pre-handshake, and harmless when
 	# EngineDebugger is inactive in a headless/CI build.
 	if not EngineDebugger.has_capture("gd_time_machine"):
