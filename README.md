@@ -105,6 +105,7 @@ All defaults live in **Project > Editor Settings** and can be overridden per sce
 - `default_backend` — backend selected by default
 - `default_fps` — target FPS cap
 - `default_duration` — seconds (`0` = until stopped)
+- `default_resolution` — capture size `WIDTHxHEIGHT`, e.g. `1920x1080` (empty = the project's window size)
 
 **Transcoders (`transcoders/*`):**
 
@@ -133,9 +134,12 @@ duration = 30
 ["res://scenes/menu.tscn"]
 fps = 30
 output_format = png
+resolution = 1920x1080
 ```
 
 Each `["res://..."]` overrides `[default]`. Edit directly or use *Remember settings for this scene* in the dock. Commit for shared team profiles.
+
+**Capture size** (dock *Size*, `resolution`): Movie Maker fixes its frame size from the project's window size settings when the game starts — `--resolution` alone resizes the window, not the footage. So the Movie Maker backend writes the size into `res://override.cfg` (`display/window/size/window_*_override`) for the duration of the recording and then restores the file exactly as it was (or removes it). If the editor crashes mid-recording, the file says so in its first line; delete it. Sizes larger than the screen work (e.g. `2560x1440` for a downscaled master). In-place backends record the running window as is.
 
 ## CLI — batch capture (history)
 
@@ -150,7 +154,10 @@ gdtime --help
 gdtime --version
 ```
 
-**Manifest** (`res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json`): `project_root`, `captures[]` with `commit` (any git ref `git rev-parse` resolves: SHA, branch, tag, `HEAD`; the resolved SHA is printed), `scene` (`res://…`), `label` (`[A-Za-z0-9_-]+`, unique), optional `duration`/`fps`/`fullscreen`/`godot_version_hint`/`output_path`/`build_command` and top-level `godot_path`/`build_command`/`output_dir`.
+**Manifest** (`res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json`): `project_root`, `captures[]` with `commit` (any git ref `git rev-parse` resolves: SHA, branch, tag, `HEAD`; the resolved SHA is printed), `scene` (`res://…`), `label` (`[A-Za-z0-9_-]+`, unique), optional `duration`/`fps`/`fullscreen`/`resolution`/`godot_version_hint`/`output_path`/`build_command` and top-level `godot_path`/`build_command`/`output_dir`/`resolution` (default for entries without one).
+
+- `resolution` — `"1920x1080"`: passed as `--resolution` and written into the worktree's `override.cfg` as the window size override, which is what sizes Movie Maker footage.
+- `fullscreen` — passes `--fullscreen`. The footage keeps the project's window size (or `resolution`), not the screen's.
 
 **`run` options:** `--dry-run` (preview), `--resume LABEL` (skip before label), `--keep-worktrees` / `--keep-failed`, `--no-git` (HEAD-only), `--force` (overwrite), `--build-timeout SECS` (default 600), `--fail-fast`, `--strict`.
 

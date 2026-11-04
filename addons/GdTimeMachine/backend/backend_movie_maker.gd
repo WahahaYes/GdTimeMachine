@@ -27,6 +27,13 @@ const DEFAULT_OUTPUT_PATH := "res://movie.avi"
 ## Seconds to wait for the game to exit gracefully before forcing a stop.
 const GRACE_PERIOD := 2.0
 
+## Project-settings override file the editor-run game reads at startup.
+const OVERRIDE_CFG_PATH := "res://override.cfg"
+
+## First line of an override.cfg written for a recording, so a file left
+## behind by an editor crash explains itself.
+const OVERRIDE_CFG_NOTE := "; Written by GdTimeMachine for a Movie Maker recording and restored when it stops. Safe to delete if no recording is running."
+
 ## Size at which recording auto-stops (bytes). Godot's MJPEG AVI writer uses a
 ## RIFF container with 32-bit offsets, so files past 4 GiB are corrupted. The
 ## dock warning is the soft notice; this guard stops the recording 256 MiB
@@ -90,6 +97,17 @@ var _auto_convert_enabled: bool = true
 
 ## Target FPS from config, preserved for ffmpeg output -r.
 var _target_fps: int = 0
+
+## Project-setting overrides written to res://override.cfg for this recording
+## (the footage size); empty when the recording needs none.
+var _project_overrides: Dictionary = {}
+
+## override.cfg content before start(): null when the file did not exist.
+## Restored on finalize so the project is left as it was.
+var _prev_override_cfg: Variant = null
+
+## Whether this recording wrote override.cfg (and so must restore it).
+var _override_cfg_written := false
 
 
 ## Human-readable backend name shown in the UI.
@@ -178,6 +196,8 @@ func start(config: Dictionary) -> void:
 	_set_movie_file(_output_path)
 	if fps > 0:
 		_set_movie_fps(fps)
+	_project_overrides = GdTMCaptureOptions.project_overrides(config)
+	_apply_project_overrides()
 	_set_movie_maker_enabled(true)
 	_start_polling()
 	# Start the duration timer now so a scene that never starts still errors
@@ -316,8 +336,10 @@ func _finalize_stopped() -> void:
 # --- Settings snapshot/restore (no ProjectSettings.save()) -------------------
 
 
-## Restores movie_file and fps to what they were before start().
+## Restores movie_file and fps to what they were before start(), and
+## override.cfg when this recording wrote it.
 func _restore_settings() -> void:
+	_restore_project_overrides()
 	if _prev_movie_file == null:
 		_clear_movie_file()
 	else:
@@ -328,6 +350,61 @@ func _restore_settings() -> void:
 		_set_movie_fps_no_restore(int(_prev_fps))
 	_prev_movie_file = null
 	_prev_fps = null
+
+
+# --- Footage size via override.cfg -------------------------------------------
+
+
+## Movie Maker sizes its footage from the project's window size settings when
+## the game starts (`--resolution` resizes only the window). The editor runs
+## the game from the project on disk, so the size goes into res://override.cfg
+## for the duration of the recording, merged with any existing file, whose
+## exact content is restored on finalize.
+func _apply_project_overrides() -> void:
+	_override_cfg_written = false
+	if _project_overrides.is_empty():
+		return
+	_prev_override_cfg = _read_override_cfg()
+	var existing := str(_prev_override_cfg) if _prev_override_cfg != null else ""
+	var text := GdTMCaptureOptions.merge_override_cfg(existing, _project_overrides)
+	_write_override_cfg("%s\n%s" % [OVERRIDE_CFG_NOTE, text])
+	_override_cfg_written = true
+
+
+## Puts override.cfg back the way start() found it (removed when it did not
+## exist). No-op unless this recording wrote it.
+func _restore_project_overrides() -> void:
+	if not _override_cfg_written:
+		return
+	_override_cfg_written = false
+	if _prev_override_cfg == null:
+		_remove_override_cfg()
+	else:
+		_write_override_cfg(str(_prev_override_cfg))
+	_prev_override_cfg = null
+
+
+## Current res://override.cfg content, or null when there is none.
+func _read_override_cfg() -> Variant:
+	var path := ProjectSettings.globalize_path(OVERRIDE_CFG_PATH)
+	if not FileAccess.file_exists(path):
+		return null
+	return FileAccess.get_file_as_string(path)
+
+
+## Writes res://override.cfg.
+func _write_override_cfg(text: String) -> void:
+	var f := FileAccess.open(ProjectSettings.globalize_path(OVERRIDE_CFG_PATH), FileAccess.WRITE)
+	if f == null:
+		push_warning("GdTimeMachine: could not write %s" % OVERRIDE_CFG_PATH)
+		return
+	f.store_string(text)
+	f.close()
+
+
+## Deletes res://override.cfg.
+func _remove_override_cfg() -> void:
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(OVERRIDE_CFG_PATH))
 
 
 # --- Editor interaction (isolated for testability) ---------------------------

@@ -9,6 +9,31 @@ extends SceneTree
 const PLUGIN_CFG_PATH := "res://addons/GdTimeMachine/plugin.cfg"
 const SCHEMA_PATH := "res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json"
 
+## Keys --strict accepts at the manifest's top level (mirrors the schema).
+const TOP_LEVEL_KEYS := [
+	"project_root",
+	"godot_path",
+	"build_command",
+	"output_dir",
+	"resolution",
+	"obs",
+	"captures",
+]
+
+## Keys --strict accepts in a captures[] entry (mirrors the schema).
+const CAPTURE_KEYS := [
+	"commit",
+	"scene",
+	"label",
+	"duration",
+	"fps",
+	"fullscreen",
+	"resolution",
+	"godot_version_hint",
+	"output_path",
+	"build_command",
+]
+
 
 func _get_version() -> String:
 	var cfg := ConfigFile.new()
@@ -141,6 +166,10 @@ func _validate_manifest(path: String, strict: bool) -> String:
 	var arr: Array = captures
 	if arr.is_empty():
 		return "captures must be non-empty"
+	if dict.has("resolution"):
+		var top_res_err := GdTMCaptureOptions.validate_resolution(dict["resolution"])
+		if not top_res_err.is_empty():
+			return "resolution %s" % top_res_err
 	var labels := {}
 	for i in range(arr.size()):
 		var entry = arr[i]
@@ -165,6 +194,10 @@ func _validate_manifest(path: String, strict: bool) -> String:
 		var scene := String(e["scene"])
 		if not scene.begins_with("res://"):
 			return "captures[%d].scene must start with res://, got '%s'" % [i, scene]
+		if e.has("resolution"):
+			var res_err := GdTMCaptureOptions.validate_resolution(e["resolution"])
+			if not res_err.is_empty():
+				return "captures[%d].resolution %s" % [i, res_err]
 		if e.has("fullscreen") and typeof(e["fullscreen"]) != TYPE_BOOL:
 			return "captures[%d].fullscreen must be true or false" % i
 		var commit := String(e["commit"])
@@ -175,29 +208,11 @@ func _validate_manifest(path: String, strict: bool) -> String:
 			)
 		if strict:
 			for k in e.keys():
-				if (
-					k
-					not in [
-						"commit",
-						"scene",
-						"label",
-						"duration",
-						"fps",
-						"fullscreen",
-						"godot_version_hint",
-						"output_path",
-						"build_command"
-					]
-				):
+				if k not in CAPTURE_KEYS:
 					return "captures[%d] unknown key '%s' (strict mode)" % [i, k]
 	if strict:
 		for k in dict.keys():
-			if (
-				k
-				not in [
-					"project_root", "godot_path", "build_command", "output_dir", "obs", "captures"
-				]
-			):
+			if k not in TOP_LEVEL_KEYS:
 				return "Unknown top-level key '%s' (strict mode)" % k
 	return ""
 
@@ -602,7 +617,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 			if outp.is_empty():
 				outp = top_output_dir.path_join(lbl)
 			var backend_dry := str(entry.get("backend", "OBS Studio"))
-			var fullscreen_dry := bool(entry.get("fullscreen", false))
+			var options_dry := GdTMCaptureOptions.entry_options(entry, dict)
 			var sha_dry := GdTMWorktree.resolve_commit(project_root, cm)
 			if sha_dry.is_empty():
 				print("[dry-run] commit %s does not resolve in %s" % [cm, project_root])
@@ -632,7 +647,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 						str(dur),
 						fps_v,
 						backend_dry,
-						", fullscreen" if fullscreen_dry else ""
+						_describe_options(options_dry),
 					]
 				)
 			)
@@ -697,7 +712,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 		elif not out_r.begins_with("/"):
 			out_r = project_root.path_join(out_r)
 		var backend_r := str(entry.get("backend", "OBS Studio"))
-		var options_r := {"fullscreen": bool(entry.get("fullscreen", false))}
+		var options_r := GdTMCaptureOptions.entry_options(entry, dict)
 		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin, options_r) != 0:
 			printerr("[FAIL] record failed for %s" % lbl)
 			failed_labels.append(lbl)
@@ -739,6 +754,16 @@ func _cmd_run(args: PackedStringArray) -> void:
 			)
 			quit(1)
 			return
+
+
+## Dry-run suffix listing the non-default capture options.
+func _describe_options(options: Dictionary) -> String:
+	var parts := ""
+	if not str(options.get("resolution", "")).is_empty():
+		parts += ", resolution %s" % options["resolution"]
+	if bool(options.get("fullscreen", false)):
+		parts += ", fullscreen"
+	return parts
 
 
 ## "<ref> -> <sha>" when the ref is not already the resolved SHA, else the SHA

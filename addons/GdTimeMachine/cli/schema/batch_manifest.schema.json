@@ -24,6 +24,11 @@
       "type": "string",
       "description": "Default output directory for captures (res:// or absolute path)."
     },
+    "resolution": {
+      "type": "string",
+      "pattern": "^[0-9]+[xX][0-9]+$",
+      "description": "Default capture size WIDTHxHEIGHT (e.g. 1920x1080) for entries without their own; absent means the project's window size."
+    },
     "obs": {
       "type": "object",
       "description": "OBS WebSocket defaults for batch recording.",
@@ -87,7 +92,12 @@
           },
           "fullscreen": {
             "type": "boolean",
-            "description": "Whether to capture fullscreen."
+            "description": "Run the game fullscreen (--fullscreen). Movie Maker footage keeps the project's window size or `resolution`, not the screen's."
+          },
+          "resolution": {
+            "type": "string",
+            "pattern": "^[0-9]+[xX][0-9]+$",
+            "description": "Capture size WIDTHxHEIGHT (e.g. 1920x1080), passed as --resolution and as the window size override that sizes Movie Maker footage. Overrides the top-level resolution."
           },
           "godot_version_hint": {
             "type": "string",

@@ -194,6 +194,8 @@ class TestableMovieMaker:
 	var _grace_period_override: float = 0.1
 	var _output_file_size: int = 0
 	var _stub_transcoder := StubRegistryTranscoder.new()
+	## In-memory res://override.cfg: null = no file.
+	var _fake_override_cfg: Variant = null
 
 	func _init() -> void:
 		_fake_editor = FakeEditorInterface.get_singleton()
@@ -263,6 +265,15 @@ class TestableMovieMaker:
 	func _send_graceful_stop_message() -> void:
 		if _debugger_plugin != null and _debugger_plugin.has_method("send_graceful_stop"):
 			_debugger_plugin.send_graceful_stop()
+
+	func _read_override_cfg() -> Variant:
+		return _fake_override_cfg
+
+	func _write_override_cfg(text: String) -> void:
+		_fake_override_cfg = text
+
+	func _remove_override_cfg() -> void:
+		_fake_override_cfg = null
 
 
 func before_each() -> void:
@@ -721,3 +732,54 @@ class FakeDebuggerPlugin:
 
 	func send_graceful_stop() -> void:
 		graceful_stop_called = true
+
+
+## Capture size: written to override.cfg for the recording, then restored.
+
+
+func test_start_with_resolution_writes_window_size_override() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	backend.start({"output_path": "res://test.avi", "fps": 30, "resolution": "1920x1080"})
+	var cf := ConfigFile.new()
+	assert_eq(cf.parse(str(backend._fake_override_cfg)), OK)
+	assert_eq(cf.get_value("display", "window/size/window_width_override"), 1920)
+	assert_eq(cf.get_value("display", "window/size/window_height_override"), 1080)
+	assert_true(str(backend._fake_override_cfg).begins_with(BackendMovieMaker.OVERRIDE_CFG_NOTE))
+
+
+func test_finalize_removes_override_cfg_it_created() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	backend.start({"output_path": "res://test.avi", "fps": 30, "resolution": "1920x1080"})
+	backend._finalize_stopped()
+	assert_null(backend._fake_override_cfg)
+
+
+func test_finalize_restores_existing_override_cfg_exactly() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	var original := '; mine\n[application]\nconfig/name="Mine"\n'
+	backend._fake_override_cfg = original
+	backend.start({"output_path": "res://test.avi", "fps": 30, "resolution": "640x360"})
+	var cf := ConfigFile.new()
+	cf.parse(str(backend._fake_override_cfg))
+	assert_eq(cf.get_value("application", "config/name"), "Mine")
+	assert_eq(cf.get_value("display", "window/size/window_width_override"), 640)
+	backend._finalize_stopped()
+	assert_eq(backend._fake_override_cfg, original)
+
+
+func test_start_without_resolution_leaves_override_cfg_alone() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	backend._fake_override_cfg = "[application]\n"
+	backend.start({"output_path": "res://test.avi", "fps": 30})
+	assert_eq(backend._fake_override_cfg, "[application]\n")
+	backend._finalize_stopped()
+	assert_eq(backend._fake_override_cfg, "[application]\n")
+
+
+func test_never_started_error_restores_override_cfg() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	backend._fake_editor._playing_scene = false
+	backend.start({"output_path": "res://test.avi", "fps": 30, "resolution": "640x360"})
+	backend._fake_editor._playing_scene = false
+	backend._on_duration_timeout()
+	assert_null(backend._fake_override_cfg)

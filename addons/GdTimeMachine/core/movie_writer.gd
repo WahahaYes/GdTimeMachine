@@ -3,7 +3,8 @@ extends RefCounted
 
 
 ## Builds the godot command line for one Movie Maker capture. options holds
-## the manifest's per-capture extras: fullscreen (bool).
+## the manifest's per-capture extras (see GdTMCaptureOptions.entry_options):
+## fullscreen (bool), resolution ("WIDTHxHEIGHT", "" = project default).
 static func build_args(
 	worktree_path: String,
 	scene: String,
@@ -20,8 +21,33 @@ static func build_args(
 		args.append(str(int(duration * fps)))
 	if bool(options.get("fullscreen", false)):
 		args.append("--fullscreen")
+	var resolution := GdTMCaptureOptions.normalize_resolution(str(options.get("resolution", "")))
+	if not resolution.is_empty():
+		args.append("--resolution")
+		args.append(resolution)
 	args.append(scene)
 	return args
+
+
+## Writes the project-setting overrides a capture needs (the footage size)
+## into the worktree's override.cfg, keeping anything already there. The
+## worktree is disposable, so nothing is restored. Returns false when the file
+## cannot be written.
+static func prepare_project(worktree_path: String, options: Dictionary) -> bool:
+	var overrides := GdTMCaptureOptions.project_overrides(options)
+	if overrides.is_empty():
+		return true
+	var cfg_path := worktree_path.path_join("override.cfg")
+	var existing := ""
+	if FileAccess.file_exists(cfg_path):
+		existing = FileAccess.get_file_as_string(cfg_path)
+	var f := FileAccess.open(cfg_path, FileAccess.WRITE)
+	if f == null:
+		printerr("movie_writer: cannot write %s" % cfg_path)
+		return false
+	f.store_string(GdTMCaptureOptions.merge_override_cfg(existing, overrides))
+	f.close()
+	return true
 
 
 ## Records scene in worktree_path via `godot --write-movie` (Vulkan, no --headless). Converts AVI→mp4/webm via ffmpeg if requested. options: see build_args(). Returns 0 on success.
@@ -42,7 +68,15 @@ static func record(
 		movie_path = movie_path.substr(0, movie_path.rfind(".")) + ".avi"
 	elif movie_path.get_extension().is_empty():
 		movie_path += ".avi"
-	print("movie_writer: %s -> %s (%d fps, duration %s)" % [scene, movie_path, fps, str(duration)])
+	var size_note := str(options.get("resolution", ""))
+	print(
+		(
+			"movie_writer: %s -> %s (%d fps, duration %s%s)"
+			% [scene, movie_path, fps, str(duration), (", " + size_note) if size_note else ""]
+		)
+	)
+	if not prepare_project(worktree_path, options):
+		return 1
 	var args := build_args(worktree_path, scene, movie_path, fps, duration, options)
 	var pid := OS.create_process(godot_bin, args)
 	if pid <= 0:

@@ -1092,3 +1092,51 @@ func test_restart_output_path_appends_extension() -> void:
 	var path: String = dock._build_output_path_for_profile(profile, profile.output_dir)
 	assert_true(path.ends_with(".png"))
 	assert_true(path.contains("/demo_"))
+
+
+## Capture size (resolution)
+
+
+func test_build_config_carries_normalized_resolution() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var edit: LineEdit = dock.get_node(
+		"Split/RightColumn/SettingsGroup/ResolutionRow/ResolutionEdit"
+	)
+	edit.text = " 1920 X 1080 "
+	assert_eq(dock.build_config()["resolution"], "1920x1080")
+	edit.text = ""
+	assert_eq(dock.build_config()["resolution"], "")
+	edit.text = "garbage"
+	assert_eq(dock.build_config()["resolution"], "")
+
+
+func test_scene_profile_resolution_loads_into_ui() -> void:
+	var store := FakeStore.new()
+	var override := RecordingProfile.new()
+	override.resolution = "1280x720"
+	store.scenes["res://scenes/a.tscn"] = override
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var edit: LineEdit = dock.get_node(
+		"Split/RightColumn/SettingsGroup/ResolutionRow/ResolutionEdit"
+	)
+	assert_eq(edit.text, "1280x720")
+	assert_eq(dock.build_config()["resolution"], "1280x720")
+
+
+func test_resolution_row_hidden_for_in_place_backends() -> void:
+	var store := FakeStore.new()
+	var restart := _build_dock(store, "res://scenes/a.tscn")
+	var row: Control = (restart["dock"] as TimeMachineDock).get_node(
+		"Split/RightColumn/SettingsGroup/ResolutionRow"
+	)
+	assert_true(row.visible)
+	var in_place := _build_dock_with_mode(
+		FakeStore.new(), "res://scenes/a.tscn", RecorderBackend.CaptureMode.IN_PLACE
+	)
+	var row2: Control = (in_place["dock"] as TimeMachineDock).get_node(
+		"Split/RightColumn/SettingsGroup/ResolutionRow"
+	)
+	assert_false(row2.visible)

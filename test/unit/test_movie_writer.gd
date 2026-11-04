@@ -39,3 +39,36 @@ func test_build_args_windowed_by_default() -> void:
 		"/wt", "res://main.tscn", "/out/a.avi", 30, 1.0, {"fullscreen": false}
 	)
 	assert_false("--fullscreen" in args)
+
+
+func test_build_args_resolution() -> void:
+	var args := GdTMMovieWriter.build_args(
+		"/wt", "res://main.tscn", "/out/a.avi", 30, 1.0, {"resolution": "1920x1080"}
+	)
+	var i := args.find("--resolution")
+	assert_gt(i, -1)
+	assert_eq(args[i + 1], "1920x1080")
+	assert_lt(i, args.find("res://main.tscn"))
+
+
+func test_prepare_project_writes_window_size_override() -> void:
+	var wt := OS.get_temp_dir().path_join("gdtm_prepare_%d" % Time.get_ticks_usec())
+	DirAccess.make_dir_recursive_absolute(wt)
+	var f := FileAccess.open(wt.path_join("override.cfg"), FileAccess.WRITE)
+	f.store_string('[application]\nconfig/name="Kept"\n')
+	f.close()
+	assert_true(GdTMMovieWriter.prepare_project(wt, {"resolution": "1920x1080"}))
+	var cf := ConfigFile.new()
+	assert_eq(cf.load(wt.path_join("override.cfg")), OK)
+	assert_eq(cf.get_value("display", "window/size/window_width_override"), 1920)
+	assert_eq(cf.get_value("display", "window/size/window_height_override"), 1080)
+	assert_eq(cf.get_value("application", "config/name"), "Kept")
+	OS.execute("rm", PackedStringArray(["-rf", wt]))
+
+
+func test_prepare_project_without_resolution_writes_nothing() -> void:
+	var wt := OS.get_temp_dir().path_join("gdtm_prepare_%d" % Time.get_ticks_usec())
+	DirAccess.make_dir_recursive_absolute(wt)
+	assert_true(GdTMMovieWriter.prepare_project(wt, {}))
+	assert_false(FileAccess.file_exists(wt.path_join("override.cfg")))
+	OS.execute("rm", PackedStringArray(["-rf", wt]))
