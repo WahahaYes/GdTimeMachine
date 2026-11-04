@@ -218,7 +218,15 @@ func start(config: Dictionary) -> void:
 	# requested duration (see _on_poll_timeout).
 	if _duration > 0.0:
 		_start_duration_timer()
-	_play_scene(str(config.get("scene_path", "")))
+	var scene_path := str(config.get("scene_path", ""))
+	if _prev_run_args != null and is_inside_tree():
+		# The editor launches with the run args its Run Instances dialog
+		# fetched from editor/run/main_run_args, refreshed on the deferred
+		# settings_changed signal: give it a frame to see the new value.
+		await get_tree().process_frame
+		if not _active or _stopping:
+			return
+	_play_scene(scene_path)
 
 
 ## Gracefully stops the recording: asks the game to quit so Movie Maker can

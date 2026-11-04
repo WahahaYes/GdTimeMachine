@@ -820,6 +820,41 @@ func test_start_appends_user_args_to_run_args() -> void:
 	assert_eq(backend._fake_run_args, "--verbose")
 
 
+func test_user_args_launch_waits_a_frame_for_the_editor_to_see_them() -> void:
+	var backend: TestableMovieMaker = add_child_autofree(TestableMovieMaker.new())
+	(
+		backend
+		. start(
+			{
+				"output_path": "res://test.avi",
+				"fps": 30,
+				"user_args": PackedStringArray(["--seed=3"]),
+			}
+		)
+	)
+	assert_false(backend._fake_editor.is_playing_scene(), "not launched in the same frame")
+	await wait_process_frames(3)
+	assert_true(backend._fake_editor.is_playing_scene(), "launched after a frame")
+	backend._finalize_stopped()
+
+
+func test_stop_before_deferred_launch_skips_it() -> void:
+	var backend: TestableMovieMaker = add_child_autofree(TestableMovieMaker.new())
+	(
+		backend
+		. start(
+			{
+				"output_path": "res://test.avi",
+				"fps": 30,
+				"user_args": PackedStringArray(["--seed=3"]),
+			}
+		)
+	)
+	backend._finalize_stopped()
+	await wait_process_frames(3)
+	assert_false(backend._fake_editor.is_playing_scene())
+
+
 func test_start_without_user_args_leaves_run_args() -> void:
 	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
 	backend._fake_run_args = "--verbose"
