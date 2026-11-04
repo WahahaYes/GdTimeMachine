@@ -124,3 +124,10 @@ func test_prepare_project_with_log_injects_capture_log_autoload() -> void:
 	assert_eq(cf.load(wt.path_join("override.cfg")), OK)
 	assert_eq(cf.get_value("autoload", "GdTimeMachineCaptureLog"), "*res://.gdtime/capture_log.gd")
 	OS.execute("rm", PackedStringArray(["-rf", wt]))
+
+
+func test_wait_budget_allows_slower_than_real_time() -> void:
+	# A 10 s clip rendering at 50% of real time takes 20 s; it must not be
+	# killed before then.
+	assert_gt(GdTMMovieWriter.wait_budget_ms(10.0), 20000)
+	assert_eq(GdTMMovieWriter.wait_budget_ms(0.0), 30000)

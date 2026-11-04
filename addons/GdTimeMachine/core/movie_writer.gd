@@ -87,6 +87,17 @@ static func prepare_project(
 	return true
 
 
+## How long record() waits for godot to quit on its own before killing it.
+## Movie Maker is fixed-step, not real-time: a large resolution can render at
+## a fraction of real-time speed (1920x1080 MJPEG ran at ~50% on an iGPU), and
+## killing it early leaves a truncated AVI. --quit-after ends a healthy run, so
+## the budget only has to catch a hung game: 10x the clip length plus startup.
+static func wait_budget_ms(duration: float) -> int:
+	if duration <= 0:
+		return 30000
+	return int((duration * 10.0 + 30.0) * 1000.0)
+
+
 ## Creates (or truncates) the capture log beside movie_path with header lines
 ## ("# key: value") and returns its path; the game appends its stamped output
 ## (see autoload/capture_logger.gd). Returns "" when it cannot be written.
@@ -143,7 +154,7 @@ static func record(
 	if pid <= 0:
 		printerr("movie_writer: failed to launch godot --write-movie")
 		return 1
-	var wait_ms := int((duration + 5) * 1000) if duration > 0 else 30000
+	var wait_ms := wait_budget_ms(duration)
 	var start := Time.get_ticks_msec()
 	while Time.get_ticks_msec() - start < wait_ms:
 		OS.delay_msec(100)
