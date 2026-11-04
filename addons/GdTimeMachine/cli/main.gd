@@ -165,6 +165,8 @@ func _validate_manifest(path: String, strict: bool) -> String:
 		var scene := String(e["scene"])
 		if not scene.begins_with("res://"):
 			return "captures[%d].scene must start with res://, got '%s'" % [i, scene]
+		if e.has("fullscreen") and typeof(e["fullscreen"]) != TYPE_BOOL:
+			return "captures[%d].fullscreen must be true or false" % i
 		var commit := String(e["commit"])
 		var cregex := RegEx.new()
 		cregex.compile("^[0-9a-fA-F]{4,40}$|^HEAD$")
@@ -599,6 +601,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 			if outp.is_empty():
 				outp = top_output_dir.path_join(lbl)
 			var backend_dry := str(entry.get("backend", "OBS Studio"))
+			var fullscreen_dry := bool(entry.get("fullscreen", false))
 			print("[dry-run] would create worktree .worktrees/%s for %s" % [lbl, cm])
 			if not sc.is_empty():
 				print("  scene: %s" % sc)
@@ -613,8 +616,15 @@ func _cmd_run(args: PackedStringArray) -> void:
 				print("  build: %s" % bcmd)
 			print(
 				(
-					"  record: %s -> %s (duration %s, fps %d, backend %s)"
-					% [sc, outp, str(dur), fps_v, backend_dry]
+					"  record: %s -> %s (duration %s, fps %d, backend %s%s)"
+					% [
+						sc,
+						outp,
+						str(dur),
+						fps_v,
+						backend_dry,
+						", fullscreen" if fullscreen_dry else ""
+					]
 				)
 			)
 		print("dry-run complete — no worktrees created")
@@ -671,7 +681,8 @@ func _cmd_run(args: PackedStringArray) -> void:
 		elif not out_r.begins_with("/"):
 			out_r = project_root.path_join(out_r)
 		var backend_r := str(entry.get("backend", "OBS Studio"))
-		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin) != 0:
+		var options_r := {"fullscreen": bool(entry.get("fullscreen", false))}
+		if GdTMMovieWriter.record(wt_path, scene_r, out_r, fps_r, dur_r, godot_bin, options_r) != 0:
 			printerr("[FAIL] record failed for %s" % lbl)
 			failed_labels.append(lbl)
 			if fail_fast:

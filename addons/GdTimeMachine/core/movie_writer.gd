@@ -2,14 +2,37 @@ class_name GdTMMovieWriter
 extends RefCounted
 
 
-## Records scene in worktree_path via `godot --write-movie` (Vulkan, no --headless). Converts AVI→mp4/webm via ffmpeg if requested. Returns 0 on success.
+## Builds the godot command line for one Movie Maker capture. options holds
+## the manifest's per-capture extras: fullscreen (bool).
+static func build_args(
+	worktree_path: String,
+	scene: String,
+	movie_path: String,
+	fps: int,
+	duration: float,
+	options: Dictionary = {}
+) -> PackedStringArray:
+	var args := PackedStringArray(
+		["--path", worktree_path, "--write-movie", movie_path, "--fixed-fps", str(fps)]
+	)
+	if duration > 0:
+		args.append("--quit-after")
+		args.append(str(int(duration * fps)))
+	if bool(options.get("fullscreen", false)):
+		args.append("--fullscreen")
+	args.append(scene)
+	return args
+
+
+## Records scene in worktree_path via `godot --write-movie` (Vulkan, no --headless). Converts AVI→mp4/webm via ffmpeg if requested. options: see build_args(). Returns 0 on success.
 static func record(
 	worktree_path: String,
 	scene: String,
 	output: String,
 	fps: int,
 	duration: float,
-	godot_bin: String
+	godot_bin: String,
+	options: Dictionary = {}
 ) -> int:
 	var output_dir := output.get_base_dir()
 	if not output_dir.is_empty() and not DirAccess.dir_exists_absolute(output_dir):
@@ -20,13 +43,7 @@ static func record(
 	elif movie_path.get_extension().is_empty():
 		movie_path += ".avi"
 	print("movie_writer: %s -> %s (%d fps, duration %s)" % [scene, movie_path, fps, str(duration)])
-	var args := PackedStringArray(
-		["--path", worktree_path, "--write-movie", movie_path, "--fixed-fps", str(fps)]
-	)
-	if duration > 0:
-		args.append("--quit-after")
-		args.append(str(int(duration * fps)))
-	args.append(scene)
+	var args := build_args(worktree_path, scene, movie_path, fps, duration, options)
 	var pid := OS.create_process(godot_bin, args)
 	if pid <= 0:
 		printerr("movie_writer: failed to launch godot --write-movie")
