@@ -64,3 +64,40 @@ func test_merge_override_cfg_from_nothing() -> void:
 	var cf := ConfigFile.new()
 	assert_eq(cf.parse(text), OK)
 	assert_eq(cf.get_value("display", "window/size/window_width_override"), 800)
+
+
+func test_validate_user_args() -> void:
+	assert_eq(GdTMCaptureOptions.validate_user_args([]), "")
+	assert_eq(GdTMCaptureOptions.validate_user_args(["--shot=wide", "--seed=3"]), "")
+	assert_ne(GdTMCaptureOptions.validate_user_args("--shot=wide"), "")
+	assert_ne(GdTMCaptureOptions.validate_user_args(["--seed", 3]), "")
+
+
+func test_entry_user_args_replace_top_level() -> void:
+	var top := {"user_args": ["--seed=1"]}
+	assert_eq(Array(GdTMCaptureOptions.entry_options({}, top)["user_args"]), ["--seed=1"])
+	var own := GdTMCaptureOptions.entry_options({"user_args": ["--shot=wide"]}, top)
+	assert_eq(Array(own["user_args"]), ["--shot=wide"])
+	var none := GdTMCaptureOptions.entry_options({"user_args": []}, top)
+	assert_true(none["user_args"].is_empty())
+
+
+func test_split_args_on_whitespace() -> void:
+	assert_eq(
+		Array(GdTMCaptureOptions.split_args("  --scene=res://a.tscn\t--seed=3  ")),
+		["--scene=res://a.tscn", "--seed=3"]
+	)
+	assert_true(GdTMCaptureOptions.split_args("   ").is_empty())
+
+
+func test_compose_run_args() -> void:
+	var args := PackedStringArray(["--shot=wide", "--seed=3"])
+	assert_eq(GdTMCaptureOptions.compose_run_args("", args), "-- --shot=wide --seed=3")
+	assert_eq(
+		GdTMCaptureOptions.compose_run_args("--verbose", args), "--verbose -- --shot=wide --seed=3"
+	)
+	assert_eq(
+		GdTMCaptureOptions.compose_run_args("--verbose -- --mine", args),
+		"--verbose -- --mine --shot=wide --seed=3"
+	)
+	assert_eq(GdTMCaptureOptions.compose_run_args("--verbose", PackedStringArray()), "--verbose")

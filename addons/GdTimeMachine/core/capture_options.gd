@@ -3,8 +3,9 @@ class_name GdTMCaptureOptions
 extends RefCounted
 
 ## Per-capture options shared by the CLI and the editor's Movie Maker backend:
-## validation, manifest defaulting, and the project-settings override that
-## sizes Movie Maker footage.
+## validation, manifest defaulting, the project-settings override that sizes
+## Movie Maker footage, and user args for the captured game (everything after
+## `--` on its command line, read with OS.get_cmdline_user_args()).
 ##
 ## Movie Maker fixes its frame size when the game starts, from the project's
 ## window size settings; `--resolution` alone resizes the window but not the
@@ -55,13 +56,51 @@ static func normalize_resolution(text: String) -> String:
 	return "%dx%d" % [size.x, size.y]
 
 
+## Returns "" when value is a usable user_args list (an array of strings),
+## else a reason.
+static func validate_user_args(value: Variant) -> String:
+	if typeof(value) != TYPE_ARRAY:
+		return 'must be an array of strings, e.g. ["--shot=wide", "--seed=3"]'
+	for arg in value:
+		if typeof(arg) != TYPE_STRING:
+			return "must contain only strings (got %s)" % str(arg)
+	return ""
+
+
+## Splits dock-entered user args on whitespace. No quoting: the editor splits
+## its run arguments on spaces too, so an argument cannot contain one.
+static func split_args(text: String) -> PackedStringArray:
+	var result := PackedStringArray()
+	for part in text.replace("\t", " ").split(" ", false):
+		result.append(part)
+	return result
+
+
+## The editor's run arguments (editor/run/main_run_args) with user_args
+## appended after `--`, reusing a `--` already there so existing user args are
+## kept ahead of the capture's.
+static func compose_run_args(prev: String, user_args: PackedStringArray) -> String:
+	if user_args.is_empty():
+		return prev
+	var tokens := Array(prev.split(" ", false))
+	if not tokens.has("--"):
+		tokens.append("--")
+	tokens.append_array(Array(user_args))
+	return " ".join(PackedStringArray(tokens))
+
+
 ## Effective options for one manifest capture: entry values win over the
-## manifest's top-level defaults. Keys: fullscreen (bool), resolution
-## (String, "" = project default).
+## manifest's top-level defaults (user_args replace, never merge). Keys:
+## fullscreen (bool), resolution (String, "" = project default), user_args
+## (PackedStringArray).
 static func entry_options(entry: Dictionary, top: Dictionary) -> Dictionary:
+	var args := PackedStringArray()
+	for arg in entry.get("user_args", top.get("user_args", [])):
+		args.append(str(arg))
 	return {
 		"fullscreen": bool(entry.get("fullscreen", false)),
 		"resolution": normalize_resolution(str(entry.get("resolution", top.get("resolution", "")))),
+		"user_args": args,
 	}
 
 

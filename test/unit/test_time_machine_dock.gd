@@ -1140,3 +1140,29 @@ func test_resolution_row_hidden_for_in_place_backends() -> void:
 		"Split/RightColumn/SettingsGroup/ResolutionRow"
 	)
 	assert_false(row2.visible)
+
+
+## Game user args
+
+
+func test_build_config_splits_user_args() -> void:
+	var store := FakeStore.new()
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var edit: LineEdit = dock.get_node("Split/RightColumn/SettingsGroup/ArgsRow/ArgsEdit")
+	edit.text = " --shot=wide  --seed=3 "
+	assert_eq(Array(dock.build_config()["user_args"]), ["--shot=wide", "--seed=3"])
+	edit.text = ""
+	assert_true(dock.build_config()["user_args"].is_empty())
+
+
+func test_scene_profile_user_args_load_into_ui() -> void:
+	var store := FakeStore.new()
+	var override := RecordingProfile.new()
+	override.user_args = "--seed=7"
+	store.scenes["res://scenes/a.tscn"] = override
+	var ctx := _build_dock(store, "res://scenes/a.tscn")
+	var dock := ctx["dock"] as TimeMachineDock
+	var edit: LineEdit = dock.get_node("Split/RightColumn/SettingsGroup/ArgsRow/ArgsEdit")
+	assert_eq(edit.text, "--seed=7")
+	assert_eq(Array(dock.build_config()["user_args"]), ["--seed=7"])

@@ -72,3 +72,22 @@ func test_prepare_project_without_resolution_writes_nothing() -> void:
 	assert_true(GdTMMovieWriter.prepare_project(wt, {}))
 	assert_false(FileAccess.file_exists(wt.path_join("override.cfg")))
 	OS.execute("rm", PackedStringArray(["-rf", wt]))
+
+
+func test_build_args_user_args_after_separator() -> void:
+	var args := GdTMMovieWriter.build_args(
+		"/wt",
+		"res://main.tscn",
+		"/out/a.avi",
+		30,
+		1.0,
+		{"user_args": PackedStringArray(["--shot=wide", "--seed=3"]), "resolution": "640x360"}
+	)
+	var sep := args.find("--")
+	assert_eq(sep, args.find("res://main.tscn") + 1)
+	assert_eq(Array(args.slice(sep + 1)), ["--shot=wide", "--seed=3"])
+
+
+func test_build_args_no_separator_without_user_args() -> void:
+	var args := GdTMMovieWriter.build_args("/wt", "res://main.tscn", "/out/a.avi", 30, 1.0, {})
+	assert_false("--" in args)

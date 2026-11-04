@@ -16,6 +16,7 @@ const TOP_LEVEL_KEYS := [
 	"build_command",
 	"output_dir",
 	"resolution",
+	"user_args",
 	"obs",
 	"captures",
 ]
@@ -29,6 +30,7 @@ const CAPTURE_KEYS := [
 	"fps",
 	"fullscreen",
 	"resolution",
+	"user_args",
 	"godot_version_hint",
 	"output_path",
 	"build_command",
@@ -170,6 +172,10 @@ func _validate_manifest(path: String, strict: bool) -> String:
 		var top_res_err := GdTMCaptureOptions.validate_resolution(dict["resolution"])
 		if not top_res_err.is_empty():
 			return "resolution %s" % top_res_err
+	if dict.has("user_args"):
+		var top_args_err := GdTMCaptureOptions.validate_user_args(dict["user_args"])
+		if not top_args_err.is_empty():
+			return "user_args %s" % top_args_err
 	var labels := {}
 	for i in range(arr.size()):
 		var entry = arr[i]
@@ -198,6 +204,10 @@ func _validate_manifest(path: String, strict: bool) -> String:
 			var res_err := GdTMCaptureOptions.validate_resolution(e["resolution"])
 			if not res_err.is_empty():
 				return "captures[%d].resolution %s" % [i, res_err]
+		if e.has("user_args"):
+			var args_err := GdTMCaptureOptions.validate_user_args(e["user_args"])
+			if not args_err.is_empty():
+				return "captures[%d].user_args %s" % [i, args_err]
 		if e.has("fullscreen") and typeof(e["fullscreen"]) != TYPE_BOOL:
 			return "captures[%d].fullscreen must be true or false" % i
 		var commit := String(e["commit"])
@@ -763,6 +773,9 @@ func _describe_options(options: Dictionary) -> String:
 		parts += ", resolution %s" % options["resolution"]
 	if bool(options.get("fullscreen", false)):
 		parts += ", fullscreen"
+	var user_args: PackedStringArray = options.get("user_args", PackedStringArray())
+	if not user_args.is_empty():
+		parts += ", args -- %s" % " ".join(user_args)
 	return parts
 
 

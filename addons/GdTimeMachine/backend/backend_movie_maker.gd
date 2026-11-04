@@ -27,6 +27,9 @@ const DEFAULT_OUTPUT_PATH := "res://movie.avi"
 ## Seconds to wait for the game to exit gracefully before forcing a stop.
 const GRACE_PERIOD := 2.0
 
+## Editor setting holding extra command-line args for games it runs.
+const RUN_ARGS_SETTING := "editor/run/main_run_args"
+
 ## Project-settings override file the editor-run game reads at startup.
 const OVERRIDE_CFG_PATH := "res://override.cfg"
 
@@ -108,6 +111,10 @@ var _prev_override_cfg: Variant = null
 
 ## Whether this recording wrote override.cfg (and so must restore it).
 var _override_cfg_written := false
+
+## editor/run/main_run_args before start(), restored on finalize; null when
+## this recording did not change it.
+var _prev_run_args: Variant = null
 
 
 ## Human-readable backend name shown in the UI.
@@ -198,6 +205,7 @@ func start(config: Dictionary) -> void:
 		_set_movie_fps(fps)
 	_project_overrides = GdTMCaptureOptions.project_overrides(config)
 	_apply_project_overrides()
+	_apply_user_args(config.get("user_args", PackedStringArray()))
 	_set_movie_maker_enabled(true)
 	_start_polling()
 	# Start the duration timer now so a scene that never starts still errors
@@ -337,9 +345,10 @@ func _finalize_stopped() -> void:
 
 
 ## Restores movie_file and fps to what they were before start(), and
-## override.cfg when this recording wrote it.
+## override.cfg and the run args when this recording changed them.
 func _restore_settings() -> void:
 	_restore_project_overrides()
+	_restore_user_args()
 	if _prev_movie_file == null:
 		_clear_movie_file()
 	else:
@@ -405,6 +414,45 @@ func _write_override_cfg(text: String) -> void:
 ## Deletes res://override.cfg.
 func _remove_override_cfg() -> void:
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(OVERRIDE_CFG_PATH))
+
+
+# --- User args via the editor's run arguments ---------------------------------
+
+
+## Appends the capture's user args after `--` in editor/run/main_run_args (in
+## memory, like movie_file: the editor reads it when launching the game).
+func _apply_user_args(user_args: Variant) -> void:
+	_prev_run_args = null
+	var args := PackedStringArray()
+	if user_args is String:
+		args = GdTMCaptureOptions.split_args(user_args)
+	elif user_args is Array or user_args is PackedStringArray:
+		for arg in user_args:
+			args.append(str(arg))
+	if args.is_empty():
+		return
+	var prev := _get_main_run_args()
+	_prev_run_args = prev
+	_set_main_run_args(GdTMCaptureOptions.compose_run_args(prev, args))
+
+
+## Puts editor/run/main_run_args back. No-op unless this recording changed it.
+func _restore_user_args() -> void:
+	if _prev_run_args == null:
+		return
+	_set_main_run_args(str(_prev_run_args))
+	_prev_run_args = null
+
+
+## Reads editor/run/main_run_args ("" when unset).
+func _get_main_run_args() -> String:
+	var v: Variant = ProjectSettings.get_setting(RUN_ARGS_SETTING, "")
+	return str(v) if v != null else ""
+
+
+## Writes editor/run/main_run_args without saving to disk.
+func _set_main_run_args(value: String) -> void:
+	ProjectSettings.set_setting(RUN_ARGS_SETTING, value)
 
 
 # --- Editor interaction (isolated for testability) ---------------------------

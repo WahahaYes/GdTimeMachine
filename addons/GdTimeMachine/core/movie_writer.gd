@@ -4,7 +4,8 @@ extends RefCounted
 
 ## Builds the godot command line for one Movie Maker capture. options holds
 ## the manifest's per-capture extras (see GdTMCaptureOptions.entry_options):
-## fullscreen (bool), resolution ("WIDTHxHEIGHT", "" = project default).
+## fullscreen (bool), resolution ("WIDTHxHEIGHT", "" = project default),
+## user_args (appended after `--` for the game to read).
 static func build_args(
 	worktree_path: String,
 	scene: String,
@@ -26,6 +27,11 @@ static func build_args(
 		args.append("--resolution")
 		args.append(resolution)
 	args.append(scene)
+	var user_args: Variant = options.get("user_args", PackedStringArray())
+	if not user_args.is_empty():
+		args.append("--")
+		for arg in user_args:
+			args.append(str(arg))
 	return args
 
 

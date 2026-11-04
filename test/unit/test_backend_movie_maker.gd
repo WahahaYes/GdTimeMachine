@@ -196,6 +196,8 @@ class TestableMovieMaker:
 	var _stub_transcoder := StubRegistryTranscoder.new()
 	## In-memory res://override.cfg: null = no file.
 	var _fake_override_cfg: Variant = null
+	## In-memory editor/run/main_run_args.
+	var _fake_run_args := ""
 
 	func _init() -> void:
 		_fake_editor = FakeEditorInterface.get_singleton()
@@ -274,6 +276,12 @@ class TestableMovieMaker:
 
 	func _remove_override_cfg() -> void:
 		_fake_override_cfg = null
+
+	func _get_main_run_args() -> String:
+		return _fake_run_args
+
+	func _set_main_run_args(value: String) -> void:
+		_fake_run_args = value
 
 
 func before_each() -> void:
@@ -783,3 +791,33 @@ func test_never_started_error_restores_override_cfg() -> void:
 	backend._fake_editor._playing_scene = false
 	backend._on_duration_timeout()
 	assert_null(backend._fake_override_cfg)
+
+
+## User args: appended to the editor's run args for the recording, then restored.
+
+
+func test_start_appends_user_args_to_run_args() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	backend._fake_run_args = "--verbose"
+	(
+		backend
+		. start(
+			{
+				"output_path": "res://test.avi",
+				"fps": 30,
+				"user_args": PackedStringArray(["--shot=wide", "--seed=3"]),
+			}
+		)
+	)
+	assert_eq(backend._fake_run_args, "--verbose -- --shot=wide --seed=3")
+	backend._finalize_stopped()
+	assert_eq(backend._fake_run_args, "--verbose")
+
+
+func test_start_without_user_args_leaves_run_args() -> void:
+	var backend: TestableMovieMaker = autofree(TestableMovieMaker.new())
+	backend._fake_run_args = "--verbose"
+	backend.start({"output_path": "res://test.avi", "fps": 30})
+	assert_eq(backend._fake_run_args, "--verbose")
+	backend._finalize_stopped()
+	assert_eq(backend._fake_run_args, "--verbose")

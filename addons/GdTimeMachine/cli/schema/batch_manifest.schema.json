@@ -29,6 +29,11 @@
       "pattern": "^[0-9]+[xX][0-9]+$",
       "description": "Default capture size WIDTHxHEIGHT (e.g. 1920x1080) for entries without their own; absent means the project's window size."
     },
+    "user_args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Default user args for entries without their own: appended after `--` on the game's command line (OS.get_cmdline_user_args())."
+    },
     "obs": {
       "type": "object",
       "description": "OBS WebSocket defaults for batch recording.",
@@ -98,6 +103,11 @@
             "type": "string",
             "pattern": "^[0-9]+[xX][0-9]+$",
             "description": "Capture size WIDTHxHEIGHT (e.g. 1920x1080), passed as --resolution and as the window size override that sizes Movie Maker footage. Overrides the top-level resolution."
+          },
+          "user_args": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Args for the captured game, appended after `--` (e.g. [\"--shot=wide\", \"--seed=3\"]); the game reads them with OS.get_cmdline_user_args(). Replaces the top-level user_args."
           },
           "godot_version_hint": {
             "type": "string",

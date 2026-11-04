@@ -135,11 +135,14 @@ duration = 30
 fps = 30
 output_format = png
 resolution = 1920x1080
+user_args = --shot=wide --seed=3
 ```
 
 Each `["res://..."]` overrides `[default]`. Edit directly or use *Remember settings for this scene* in the dock. Commit for shared team profiles.
 
 **Capture size** (dock *Size*, `resolution`): Movie Maker fixes its frame size from the project's window size settings when the game starts — `--resolution` alone resizes the window, not the footage. So the Movie Maker backend writes the size into `res://override.cfg` (`display/window/size/window_*_override`) for the duration of the recording and then restores the file exactly as it was (or removes it). If the editor crashes mid-recording, the file says so in its first line; delete it. Sizes larger than the screen work (e.g. `2560x1440` for a downscaled master). In-place backends record the running window as is.
+
+**Game args** (dock *Args*, `user_args`): space-separated args for the game, e.g. `--shot=wide --seed=3`, passed after `--` so the game reads them with `OS.get_cmdline_user_args()`. The Movie Maker backend appends them to `editor/run/main_run_args` (in memory) while recording and restores it afterwards. No quoting: the editor splits run args on spaces. Stored per scene in `profiles.cfg`, not in Editor Settings.
 
 ## CLI — batch capture (history)
 
@@ -154,9 +157,10 @@ gdtime --help
 gdtime --version
 ```
 
-**Manifest** (`res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json`): `project_root`, `captures[]` with `commit` (any git ref `git rev-parse` resolves: SHA, branch, tag, `HEAD`; the resolved SHA is printed), `scene` (`res://…`), `label` (`[A-Za-z0-9_-]+`, unique), optional `duration`/`fps`/`fullscreen`/`resolution`/`godot_version_hint`/`output_path`/`build_command` and top-level `godot_path`/`build_command`/`output_dir`/`resolution` (default for entries without one).
+**Manifest** (`res://addons/GdTimeMachine/cli/schema/batch_manifest.schema.json`): `project_root`, `captures[]` with `commit` (any git ref `git rev-parse` resolves: SHA, branch, tag, `HEAD`; the resolved SHA is printed), `scene` (`res://…`), `label` (`[A-Za-z0-9_-]+`, unique), optional `duration`/`fps`/`fullscreen`/`resolution`/`godot_version_hint`/`output_path`/`build_command` and top-level `godot_path`/`build_command`/`output_dir`/`resolution`/`user_args` (defaults for entries without their own).
 
 - `resolution` — `"1920x1080"`: passed as `--resolution` and written into the worktree's `override.cfg` as the window size override, which is what sizes Movie Maker footage.
+- `user_args` — `["--scene=res://a.tscn", "--seed=3"]`: appended after `--` on the game's command line (`OS.get_cmdline_user_args()`). An entry's list replaces the top-level one.
 - `fullscreen` — passes `--fullscreen`. The footage keeps the project's window size (or `resolution`), not the screen's.
 
 **`run` options:** `--dry-run` (preview), `--resume LABEL` (skip before label), `--keep-worktrees` / `--keep-failed`, `--no-git` (HEAD-only), `--force` (overwrite), `--build-timeout SECS` (default 600), `--fail-fast`, `--strict`.

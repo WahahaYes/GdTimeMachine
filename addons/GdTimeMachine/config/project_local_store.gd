@@ -17,6 +17,7 @@ class_name ProjectLocalConfigStore
 ##   duration = 30
 ##   backend_name = Godot Movie Maker
 ##   resolution = 1920x1080
+##   user_args = --shot=wide --seed=3
 ##
 ##   ["res://scenes/my_scene.tscn"]
 ##   output_dir = ...
@@ -131,7 +132,9 @@ func _save_config(cf: ConfigFile) -> void:
 
 func _profile_from_section(cf: ConfigFile, section: String) -> RecordingProfile:
 	var d := {}
-	for key in ["output_dir", "output_format", "fps", "duration", "backend_name", "resolution"]:
+	for key in [
+		"output_dir", "output_format", "fps", "duration", "backend_name", "resolution", "user_args"
+	]:
 		if cf.has_section_key(section, key):
 			d[key] = cf.get_value(section, key)
 	var p := RecordingProfile.from_dict(d)

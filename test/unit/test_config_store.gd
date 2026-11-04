@@ -241,3 +241,14 @@ func test_project_local_store_scene_resolution() -> void:
 	assert_eq(cf.get_value("res://scenes/intro.tscn", "resolution"), "2560x1440")
 	assert_eq(store.get_scene_profile("res://scenes/intro.tscn").resolution, "2560x1440")
 	assert_eq(profile.duplicate_profile().resolution, "2560x1440")
+
+
+func test_project_local_store_scene_user_args() -> void:
+	var cf := ConfigFile.new()
+	var store := ProjectLocalConfigStore.new("")
+	_wire_store(store, cf)
+	var profile := RecordingProfile.new()
+	profile.user_args = "--shot=wide --seed=3"
+	store.save_scene_profile("res://scenes/intro.tscn", profile)
+	assert_eq(store.get_scene_profile("res://scenes/intro.tscn").user_args, "--shot=wide --seed=3")
+	assert_eq(profile.duplicate_profile().user_args, "--shot=wide --seed=3")
