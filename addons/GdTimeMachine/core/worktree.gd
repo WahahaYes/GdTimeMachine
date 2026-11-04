@@ -46,6 +46,40 @@ static func is_worktree_supported() -> bool:
 	return false
 
 
+## Whether ref is acceptable as a manifest commit: any non-empty git revision
+## without whitespace that cannot be mistaken for a command-line option (SHA,
+## branch, tag, HEAD, HEAD~2, ...). Whether it resolves is checked at run time.
+static func is_valid_ref(ref: String) -> bool:
+	if ref.is_empty() or ref.begins_with("-"):
+		return false
+	var regex := RegEx.new()
+	regex.compile("\\s")
+	return regex.search(ref) == null
+
+
+## Resolves ref (SHA, branch, tag, HEAD, ...) to a full commit SHA via
+## `git rev-parse --verify <ref>^{commit}` in project_root. Returns "" when it
+## does not name a commit.
+static func resolve_commit(project_root: String, ref: String) -> String:
+	if not is_valid_ref(ref):
+		return ""
+	var out: Array = []
+	var code := OS.execute(
+		"git",
+		PackedStringArray(
+			["-C", project_root, "rev-parse", "--verify", "--quiet", "%s^{commit}" % ref]
+		),
+		out,
+		true
+	)
+	if code != 0 or out.is_empty():
+		return ""
+	var sha := str(out[0]).strip_edges()
+	if sha.contains("\n"):
+		sha = sha.split("\n")[0].strip_edges()
+	return sha
+
+
 ## Creates detached worktree .worktrees/<label> at commit. If force, removes existing collision. Returns absolute path or "" on failure.
 static func add_worktree(
 	label: String, commit: String, project_root: String, force: bool = false

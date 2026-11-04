@@ -59,8 +59,8 @@
         "properties": {
           "commit": {
             "type": "string",
-            "pattern": "^[0-9a-fA-F]{4,40}$",
-            "description": "Git commit SHA (short or full hex)."
+            "pattern": "^[^\\s-]\\S*$",
+            "description": "Any git ref that `git rev-parse` resolves to a commit: SHA (short or full), branch, tag, HEAD, HEAD~2. The resolved SHA is printed and recorded in the capture log."
           },
           "scene": {
             "type": "string",

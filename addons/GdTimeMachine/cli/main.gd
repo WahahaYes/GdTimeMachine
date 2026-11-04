@@ -168,10 +168,11 @@ func _validate_manifest(path: String, strict: bool) -> String:
 		if e.has("fullscreen") and typeof(e["fullscreen"]) != TYPE_BOOL:
 			return "captures[%d].fullscreen must be true or false" % i
 		var commit := String(e["commit"])
-		var cregex := RegEx.new()
-		cregex.compile("^[0-9a-fA-F]{4,40}$|^HEAD$")
-		if cregex.search(commit) == null:
-			return "captures[%d].commit '%s' must be hex 4-40 chars or HEAD" % [i, commit]
+		if not GdTMWorktree.is_valid_ref(commit):
+			return (
+				"captures[%d].commit '%s' must be a git ref (SHA, branch, tag or HEAD) without spaces or a leading '-'"
+				% [i, commit]
+			)
 		if strict:
 			for k in e.keys():
 				if (
@@ -602,7 +603,15 @@ func _cmd_run(args: PackedStringArray) -> void:
 				outp = top_output_dir.path_join(lbl)
 			var backend_dry := str(entry.get("backend", "OBS Studio"))
 			var fullscreen_dry := bool(entry.get("fullscreen", false))
-			print("[dry-run] would create worktree .worktrees/%s for %s" % [lbl, cm])
+			var sha_dry := GdTMWorktree.resolve_commit(project_root, cm)
+			if sha_dry.is_empty():
+				print("[dry-run] commit %s does not resolve in %s" % [cm, project_root])
+			print(
+				(
+					"[dry-run] would create worktree .worktrees/%s for %s"
+					% [lbl, _describe_commit(cm, sha_dry)]
+				)
+			)
 			if not sc.is_empty():
 				print("  scene: %s" % sc)
 			var gpath := top_godot_path
@@ -646,8 +655,15 @@ func _cmd_run(args: PackedStringArray) -> void:
 			if entry.has("build_command")
 			else top_build_r
 		)
-		print("creating worktree for %s (%s)..." % [lbl, cm])
-		var wt_path := GdTMWorktree.add_worktree(lbl, cm, project_root, force)
+		var sha := GdTMWorktree.resolve_commit(project_root, cm)
+		if sha.is_empty():
+			printerr("[FAIL] commit %s does not resolve in %s (git rev-parse)" % [cm, project_root])
+			failed_labels.append(lbl)
+			if fail_fast:
+				break
+			continue
+		print("creating worktree for %s (%s)..." % [lbl, _describe_commit(cm, sha)])
+		var wt_path := GdTMWorktree.add_worktree(lbl, sha, project_root, force)
 		if wt_path.is_empty():
 			printerr("[FAIL] failed to create worktree .worktrees/%s for %s" % [lbl, cm])
 			failed_labels.append(lbl)
@@ -689,7 +705,7 @@ func _cmd_run(args: PackedStringArray) -> void:
 				break
 			continue
 		created.append(lbl)
-		print("[OK] %s done (worktree + build + record)" % lbl)
+		print("[OK] %s done at %s (worktree + build + record)" % [lbl, sha])
 
 	# --- cleanup: atexit/SIGINT trap equivalent — ensure no orphans ---
 	if keep_worktrees:
@@ -723,6 +739,14 @@ func _cmd_run(args: PackedStringArray) -> void:
 			)
 			quit(1)
 			return
+
+
+## "<ref> -> <sha>" when the ref is not already the resolved SHA, else the SHA
+## (or the bare ref when it did not resolve).
+func _describe_commit(ref: String, sha: String) -> String:
+	if sha.is_empty() or sha == ref:
+		return ref
+	return "%s -> %s" % [ref, sha]
 
 
 func _cmd_list_commits(args: PackedStringArray) -> void:
